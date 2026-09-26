@@ -7,3 +7,4 @@ __pycache__/
 # chat databases and agent state created at runtime
 data/
 examples/data/
+.env

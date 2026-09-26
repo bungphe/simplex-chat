@@ -215,7 +215,8 @@ def parse_admin_ui(raw: dict[str, Any] | None) -> AdminUIConfig | None:
     if env := raw.get("password_env"):
         password = os.environ.get(env) or password
     return AdminUIConfig(
-        host=str(raw.get("host", "127.0.0.1")),
+        # AI_ADMIN_UI_HOST lets a container listen on 0.0.0.0 without editing the config
+        host=os.environ.get("AI_ADMIN_UI_HOST") or str(raw.get("host", "127.0.0.1")),
         port=int(raw.get("port", 8080)),
         password=password,
     )

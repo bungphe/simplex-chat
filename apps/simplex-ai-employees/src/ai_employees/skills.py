@@ -282,6 +282,20 @@ def recent_conversations(ctx: SkillContext, hours: int) -> str:
         if turns:
             lines = [f"{'Contact' if t['role'] == 'user' else 'You'}: {t['content'][:400]}" for t in turns]
             parts.append(f"## {name} (contact #{cid}, {len(turns) // 2} exchanges)\n" + "\n".join(lines))
+    # Conversations only say what was promised; the queue says what actually happened.
+    requests = [a for a in state.actions if datetime.fromisoformat(a["created"]) >= since]
+    if requests:
+        parts.insert(
+            0,
+            "## Requests: current status. This is newer than the conversations below; "
+            "report these statuses, not what was said at the time.\n"
+            + "\n".join(
+                f"#{a['id']} {a['action']} for {a.get('contact_name') or '-'}: {a['status']}"
+                + (f" ({a['result'][:120]})" if a.get("result") else "")
+                + (f" (reason: {a['reason']})" if a.get("reason") else "")
+                for a in requests
+            ),
+        )
     if not parts:
         return f"No conversations in the last {hours} hours."
     text = "\n\n".join(parts)

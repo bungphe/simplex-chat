@@ -43,6 +43,32 @@ python -m ai_employees run examples/employees.yaml
 
 Log in ra địa chỉ liên hệ của từng nhân viên. Dán địa chỉ vào ứng dụng SimpleX để bắt đầu chat.
 
+## Triển khai bằng Docker
+
+Trên máy chủ (Linux, có Docker), từ thư mục gốc của repo:
+
+```bash
+cd apps/simplex-ai-employees
+mkdir -p data && cp examples/employees.yaml data/ && cp -r examples/knowledge examples/plugins data/
+cp .env.example .env          # điền AI_ADMIN_PASSWORD, AI_ADMIN_TOKEN và API key của model
+docker compose up -d --build  # thêm --profile local-ai để chạy kèm Ollama
+docker compose logs -f        # xem địa chỉ SimpleX của từng nhân viên
+```
+
+- `data/` chứa cấu hình, tài liệu, cơ sở dữ liệu SimpleX và trạng thái; hãy sao lưu thư mục này.
+- Giao diện quản trị chỉ mở ở `127.0.0.1:8080` của máy chủ. Truy cập từ xa bằng SSH tunnel
+  (`ssh -L 8080:127.0.0.1:8080 <máy chủ>`) hoặc reverse proxy có HTTPS.
+- Mặc định image tải `libsimplex` bản phát hành của SimpleX. Muốn dùng bản tự build từ repo này
+  (`scripts/desktop/build-lib-linux.sh`), bỏ comment hai dòng `SIMPLEX_LIBS_DIR` trong `docker-compose.yml`
+  và build với `--build-arg DOWNLOAD_LIBSIMPLEX=0`.
+- Máy chủ đi Internet qua proxy kiểm tra TLS: thêm `--secret id=ca_cert,src=<ca-của-proxy.crt>` khi build.
+  CA chỉ dùng lúc build, không nằm trong image.
+
+**Chọn model.** Model chạy tại chỗ nhỏ (vd. `qwen2.5:7b` trên CPU) chạy được nhưng chậm (30–90 giây mỗi
+câu) và gọi skill kém tin cậy: có lúc nói "đã tạo đơn" mà không gọi `create_order`. Hàng chờ duyệt giữ an
+toàn trong trường hợp đó vì không có đơn nào đi ra ngoài. Dùng thật thì nên chọn model qua API (Claude, GPT,
+Gemini) hoặc model lớn hơn chạy trên GPU; dùng quy tắc sửa sai (`/ai correct`) để chỉnh hành vi.
+
 ## Khai báo model AI
 
 Khai báo mỗi model một lần trong mục `models:`, đặt cho nó một cái tên, rồi gán tên đó cho nhân viên.

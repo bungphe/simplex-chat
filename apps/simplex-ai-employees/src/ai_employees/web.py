@@ -15,6 +15,7 @@ import asyncio
 import hmac
 import json
 import logging
+import os
 import secrets
 import time
 from dataclasses import replace
@@ -525,7 +526,9 @@ async def start_admin_ui(office: Office, ui: AdminUIConfig) -> web.AppRunner:
         raise ConfigError("admin_ui needs a password (password_env or password)")
     if len(ui.password) < 12:
         log.warning("admin UI: the password is short; use at least 12 characters")
-    if ui.host not in ("127.0.0.1", "localhost", "::1"):
+    if os.environ.get("AI_ADMIN_UI_HOST"):
+        log.info("admin UI host set by AI_ADMIN_UI_HOST (container); publish the port on 127.0.0.1 only")
+    elif ui.host not in ("127.0.0.1", "localhost", "::1"):
         log.warning("admin UI listens on %s: put it behind a TLS reverse proxy", ui.host)
     runner = web.AppRunner(create_app(office, ui.password), access_log=None)
     await runner.setup()

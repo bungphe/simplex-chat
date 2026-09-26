@@ -1,0 +1,39 @@
+# Run the AI employees office, optionally with a local model server.
+#
+#   cp examples/employees.yaml data/employees.yaml   # then edit it (see README)
+#   cp .env.example .env                             # then fill in keys and passwords
+#   docker compose up -d --build                     # add "--profile local-ai" for Ollama
+#
+# Chat databases, memory, approvals and the run log live in ./data.
+# The admin UI is published on 127.0.0.1:8080 only; reach it remotely through a
+# TLS reverse proxy or an SSH tunnel, never by opening the port to the Internet.
+
+services:
+  ai-employees:
+    build:
+      context: ../..
+      dockerfile: apps/simplex-ai-employees/Dockerfile
+    image: simplex-ai-employees
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data:/data
+      # To use a libsimplex built from this repository, uncomment both lines:
+      # - ../../dist-lib/libsimplex-src:/opt/libsimplex:ro
+    # environment:
+    #   SIMPLEX_LIBS_DIR: /opt/libsimplex
+    ports:
+      - "127.0.0.1:8080:8080"
+
+  ollama:
+    image: ollama/ollama:latest
+    profiles: [local-ai]
+    restart: unless-stopped
+    volumes:
+      - ollama:/root/.ollama
+    # Pull a model once:  docker compose exec ollama ollama pull qwen2.5:7b
+    # and declare it in employees.yaml:
+    #   models: {local: {provider: openai, base_url: "http://ollama:11434/v1", model: "qwen2.5:7b"}}
+
+volumes:
+  ollama:

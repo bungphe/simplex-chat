@@ -181,7 +181,12 @@ class Shop:
 
 def order_office(tmp_path, llm, shop, **kw):
     office = make_office(
-        tmp_path, llm, http=shop.client, actions=ORDER, skills=["create_order", "current_time"], **kw
+        tmp_path,
+        llm,
+        http=shop.client,
+        actions=ORDER,
+        skills=kw.pop("skills", ["create_order", "current_time"]),
+        **kw,
     )
     sales = office.employees["sales"]
     return office, sales, fake_chat(sales)
@@ -328,3 +333,20 @@ async def test_internal_skills_are_not_offered_to_ordinary_contacts(tmp_path):
     assert names[1] == {"recent_conversations", "office_report", "current_time"}  # the manager does
     assert names[2] == {"current_time"}  # nor does a colleague asking on a customer's behalf
     assert llm.calls[1]["system"][1]["text"] == 'You are chatting with your manager "Chủ".'
+
+
+async def test_recent_conversations_include_request_status(tmp_path):
+    shop = Shop()
+    llm = ScriptedLLM(
+        tool("create_order", {"customer": "An", "items": "1"}),
+        text("Đơn đang chờ duyệt"),
+        tool("recent_conversations", {"hours": 24}),
+        lambda p: text(tool_results(p)[0]["content"]),
+    )
+    _, sales, _ = order_office(tmp_path, llm, shop, skills=["create_order", "recent_conversations"])
+    await sales.command(99, "admin", "secret-token")
+    await sales.agent.respond(1, "An", "Đặt 1 máy")
+    await sales.command(99, "ai", "approve 1")
+    report = (await sales.run_routine(parse_routine(BRIEF), sales.local_now())).text
+    assert "You: Đơn đang chờ duyệt" in report  # what was said at the time...
+    assert "#1 create_order for An: done (order DH-2001 created)" in report  # ...and what happened since
