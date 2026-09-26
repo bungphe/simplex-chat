@@ -1,11 +1,14 @@
-"""Scripted stand-ins for the Claude API, shaped like SDK responses."""
+"""Scripted stand-ins for model APIs: Claude SDK responses and an OpenAI-compatible server."""
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace as NS
 from typing import Any
+
+import httpx2
 
 from ai_employees.config import parse_config
 from ai_employees.employee import Office
@@ -44,9 +47,19 @@ def tool_results(params: dict[str, Any]) -> list[dict[str, Any]]:
     return last["content"]
 
 
-def make_office(tmp_path: Path, llm: Any, smp: tuple[str, ...] = (), **sales_overrides: Any) -> Office:
+def make_office(
+    tmp_path: Path,
+    llm: Any,
+    smp: tuple[str, ...] = (),
+    models: dict[str, Any] | None = None,
+    http: httpx2.AsyncClient | None = None,
+    accountant_model: str | None = None,
+    **sales_overrides: Any,
+) -> Office:
+    accountant = {"model": accountant_model} if accountant_model else {}
     raw = {
         "state_dir": str(tmp_path / "state"),
+        "models": models or {},
         "servers": {"smp": list(smp)},
         "defaults": {"admin_token": "secret-token"},
         "employees": [
@@ -70,7 +83,39 @@ def make_office(tmp_path: Path, llm: Any, smp: tuple[str, ...] = (), **sales_ove
                 "system_prompt": "Bạn là Minh, kế toán.",
                 "skills": ["knowledge_search"],
                 "skill_config": {"knowledge_search": {"path": str(EXAMPLES / "knowledge" / "accounting")}},
+                **accountant,
             },
         ],
     }
-    return Office(parse_config(raw, base_dir=tmp_path), llm)
+    return Office(parse_config(raw, base_dir=tmp_path), llm, http)
+
+
+class OpenAIServer:
+    """A scripted OpenAI-compatible Chat Completions endpoint on a mock HTTP transport."""
+
+    def __init__(self, *replies: dict[str, Any] | Callable[[dict[str, Any]], dict[str, Any]]):
+        self.replies = list(replies)
+        self.requests: list[httpx2.Request] = []
+        self.bodies: list[dict[str, Any]] = []
+        self.client = httpx2.AsyncClient(transport=httpx2.MockTransport(self._handle))
+
+    def _handle(self, request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content)
+        self.requests.append(request)
+        self.bodies.append(body)
+        r = self.replies.pop(0)
+        r = r(body) if callable(r) else r
+        if "status" in r:
+            return httpx2.Response(r["status"], text=r.get("text", "error"))
+        return httpx2.Response(200, json=r)
+
+
+def oa_text(content: str, finish: str = "stop") -> dict[str, Any]:
+    return {"choices": [{"message": {"role": "assistant", "content": content}, "finish_reason": finish}]}
+
+
+def oa_tool(name: str, args: dict[str, Any] | str, id: str = "call_1") -> dict[str, Any]:
+    arguments = args if isinstance(args, str) else json.dumps(args, ensure_ascii=False)
+    call = {"id": id, "type": "function", "function": {"name": name, "arguments": arguments}}
+    msg = {"role": "assistant", "content": None, "tool_calls": [call]}
+    return {"choices": [{"message": msg, "finish_reason": "tool_calls"}]}

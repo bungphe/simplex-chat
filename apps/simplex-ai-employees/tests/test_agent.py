@@ -175,6 +175,7 @@ async def test_contact_name_cannot_break_out_of_system_line(tmp_path):
 
 async def test_effort_off_and_no_fallback(tmp_path):
     llm = ScriptedLLM(text("ok"))
-    sales = make_office(tmp_path, llm, effort=None, refusal_fallback=False, skills=[]).employees["sales"]
-    await sales.agent.respond(1, "An", "hi")
+    models = {"quiet": {"provider": "anthropic", "model": "claude-opus-5", "refusal_fallback": False}}
+    office = make_office(tmp_path, llm, models=models, model="quiet", effort=None, skills=[])
+    await office.employees["sales"].agent.respond(1, "An", "hi")
     assert not {"output_config", "fallbacks", "betas", "tools"} & set(llm.calls[0])

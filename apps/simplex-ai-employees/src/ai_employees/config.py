@@ -9,6 +9,8 @@ from typing import Any
 
 import yaml
 
+from .providers import PROVIDERS, ModelProfile, fallback_default
+
 DEFAULT_MODEL = "claude-opus-5"
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 
@@ -31,7 +33,6 @@ class EmployeeConfig:
     max_tokens: int = 16000
     max_steps: int = 8
     history_messages: int = 40
-    refusal_fallback: bool = True
     skills: tuple[str, ...] = ()
     skill_config: dict[str, dict[str, Any]] = field(default_factory=dict)
     welcome: str | None = None
@@ -54,6 +55,20 @@ class AppConfig:
     smp_servers: tuple[str, ...] = ()
     plugins: tuple[str, ...] = ()
     plugin_paths: tuple[str, ...] = ()
+    models: dict[str, ModelProfile] = field(default_factory=dict)
+
+    def model_profile(self, name: str) -> ModelProfile | None:
+        """A declared model by name, or an implicit Claude model for a bare `claude-*` id."""
+        if name in self.models:
+            return self.models[name]
+        if name.startswith("claude-"):
+            return ModelProfile(
+                name=name,
+                provider="anthropic",
+                model=name,
+                refusal_fallback=fallback_default("anthropic", name),
+            )
+        return None
 
 
 def load_config(path: str | os.PathLike[str]) -> AppConfig:
@@ -69,6 +84,7 @@ def parse_config(raw: dict[str, Any], base_dir: Path) -> AppConfig:
     def resolve(p: str) -> str:
         return str((base_dir / p).resolve()) if not os.path.isabs(p) else p
 
+    models = parse_models(raw.get("models") or {})
     defaults = raw.get("defaults") or {}
     employees = []
     seen: set[str] = set()
@@ -83,6 +99,12 @@ def parse_config(raw: dict[str, Any], base_dir: Path) -> AppConfig:
         for req in ("display_name", "system_prompt"):
             if not merged.get(req):
                 raise ConfigError(f"employee {emp_id}: '{req}' is required")
+        model = merged.get("model", DEFAULT_MODEL)
+        if model not in models and not str(model).startswith("claude-"):
+            raise ConfigError(
+                f"employee {emp_id}: model '{model}' is not declared under models: "
+                f"({', '.join(models) or 'none declared'})"
+            )
         effort = merged.get("effort", "medium")
         if effort is not None and effort not in EFFORT_LEVELS:
             raise ConfigError(f"employee {emp_id}: effort must be one of {EFFORT_LEVELS} or null")
@@ -102,12 +124,11 @@ def parse_config(raw: dict[str, Any], base_dir: Path) -> AppConfig:
                 display_name=merged["display_name"],
                 db=resolve(merged.get("db") or f"./data/{emp_id}"),
                 system_prompt=merged["system_prompt"].strip(),
-                model=merged.get("model", DEFAULT_MODEL),
+                model=model,
                 effort=effort,
                 max_tokens=int(merged.get("max_tokens", 16000)),
                 max_steps=int(merged.get("max_steps", 8)),
                 history_messages=int(merged.get("history_messages", 40)),
-                refusal_fallback=bool(merged.get("refusal_fallback", True)),
                 skills=tuple(merged.get("skills") or ()),
                 skill_config=skill_config,
                 welcome=merged.get("welcome"),
@@ -126,4 +147,43 @@ def parse_config(raw: dict[str, Any], base_dir: Path) -> AppConfig:
         smp_servers=tuple(servers.get("smp") or ()),
         plugins=tuple(raw.get("plugins") or ()),
         plugin_paths=tuple(resolve(p) for p in raw.get("plugin_paths") or ()),
+        models=models,
     )
+
+
+def parse_models(raw: dict[str, Any]) -> dict[str, ModelProfile]:
+    """`models:` maps a name to {provider, model, base_url, api_key_env | api_key, ...}."""
+    models = {}
+    for name, m in raw.items():
+        m = m or {}
+        provider = m.get("provider", "anthropic")
+        if provider not in PROVIDERS:
+            raise ConfigError(f"model {name}: provider must be one of {PROVIDERS}")
+        if not m.get("model"):
+            raise ConfigError(f"model {name}: 'model' (the provider's model name) is required")
+        unknown = set(m) - {
+            "provider",
+            "model",
+            "base_url",
+            "api_key",
+            "api_key_env",
+            "headers",
+            "extra_body",
+            "refusal_fallback",
+            "timeout",
+        }
+        if unknown:
+            raise ConfigError(f"model {name}: unknown fields {', '.join(sorted(unknown))}")
+        models[name] = ModelProfile(
+            name=name,
+            provider=provider,
+            model=m["model"],
+            base_url=m.get("base_url"),
+            api_key=m.get("api_key"),
+            api_key_env=m.get("api_key_env"),
+            headers={str(k): str(v) for k, v in (m.get("headers") or {}).items()},
+            extra_body=dict(m.get("extra_body") or {}),
+            refusal_fallback=bool(m.get("refusal_fallback", fallback_default(provider, m["model"]))),
+            timeout=float(m.get("timeout", 120.0)),
+        )
+    return models

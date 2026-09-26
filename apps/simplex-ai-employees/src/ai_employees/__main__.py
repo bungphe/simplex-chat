@@ -11,7 +11,6 @@ import sys
 from . import skills as sk
 from .config import ConfigError, load_config
 from .employee import Office
-from .llm import AnthropicLLM
 
 
 def main() -> None:
@@ -33,14 +32,19 @@ def main() -> None:
         sys.exit(f"config error: {e}")
 
     if args.command == "check":
+        for name, m in config.models.items():
+            key = "key set" if m.key() else (f"{m.api_key_env} NOT SET" if m.api_key_env else "no key")
+            print(f"model {name}: {m.describe()} ({key})")
         for e in config.employees:
+            profile = config.model_profile(e.model)
             print(
-                f"{e.id}: {e.display_name} | model={e.model} effort={e.effort} | skills: {', '.join(sk.expand(e.skills))}"
+                f"{e.id}: {e.display_name} | model={e.model} ({profile.describe() if profile else '?'}) "
+                f"| skills: {', '.join(sk.expand(e.skills))}"
             )
         print(f"available skills: {', '.join(sk.available())}")
         return
 
-    office = Office(config, AnthropicLLM())
+    office = Office(config)
 
     async def run() -> None:
         loop = asyncio.get_running_loop()

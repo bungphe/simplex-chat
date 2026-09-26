@@ -55,7 +55,19 @@ class Skill:
     handler: Handler | None = None
     server_tool: dict[str, Any] | None = None
 
+    def openai_tool(self) -> dict[str, Any]:
+        """Function-tool definition for OpenAI-compatible Chat Completions APIs.
+
+        `additionalProperties` is left out: some compatible APIs (e.g. Gemini's) reject it.
+        """
+        params = {k: v for k, v in (self.input_schema or {}).items() if k != "additionalProperties"}
+        return {
+            "type": "function",
+            "function": {"name": self.name, "description": self.description, "parameters": params},
+        }
+
     def tool_param(self) -> dict[str, Any]:
+        """Tool definition for the Anthropic Messages API."""
         if self.server_tool is not None:
             return dict(self.server_tool)
         return {

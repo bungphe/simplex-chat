@@ -2,7 +2,8 @@
 
 Needs libsimplex and a reachable SMP server; enable with
     SIMPLEX_TEST_SMP=smp://<fingerprint>@127.0.0.1 pytest tests/test_e2e_simplex.py
-The model is a rule-based fake, so no API key is needed; everything else is real.
+Sales runs on the Anthropic provider and the accountant on an OpenAI-compatible one;
+both models are rule-based fakes, so no API key is needed. Everything else is real.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from simplex_chat import Client, Message, Profile, SqliteDb
 
 from ai_employees.employee import EmployeeBot
 
-from fakes import make_office, text, tool, tool_names
+from fakes import OpenAIServer, make_office, oa_text, oa_tool, text, tool, tool_names
 
 SMP = os.environ.get("SIMPLEX_TEST_SMP")
 pytestmark = pytest.mark.skipif(not SMP, reason="set SIMPLEX_TEST_SMP to run")
@@ -40,6 +41,17 @@ class RuleLLM:
         return text("Không rõ")
 
 
+def openai_rules(body: dict[str, Any]) -> dict[str, Any]:
+    """The same keyword rules, answered in OpenAI Chat Completions format."""
+    last = body["messages"][-1]
+    if last["role"] == "tool":
+        return oa_text("Kết quả: " + last["content"][:600])
+    names = {t["function"]["name"] for t in body.get("tools", [])}
+    if "knowledge_search" in names:
+        return oa_tool("knowledge_search", {"query": last["content"]})
+    return oa_text("Không rõ")
+
+
 class Customer(Client):
     def __init__(self, **kw: Any):
         super().__init__(**kw)
@@ -59,7 +71,16 @@ class Customer(Client):
 
 
 async def test_customer_chats_with_ai_employees(tmp_path):
-    office = make_office(tmp_path, RuleLLM(), smp=(SMP,), welcome="Xin chào, mình là Lan!")
+    server = OpenAIServer(*([openai_rules] * 10))
+    office = make_office(
+        tmp_path,
+        RuleLLM(),
+        smp=(SMP,),
+        models={"local": {"provider": "openai", "base_url": "http://llm.local/v1", "model": "qwen-test"}},
+        http=server.client,
+        accountant_model="local",
+        welcome="Xin chào, mình là Lan!",
+    )
     sales = office.employees["sales"]
     customer = Customer(
         profile=Profile(display_name="Khách An"), db=SqliteDb(file_prefix=str(tmp_path / "customer"))
@@ -88,6 +109,7 @@ async def test_customer_chats_with_ai_employees(tmp_path):
             # delegation: sales asks the accountant, who searches accounting documents
             [r] = await customer.ask(cid, "Mình cần xuất hoá đơn VAT thì cần gì?")
             assert "mã số thuế" in r
+            assert server.bodies and server.bodies[0]["model"] == "qwen-test"  # accountant used its own model
             # admin commands in chat
             [r] = await customer.ask(cid, "/ai show")
             assert "chỉ dành cho quản trị viên" in r

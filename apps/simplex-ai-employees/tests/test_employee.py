@@ -21,7 +21,7 @@ def test_admin_login_and_runtime_config(tmp_path):
         sales.command(5, "ai", "prompt Bạn là Lan.\nLuôn xưng em.") == "Đã cập nhật vai trò (system prompt)."
     )
     assert sales.settings.system_prompt == "Bạn là Lan.\nLuôn xưng em."
-    assert "Đã chuyển sang model claude-sonnet-5" in sales.command(5, "ai", "model claude-sonnet-5")
+    assert "Đã gán model claude-sonnet-5" in sales.command(5, "ai", "model claude-sonnet-5")
     assert "Mức hợp lệ" in sales.command(5, "ai", "effort extreme")
     sales.command(5, "ai", "effort high")
     assert "Không có skill" in sales.command(5, "ai", "skill add teleport")
@@ -56,7 +56,9 @@ def test_forget_deletes_own_history(tmp_path):
 def test_example_config_and_plugin_skill(tmp_path):
     cfg = load_config(EXAMPLES / "employees.yaml")
     sk.load_plugins(cfg.plugins, cfg.plugin_paths)
-    assert [e.id for e in cfg.employees] == ["sales", "accountant"]
+    assert [e.id for e in cfg.employees] == ["sales", "accountant", "writer"]
+    assert [e.model for e in cfg.employees] == ["claude", "gemini", "local"]
+    assert {m.provider for m in cfg.models.values()} == {"anthropic", "openai"}
     assert "order_status" in sk.expand(cfg.employees[0].skills)
     assert cfg.employees[0].skill_config["knowledge_search"]["path"].endswith("knowledge/sales")
     order = sk.REGISTRY["order_status"]

@@ -10,12 +10,14 @@ from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any
 
+import httpx2
 from simplex_chat import Bot, BotCommand, BotProfile, Message, SqliteDb
 
 from . import skills as sk
 from .agent import Agent
 from .config import EFFORT_LEVELS, AppConfig, EmployeeConfig
 from .llm import LLM
+from .providers import ChatModel, make_model
 from .state import EmployeeState
 
 log = logging.getLogger(__name__)
@@ -26,7 +28,8 @@ ADMIN_HELP = """\
 *Lệnh quản trị nhân viên AI*
 /ai show — xem cấu hình hiện tại
 /ai prompt <nội dung> — đặt vai trò / hướng dẫn (system prompt)
-/ai model <model id> — đổi model, vd. claude-opus-5
+/ai models — xem các model AI đã khai báo
+/ai model <tên> — gán model cho nhân viên này
 /ai effort <low|medium|high|xhigh|max|off> — mức suy nghĩ
 /ai skills — xem skill đang bật và skill có sẵn
 /ai skill add <tên> — bật skill
@@ -56,12 +59,12 @@ class EmployeeBot(Bot):
 
 
 class Employee:
-    def __init__(self, cfg: EmployeeConfig, office: Office, llm: LLM, state_dir: str):
+    def __init__(self, cfg: EmployeeConfig, office: Office, state_dir: str):
         self.id = cfg.id
         self.base = cfg
         self.office = office
         self.state = EmployeeState(Path(state_dir) / f"{cfg.id}.json")
-        self.agent = Agent(self, llm)
+        self.agent = Agent(self)
         self._locks: defaultdict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._tasks: set[asyncio.Task[None]] = set()
         Path(cfg.db).parent.mkdir(parents=True, exist_ok=True)
@@ -79,6 +82,15 @@ class Employee:
     def settings(self) -> EmployeeConfig:
         """Config file values with the admin's runtime overrides applied."""
         return self.base.with_overrides(self.state.overrides)
+
+    def chat_model(self) -> ChatModel:
+        """The model assigned to this employee (an admin may have reassigned it)."""
+        model = self.office.model_for(self.settings.model)
+        if model is None:  # override names a model no longer declared in the config
+            log.error("%s: model %s is not declared; using %s", self.id, self.settings.model, self.base.model)
+            model = self.office.model_for(self.base.model)
+        assert model is not None  # the config file's model is validated at load
+        return model
 
     # ------------------------------------------------------------------ #
     # Incoming messages
@@ -160,7 +172,8 @@ class Employee:
             return (
                 f"*{s.display_name}* ({s.id})\n"
                 f"Trạng thái: {'tạm dừng' if s.paused else 'đang hoạt động'}\n"
-                f"Model: {s.model}, effort: {s.effort or 'mặc định'}\n"
+                f"Model: {s.model} ({self.chat_model().profile.describe()}), "
+                f"effort: {s.effort or 'mặc định'}\n"
                 f"Skills: {', '.join(s.skills) or '(không có)'}\n"
                 f"Thay đổi so với file cấu hình: {', '.join(st.overrides) or '(không có)'}\n\n"
                 f"*Prompt:*\n{s.system_prompt}"
@@ -170,11 +183,16 @@ class Employee:
                 return "Cú pháp: /ai prompt <nội dung>"
             st.set_override("system_prompt", rest)
             return "Đã cập nhật vai trò (system prompt)."
+        if sub == "models":
+            return "*Model AI đã khai báo*\n" + self.office.describe_models(current=s.model)
         if sub == "model":
-            if not rest.startswith("claude-"):
-                return "Cú pháp: /ai model <model id>, vd. claude-opus-5"
+            profile = self.office.config.model_profile(rest) if rest else None
+            if profile is None:
+                return "Cú pháp: /ai model <tên>. Các model đã khai báo:\n" + self.office.describe_models(
+                    s.model
+                )
             st.set_override("model", rest)
-            return f"Đã chuyển sang model {rest}."
+            return f"Đã gán model {rest} ({profile.describe()})."
         if sub == "effort":
             level = None if rest == "off" else rest
             if level is not None and level not in EFFORT_LEVELS:
@@ -230,14 +248,44 @@ def split_message(text: str, limit: int = MAX_MESSAGE_CHARS) -> list[str]:
 class Office:
     """All AI employees of one deployment, running in a single process."""
 
-    def __init__(self, config: AppConfig, llm: LLM):
+    def __init__(
+        self,
+        config: AppConfig,
+        anthropic_llm: LLM | None = None,
+        http: httpx2.AsyncClient | None = None,
+    ):
+        """`anthropic_llm` / `http` replace the network clients (used by tests)."""
         self.config = config
+        self._anthropic_llm = anthropic_llm
+        self._http = http
+        self._models: dict[str, ChatModel] = {}
         sk.load_plugins(config.plugins, config.plugin_paths)
         for e in config.employees:
             sk.resolve(e.skills)  # fail fast on unknown skills
         self.employees: dict[str, Employee] = {
-            e.id: Employee(e, self, llm, config.state_dir) for e in config.employees
+            e.id: Employee(e, self, config.state_dir) for e in config.employees
         }
+
+    def model_for(self, name: str) -> ChatModel | None:
+        """One client per declared model, shared by the employees assigned to it."""
+        if name not in self._models:
+            profile = self.config.model_profile(name)
+            if profile is None:
+                return None
+            self._models[name] = make_model(profile, self._anthropic_llm, self._http)
+        return self._models[name]
+
+    def describe_models(self, current: str | None = None) -> str:
+        names = list(self.config.models)
+        if current and current not in names:
+            names.append(current)  # a bare claude-* id in use
+        lines = []
+        for n in names:
+            p = self.config.model_profile(n)
+            if p is not None:
+                users = [e.id for e in self.employees.values() if e.settings.model == n]
+                lines.append(f"- {n}: {p.describe()}" + (f" — dùng bởi {', '.join(users)}" if users else ""))
+        return "\n".join(lines) or "(chưa khai báo model nào)"
 
     def roster(self, exclude: str, allowed: list[str] | None = None) -> str:
         lines = []

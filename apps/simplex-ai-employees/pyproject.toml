@@ -5,13 +5,14 @@ build-backend = "hatchling.build"
 [project]
 name = "simplex-ai-employees"
 version = "0.1.0"
-description = "AI employees on SimpleX Chat: chat accounts run by Claude agents with skills"
+description = "AI employees on SimpleX Chat: chat accounts run by AI agents (Claude or OpenAI-compatible models) with skills"
 readme = "README.md"
 license = "AGPL-3.0-only"
 requires-python = ">=3.11"
 dependencies = [
     "simplex-chat>=6.5.6",
     "anthropic>=1.8",
+    "httpx2",
     "pyyaml>=6",
     "tzdata; sys_platform == 'win32'",
 ]

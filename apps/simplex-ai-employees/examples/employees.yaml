@@ -7,14 +7,36 @@ state_dir: ./data/state          # admin overrides, memory, notes (JSON per empl
 # servers:
 #   smp: ["smp://<fingerprint>@smp.example.com"]
 
+# AI models: declare once (API endpoint, key, model name), then assign to employees by name.
+# Keys come from environment variables; they are never shown in chat.
+models:
+  claude:
+    provider: anthropic                 # Claude via the official Anthropic SDK
+    model: claude-opus-5
+    api_key_env: ANTHROPIC_API_KEY
+  gpt:
+    provider: openai                    # any OpenAI-compatible Chat Completions API
+    base_url: https://api.openai.com/v1
+    api_key_env: OPENAI_API_KEY
+    model: gpt-4.1                      # example: use a model your account has
+  gemini:
+    provider: openai                    # Gemini through its OpenAI-compatible endpoint
+    base_url: https://generativelanguage.googleapis.com/v1beta/openai
+    api_key_env: GEMINI_API_KEY
+    model: gemini-2.5-flash             # example
+  local:
+    provider: openai                    # a model on your own machine (Ollama), no key needed
+    base_url: http://localhost:11434/v1
+    model: qwen2.5:7b                   # example: must support tool calling
+    extra_body: {temperature: 0.3}      # any extra request fields for this API
+
 plugins: [shop_skills]           # Python modules that register extra skills
 plugin_paths: [./plugins]
 
 defaults:
-  model: claude-opus-5
-  effort: medium                 # low | medium | high | xhigh | max | null
+  model: claude                  # a name from models: (or a bare claude-* model id)
+  effort: medium                 # Claude only: low | medium | high | xhigh | max | null
   history_messages: 40           # remembered turns per contact
-  refusal_fallback: true         # server-side fallback model if a request is declined
   timezone: Asia/Ho_Chi_Minh
   admin_token_env: AI_ADMIN_TOKEN  # send "/admin <token>" to an employee to manage it in chat
 
@@ -35,6 +57,7 @@ employees:
       ask_colleague: {colleagues: [accountant]}
 
   - id: accountant
+    model: gemini
     display_name: Minh - Kế toán
     short_descr: Hoá đơn, thanh toán, công nợ
     db: ./data/accountant
@@ -46,3 +69,17 @@ employees:
     skills: [knowledge_search, handoff_to_human, current_time]
     skill_config:
       knowledge_search: {path: ./knowledge/accounting}
+
+  - id: writer
+    model: local
+    display_name: Hà - Viết nội dung
+    short_descr: Viết bài đăng, mô tả sản phẩm, email marketing
+    db: ./data/writer
+    welcome: Chào bạn, mình là Hà. Bạn cần viết nội dung gì?
+    system_prompt: |
+      Bạn là Hà, người viết nội dung marketing của công ty Minh An.
+      Viết bài đăng mạng xã hội, mô tả sản phẩm, email khuyến mãi theo yêu cầu.
+      Chỉ dùng thông tin sản phẩm, giá và khuyến mãi có trong tài liệu; giọng văn thân thiện, ngắn gọn.
+    skills: [knowledge_search, current_time]
+    skill_config:
+      knowledge_search: {path: ./knowledge/sales}
