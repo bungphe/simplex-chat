@@ -1,24 +1,32 @@
-"""An AI employee = one SimpleX account + an agent + chat-based admin commands."""
+"""An AI employee = one SimpleX account + an agent + chat-based admin commands.
+The office runs every employee, the routine scheduler and the admin web UI."""
 
 from __future__ import annotations
 
 import asyncio
 import hmac
+import json
 import logging
+import os
 from collections import defaultdict
 from contextlib import AsyncExitStack
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx2
 from simplex_chat import Bot, BotCommand, BotProfile, Message, SqliteDb
 
 from . import skills as sk
-from .agent import Agent
-from .config import EFFORT_LEVELS, AppConfig, EmployeeConfig
+from .actions import ActionDesk
+from .agent import Agent, RunResult
+from .config import EFFORT_LEVELS, AppConfig, ConfigError, EmployeeConfig, parse_models
 from .llm import LLM
-from .providers import ChatModel, make_model
-from .state import EmployeeState
+from .providers import ChatModel, ModelProfile, make_model
+from .routines import Routine
+from .runlog import RunLog
+from .state import EmployeeState, now_iso
 
 log = logging.getLogger(__name__)
 
@@ -28,13 +36,14 @@ ADMIN_HELP = """\
 *Lệnh quản trị nhân viên AI*
 /ai show — xem cấu hình hiện tại
 /ai prompt <nội dung> — đặt vai trò / hướng dẫn (system prompt)
-/ai models — xem các model AI đã khai báo
-/ai model <tên> — gán model cho nhân viên này
+/ai correct <quy tắc> — thêm quy tắc sửa sai (ưu tiên hơn prompt); /ai corrections; /ai uncorrect <số>
+/ai models — xem các model AI; /ai model <tên> — gán model
 /ai effort <low|medium|high|xhigh|max|off> — mức suy nghĩ
-/ai skills — xem skill đang bật và skill có sẵn
-/ai skill add <tên> — bật skill
-/ai skill remove <tên> — tắt skill
-/ai pause — tạm dừng tự động trả lời; /ai resume — bật lại
+/ai skills — xem skill; /ai skill add|remove <tên>
+/ai routines — lịch làm việc; /ai run <id> — chạy ngay; /ai routine pause|resume <id>
+/ai pending — yêu cầu chờ duyệt; /ai approve <số>; /ai reject <số> [lý do]
+/ai releases — hành động được tự làm; /ai release <hành động>; /ai hold <hành động>
+/ai pause — tạm dừng mọi việc; /ai resume — bật lại
 /ai forget all — xoá toàn bộ trí nhớ hội thoại
 /ai reset — bỏ mọi thay đổi, quay về file cấu hình"""
 
@@ -65,8 +74,9 @@ class Employee:
         self.office = office
         self.state = EmployeeState(Path(state_dir) / f"{cfg.id}.json")
         self.agent = Agent(self)
+        self.actions = ActionDesk(self)
         self._locks: defaultdict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
-        self._tasks: set[asyncio.Task[None]] = set()
+        self._tasks: set[asyncio.Task[Any]] = set()
         Path(cfg.db).parent.mkdir(parents=True, exist_ok=True)
         self.bot = EmployeeBot(
             smp_servers=office.config.smp_servers,
@@ -86,11 +96,20 @@ class Employee:
     def chat_model(self) -> ChatModel:
         """The model assigned to this employee (an admin may have reassigned it)."""
         model = self.office.model_for(self.settings.model)
-        if model is None:  # override names a model no longer declared in the config
+        if model is None:  # override names a model no longer declared
             log.error("%s: model %s is not declared; using %s", self.id, self.settings.model, self.base.model)
             model = self.office.model_for(self.base.model)
         assert model is not None  # the config file's model is validated at load
         return model
+
+    def log(self, kind: str, status: str, **fields: Any) -> None:
+        self.office.runlog.append(employee=self.id, kind=kind, status=status, **fields)
+
+    def _spawn(self, coro: Any) -> asyncio.Task[Any]:
+        task = asyncio.create_task(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return task
 
     # ------------------------------------------------------------------ #
     # Incoming messages
@@ -104,15 +123,13 @@ class Employee:
         if text.startswith("/"):
             word, _, rest = text[1:].partition(" ")
             if word in ("admin", "ai", "forget"):
-                await msg.reply(self.command(cid, word, rest.strip()))
+                await msg.reply(await self.command(cid, word, rest.strip(), by=name))
                 return
         if self.settings.paused or not text:
             return
         # Answer in the background so one slow reply doesn't block other chats;
         # the per-contact lock keeps each contact's replies in order.
-        task = asyncio.create_task(self._answer(msg, cid, name, text))
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+        self._spawn(self._answer(msg, cid, name, text))
 
     async def _on_other(self, msg: Message[Any]) -> None:
         if not self.settings.paused:
@@ -124,6 +141,7 @@ class Employee:
                 answer = await self.agent.respond(cid, name, text)
             except Exception:
                 log.exception("%s: failed to answer %s", self.id, name)
+                self.log("reply", "error", contact=cid)
                 return
             chunks = split_message(answer)
             await msg.reply(chunks[0])
@@ -134,17 +152,78 @@ class Employee:
         sent = 0
         for cid in self.state.admins:
             try:
-                await self.bot.api.api_send_text_message(["direct", cid], text)
+                for chunk in split_message(text):
+                    await self.bot.api.api_send_text_message(["direct", cid], chunk)
                 sent += 1
             except Exception:
                 log.exception("%s: cannot notify admin contact %s", self.id, cid)
         return sent
 
     # ------------------------------------------------------------------ #
+    # Routines
+    # ------------------------------------------------------------------ #
+
+    def local_now(self, now: datetime | None = None) -> datetime:
+        return (now or datetime.now(UTC)).astimezone(ZoneInfo(self.settings.timezone))
+
+    def start_due_routines(self, now: datetime | None = None) -> list[asyncio.Task[RunResult]]:
+        """Start every routine whose window is open and whose period has not run yet."""
+        s = self.settings
+        if s.paused:
+            return []
+        local = self.local_now(now)
+        started = []
+        for r in s.routines:
+            if r.id in s.paused_routines or not r.in_window(local):
+                continue
+            key = r.period_key(local)
+            if self.state.routine(r.id).get("period") == key:
+                continue
+            # Mark the period before the work, so a crash is not retried in a loop.
+            self.state.update_routine(r.id, period=key, started=now_iso())
+            started.append(self._spawn(self.run_routine(r, local)))
+        return started
+
+    async def run_routine(self, r: Routine, local: datetime, manual: bool = False) -> RunResult:
+        try:
+            res = await self.agent.run_routine(r, local)
+        except Exception:
+            log.exception("%s: routine %s failed", self.id, r.id)
+            res = RunResult("Routine failed with an internal error.", "error")
+        delivered = 0
+        if r.deliver == "admins":
+            delivered = await self.notify_admins(
+                f"📋 *{self.settings.display_name} — {r.id}* ({local:%d/%m %H:%M})\n\n{res.text}"
+            )
+        self.state.update_routine(
+            r.id, last_run=now_iso(), last_status=res.status, last_output=res.text[:4000], manual=manual
+        )
+        self.log("routine", res.status, routine=r.id, manual=manual, delivered=delivered, **res.log_fields())
+        return res
+
+    def describe_routines(self) -> str:
+        s = self.settings
+        if not s.routines:
+            return "Nhân viên này chưa có lịch làm việc."
+        local = self.local_now()
+        lines = ["*Lịch làm việc*"]
+        for r in s.routines:
+            st = self.state.routine(r.id)
+            nxt = r.next_start(local, st.get("period"))
+            state = (
+                "tạm dừng" if r.id in s.paused_routines else (f"lần tới {nxt:%d/%m %H:%M}" if nxt else "-")
+            )
+            lines.append(
+                f"• {r.id}: {r.describe()} — {state}; lần chạy trước: {st.get('last_run', 'chưa')}"
+                f" ({st.get('last_status', '-')})"
+            )
+        return "\n".join(lines)
+
+    # ------------------------------------------------------------------ #
     # Chat commands
     # ------------------------------------------------------------------ #
 
-    def command(self, cid: int, word: str, args: str) -> str:
+    async def command(self, cid: int, word: str, args: str, by: str = "") -> str:
         if word == "forget":
             self.state.forget(cid)
             return "Đã xoá lịch sử trò chuyện của bạn. / Your conversation history was deleted."
@@ -156,12 +235,14 @@ class Employee:
                 log.warning("%s: wrong admin token from contact %s", self.id, cid)
                 return "Mã quản trị không đúng."
             self.state.add_admin(cid)
+            if by:
+                self.state.remember_contact(cid, by)
             return f"Bạn đã là quản trị viên của {self.base.display_name}.\n\n{ADMIN_HELP}"
         if not self.state.is_admin(cid):
             return "Lệnh này chỉ dành cho quản trị viên. Gửi /admin <mã> để đăng nhập."
-        return self._admin(args)
+        return await self._admin(args, by=by or f"contact #{cid}")
 
-    def _admin(self, args: str) -> str:
+    async def _admin(self, args: str, by: str) -> str:
         sub, _, rest = args.partition(" ")
         rest = rest.strip()
         s = self.settings
@@ -175,6 +256,8 @@ class Employee:
                 f"Model: {s.model} ({self.chat_model().profile.describe()}), "
                 f"effort: {s.effort or 'mặc định'}\n"
                 f"Skills: {', '.join(s.skills) or '(không có)'}\n"
+                f"Được tự làm: {', '.join(s.releases) or '(không, mọi hành động chờ duyệt)'}\n"
+                f"Lịch làm việc: {', '.join(r.id for r in s.routines) or '(không có)'}\n"
                 f"Thay đổi so với file cấu hình: {', '.join(st.overrides) or '(không có)'}\n\n"
                 f"*Prompt:*\n{s.system_prompt}"
             )
@@ -183,10 +266,26 @@ class Employee:
                 return "Cú pháp: /ai prompt <nội dung>"
             st.set_override("system_prompt", rest)
             return "Đã cập nhật vai trò (system prompt)."
+        if sub == "correct":
+            if not rest:
+                return "Cú pháp: /ai correct <quy tắc>"
+            self.add_correction(rest)
+            return f"Đã thêm quy tắc #{len(self.settings.corrections)}. Có hiệu lực từ tin nhắn tiếp theo."
+        if sub == "corrections":
+            return "*Quy tắc sửa sai*\n" + (
+                "\n".join(f"{i}. ({c['date']}) {c['text']}" for i, c in enumerate(s.corrections, 1))
+                or "(chưa có)"
+            )
+        if sub == "uncorrect":
+            try:
+                self.remove_correction(int(rest))
+            except (ValueError, IndexError):
+                return "Cú pháp: /ai uncorrect <số>, xem số bằng /ai corrections"
+            return f"Đã xoá quy tắc #{rest}."
         if sub == "models":
             return "*Model AI đã khai báo*\n" + self.office.describe_models(current=s.model)
         if sub == "model":
-            profile = self.office.config.model_profile(rest) if rest else None
+            profile = self.office.model_profile(rest) if rest else None
             if profile is None:
                 return "Cú pháp: /ai model <tên>. Các model đã khai báo:\n" + self.office.describe_models(
                     s.model
@@ -203,24 +302,64 @@ class Employee:
             return f"Đang bật: {', '.join(s.skills) or '(không có)'}\nCó sẵn: {', '.join(sk.available())}"
         if sub == "skill":
             action, _, name = rest.partition(" ")
-            name = name.strip()
-            enabled = list(s.skills)
-            if action == "add":
-                if name not in sk.available():
-                    return f"Không có skill '{name}'. Có sẵn: {', '.join(sk.available())}"
-                if name not in enabled:
-                    enabled.append(name)
-            elif action == "remove":
-                if name not in enabled:
-                    return f"Skill '{name}' đang không bật."
-                enabled.remove(name)
-            else:
+            try:
+                enabled = (
+                    self.set_skill(name.strip(), action == "add") if action in ("add", "remove") else None
+                )
+            except KeyError as e:
+                return str(e.args[0])
+            if enabled is None:
                 return "Cú pháp: /ai skill add|remove <tên>"
-            st.set_override("skills", enabled)
             return f"Skills: {', '.join(enabled) or '(không có)'}"
+        if sub == "routines":
+            return self.describe_routines()
+        if sub == "run":
+            r = s.routine(rest)
+            if r is None:
+                return f"Không có lịch '{rest}'. " + self.describe_routines()
+            self._spawn(self.run_routine(r, self.local_now(), manual=True))
+            return f"Đang chạy {r.id}; kết quả sẽ được gửi khi xong."
+        if sub == "routine":
+            action, _, rid = rest.partition(" ")
+            if action not in ("pause", "resume") or s.routine(rid.strip()) is None:
+                return "Cú pháp: /ai routine pause|resume <id>"
+            self.set_routine_paused(rid.strip(), action == "pause")
+            return f"Đã {'tạm dừng' if action == 'pause' else 'bật lại'} lịch {rid.strip()}."
+        if sub == "pending":
+            pending = self.actions.pending()
+            if not pending:
+                return "Không có yêu cầu nào chờ duyệt."
+            return "*Chờ duyệt*\n" + "\n".join(
+                f"#{a['id']} {a['action']} — {a.get('contact_name', '')}: "
+                + ", ".join(f"{k}={v}" for k, v in a["args"].items())
+                for a in pending
+            )
+        if sub in ("approve", "reject"):
+            num, _, reason = rest.partition(" ")
+            if not num.lstrip("#").isdigit():
+                return f"Cú pháp: /ai {sub} <số>" + (" [lý do]" if sub == "reject" else "")
+            if sub == "approve":
+                return await self.actions.approve(int(num.lstrip("#")), by=by)
+            return await self.actions.reject(int(num.lstrip("#")), by=by, reason=reason.strip())
+        if sub == "releases":
+            names = list(self.office.config.actions)
+            return (
+                f"Được tự làm (không cần duyệt): {', '.join(s.releases) or '(không có)'}\n"
+                f"Hành động đã khai báo: {', '.join(names) or '(không có)'}"
+            )
+        if sub in ("release", "hold"):
+            try:
+                self.set_release(rest, sub == "release")
+            except KeyError as e:
+                return str(e.args[0])
+            return (
+                f"{rest} sẽ được thực hiện ngay, không cần duyệt."
+                if sub == "release"
+                else f"{rest} sẽ chờ duyệt trước khi thực hiện."
+            )
         if sub in ("pause", "resume"):
             st.set_override("paused", sub == "pause")
-            return "Đã tạm dừng tự động trả lời." if sub == "pause" else "Đã bật lại tự động trả lời."
+            return "Đã tạm dừng mọi việc." if sub == "pause" else "Đã bật lại."
         if sub == "forget" and rest == "all":
             st.forget()
             return "Đã xoá toàn bộ trí nhớ hội thoại."
@@ -228,6 +367,48 @@ class Employee:
             st.clear_overrides()
             return "Đã quay về cấu hình trong file."
         return "Lệnh không hợp lệ.\n\n" + ADMIN_HELP
+
+    # Settings changes shared by chat commands and the admin web UI.
+
+    def add_correction(self, text: str) -> None:
+        corrections = [
+            *self.settings.corrections,
+            {"date": f"{self.local_now():%Y-%m-%d}", "text": text.strip()},
+        ]
+        self.state.set_override("corrections", corrections)
+
+    def remove_correction(self, number: int) -> None:
+        corrections = list(self.settings.corrections)
+        if not 1 <= number <= len(corrections):
+            raise IndexError(number)
+        del corrections[number - 1]
+        self.state.set_override("corrections", corrections)
+
+    def set_skill(self, name: str, enabled: bool) -> list[str]:
+        skills = list(self.settings.skills)
+        if enabled:
+            if name not in sk.available():
+                raise KeyError(f"Không có skill '{name}'. Có sẵn: {', '.join(sk.available())}")
+            if name not in skills:
+                skills.append(name)
+        else:
+            if name not in skills:
+                raise KeyError(f"Skill '{name}' đang không bật.")
+            skills.remove(name)
+        self.state.set_override("skills", skills)
+        return skills
+
+    def set_release(self, action: str, released: bool) -> None:
+        if action not in self.office.config.actions:
+            raise KeyError(
+                f"Không có hành động '{action}'. Đã khai báo: {', '.join(self.office.config.actions)}"
+            )
+        releases = [a for a in self.settings.releases if a != action] + ([action] if released else [])
+        self.state.set_override("releases", releases)
+
+    def set_routine_paused(self, routine_id: str, paused: bool) -> None:
+        ids = [r for r in self.settings.paused_routines if r != routine_id] + ([routine_id] if paused else [])
+        self.state.set_override("paused_routines", ids)
 
 
 def split_message(text: str, limit: int = MAX_MESSAGE_CHARS) -> list[str]:
@@ -245,6 +426,17 @@ def split_message(text: str, limit: int = MAX_MESSAGE_CHARS) -> list[str]:
     return chunks
 
 
+def prepare_skills(config: AppConfig) -> None:
+    """Load plugin skills, register webhook actions as skills, and check every employee's list."""
+    sk.load_plugins(config.plugins, config.plugin_paths)
+    for name, action in config.actions.items():
+        if name in sk.BUILTIN:
+            raise ConfigError(f"action {name} has the same name as a built-in skill")
+        sk.REGISTRY[name] = action.skill()
+    for e in config.employees:
+        sk.resolve(e.skills)  # fail fast on unknown skills
+
+
 class Office:
     """All AI employees of one deployment, running in a single process."""
 
@@ -253,35 +445,85 @@ class Office:
         config: AppConfig,
         anthropic_llm: LLM | None = None,
         http: httpx2.AsyncClient | None = None,
+        tick_seconds: float = 30.0,
     ):
         """`anthropic_llm` / `http` replace the network clients (used by tests)."""
         self.config = config
         self._anthropic_llm = anthropic_llm
         self._http = http
         self._models: dict[str, ChatModel] = {}
-        sk.load_plugins(config.plugins, config.plugin_paths)
-        for e in config.employees:
-            sk.resolve(e.skills)  # fail fast on unknown skills
+        self.tick_seconds = tick_seconds
+        self._stopping = asyncio.Event()
+        self.runlog = RunLog(Path(config.state_dir) / "runlog.jsonl")
+        self._office_file = Path(config.state_dir) / "office.json"
+        self.runtime_models: dict[str, dict[str, Any]] = self._load_office_file().get("models", {})
+        prepare_skills(config)
         self.employees: dict[str, Employee] = {
             e.id: Employee(e, self, config.state_dir) for e in config.employees
         }
 
+    @property
+    def http_client(self) -> httpx2.AsyncClient:
+        if self._http is None:
+            self._http = httpx2.AsyncClient(timeout=60.0)
+        return self._http
+
+    # models: declared in the config, or added at runtime from the admin UI
+
+    def _load_office_file(self) -> dict[str, Any]:
+        if self._office_file.exists():
+            return json.loads(self._office_file.read_text(encoding="utf-8"))
+        return {}
+
+    def _save_office_file(self) -> None:
+        self._office_file.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self._office_file.with_suffix(".tmp")
+        # Runtime models may carry API keys: owner-only permissions.
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump({"models": self.runtime_models}, f, ensure_ascii=False, indent=1)
+        os.replace(tmp, self._office_file)
+
+    def model_profile(self, name: str) -> ModelProfile | None:
+        if name in self.runtime_models:
+            return parse_models({name: self.runtime_models[name]})[name]
+        return self.config.model_profile(name)
+
+    def model_names(self) -> list[str]:
+        return [*self.config.models, *(n for n in self.runtime_models if n not in self.config.models)]
+
+    def add_runtime_model(self, name: str, raw: dict[str, Any]) -> ModelProfile:
+        if name in self.config.models:
+            raise ConfigError(f"model {name} is declared in the config file; edit it there")
+        profile = parse_models({name: raw})[name]  # validates
+        self.runtime_models[name] = raw
+        self._models.pop(name, None)
+        self._save_office_file()
+        return profile
+
+    def remove_runtime_model(self, name: str) -> None:
+        if name not in self.runtime_models:
+            raise KeyError(name)
+        del self.runtime_models[name]
+        self._models.pop(name, None)
+        self._save_office_file()
+
     def model_for(self, name: str) -> ChatModel | None:
-        """One client per declared model, shared by the employees assigned to it."""
+        """One client per model, shared by the employees assigned to it."""
         if name not in self._models:
-            profile = self.config.model_profile(name)
+            profile = self.model_profile(name)
             if profile is None:
                 return None
             self._models[name] = make_model(profile, self._anthropic_llm, self._http)
         return self._models[name]
 
     def describe_models(self, current: str | None = None) -> str:
-        names = list(self.config.models)
+        names = self.model_names()
         if current and current not in names:
             names.append(current)  # a bare claude-* id in use
         lines = []
         for n in names:
-            p = self.config.model_profile(n)
+            p = self.model_profile(n)
             if p is not None:
                 users = [e.id for e in self.employees.values() if e.settings.model == n]
                 lines.append(f"- {n}: {p.describe()}" + (f" — dùng bởi {', '.join(users)}" if users else ""))
@@ -296,13 +538,39 @@ class Office:
             lines.append(f"- {e.id}: {s.display_name}" + (f" — {s.short_descr}" if s.short_descr else ""))
         return "\n".join(lines)
 
+    # running
+
+    def tick(self, now: datetime | None = None) -> list[asyncio.Task[RunResult]]:
+        """One scheduler pass: start every due routine of every employee."""
+        started: list[asyncio.Task[RunResult]] = []
+        for e in self.employees.values():
+            try:
+                started += e.start_due_routines(now)
+            except Exception:
+                log.exception("%s: scheduler failed", e.id)
+        return started
+
+    async def _scheduler(self) -> None:
+        while not self._stopping.is_set():
+            self.tick()
+            try:
+                await asyncio.wait_for(self._stopping.wait(), timeout=self.tick_seconds)
+            except TimeoutError:
+                pass
+
     async def run(self) -> None:
         async with AsyncExitStack() as stack:
             for e in self.employees.values():
                 await stack.enter_async_context(e.bot)
                 log.info("%s (%s) address: %s", e.base.display_name, e.id, e.bot.address)
-            await asyncio.gather(*(e.bot.serve_forever() for e in self.employees.values()))
+            if self.config.admin_ui:
+                from .web import start_admin_ui
+
+                runner = await start_admin_ui(self, self.config.admin_ui)
+                stack.push_async_callback(runner.cleanup)
+            await asyncio.gather(self._scheduler(), *(e.bot.serve_forever() for e in self.employees.values()))
 
     def stop(self) -> None:
+        self._stopping.set()
         for e in self.employees.values():
             e.bot.stop()

@@ -6,16 +6,29 @@ import os
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
+from .actions import ActionDef, parse_action
 from .providers import PROVIDERS, ModelProfile, fallback_default
+from .routines import Routine, parse_routine
 
 DEFAULT_MODEL = "claude-opus-5"
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 
 # Fields an admin may change at runtime with `/ai ...`; persisted as overrides.
-OVERRIDABLE = ("system_prompt", "model", "effort", "skills", "paused")
+OVERRIDABLE = (
+    "system_prompt",
+    "model",
+    "effort",
+    "skills",
+    "paused",
+    "releases",
+    "corrections",
+    "paused_routines",
+)
+_TUPLES = ("skills", "releases", "corrections", "paused_routines")
 
 
 class ConfigError(Exception):
@@ -40,12 +53,27 @@ class EmployeeConfig:
     admin_token: str | None = None
     timezone: str = "Asia/Ho_Chi_Minh"
     paused: bool = False
+    routines: tuple[Routine, ...] = ()
+    releases: tuple[str, ...] = ()  # actions this employee may perform without approval
+    corrections: tuple[dict[str, str], ...] = ()  # dated rules from managers, set in chat or the UI
+    paused_routines: tuple[str, ...] = ()
 
     def with_overrides(self, overrides: dict[str, Any]) -> EmployeeConfig:
         known = {k: v for k, v in overrides.items() if k in OVERRIDABLE}
-        if "skills" in known:
-            known["skills"] = tuple(known["skills"])
+        for k in _TUPLES:
+            if k in known:
+                known[k] = tuple(known[k])
         return replace(self, **known)
+
+    def routine(self, routine_id: str) -> Routine | None:
+        return next((r for r in self.routines if r.id == routine_id), None)
+
+
+@dataclass(frozen=True)
+class AdminUIConfig:
+    host: str = "127.0.0.1"
+    port: int = 8080
+    password: str | None = None
 
 
 @dataclass(frozen=True)
@@ -56,6 +84,8 @@ class AppConfig:
     plugins: tuple[str, ...] = ()
     plugin_paths: tuple[str, ...] = ()
     models: dict[str, ModelProfile] = field(default_factory=dict)
+    actions: dict[str, ActionDef] = field(default_factory=dict)
+    admin_ui: AdminUIConfig | None = None
 
     def model_profile(self, name: str) -> ModelProfile | None:
         """A declared model by name, or an implicit Claude model for a bare `claude-*` id."""
@@ -85,6 +115,12 @@ def parse_config(raw: dict[str, Any], base_dir: Path) -> AppConfig:
         return str((base_dir / p).resolve()) if not os.path.isabs(p) else p
 
     models = parse_models(raw.get("models") or {})
+    actions: dict[str, ActionDef] = {}
+    for name, a in (raw.get("actions") or {}).items():
+        try:
+            actions[name] = parse_action(name, a or {})
+        except ValueError as e:
+            raise ConfigError(str(e)) from None
     defaults = raw.get("defaults") or {}
     employees = []
     seen: set[str] = set()
@@ -118,6 +154,23 @@ def parse_config(raw: dict[str, Any], base_dir: Path) -> AppConfig:
             if isinstance(opts.get("path"), str):
                 opts["path"] = resolve(opts["path"])
 
+        timezone = merged.get("timezone", "Asia/Ho_Chi_Minh")
+        try:
+            ZoneInfo(timezone)
+        except (ZoneInfoNotFoundError, ValueError):
+            raise ConfigError(f"employee {emp_id}: unknown timezone '{timezone}'") from None
+        routines = []
+        for r in merged.get("routines") or []:
+            try:
+                routines.append(parse_routine(r or {}))
+            except ValueError as err:
+                raise ConfigError(f"employee {emp_id}: {err}") from None
+        if len({r.id for r in routines}) != len(routines):
+            raise ConfigError(f"employee {emp_id}: duplicate routine id")
+        releases = tuple(merged.get("releases") or ())
+        if unknown := [a for a in releases if a not in actions]:
+            raise ConfigError(f"employee {emp_id}: releases name unknown actions: {', '.join(unknown)}")
+
         employees.append(
             EmployeeConfig(
                 id=emp_id,
@@ -134,7 +187,9 @@ def parse_config(raw: dict[str, Any], base_dir: Path) -> AppConfig:
                 welcome=merged.get("welcome"),
                 short_descr=merged.get("short_descr"),
                 admin_token=token,
-                timezone=merged.get("timezone", "Asia/Ho_Chi_Minh"),
+                timezone=timezone,
+                routines=tuple(routines),
+                releases=releases,
             )
         )
     if not employees:
@@ -148,6 +203,21 @@ def parse_config(raw: dict[str, Any], base_dir: Path) -> AppConfig:
         plugins=tuple(raw.get("plugins") or ()),
         plugin_paths=tuple(resolve(p) for p in raw.get("plugin_paths") or ()),
         models=models,
+        actions=actions,
+        admin_ui=parse_admin_ui(raw.get("admin_ui")),
+    )
+
+
+def parse_admin_ui(raw: dict[str, Any] | None) -> AdminUIConfig | None:
+    if not raw:
+        return None
+    password = raw.get("password")
+    if env := raw.get("password_env"):
+        password = os.environ.get(env) or password
+    return AdminUIConfig(
+        host=str(raw.get("host", "127.0.0.1")),
+        port=int(raw.get("port", 8080)),
+        password=password,
     )
 
 

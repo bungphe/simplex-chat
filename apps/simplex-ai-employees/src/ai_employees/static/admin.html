@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Quản trị nhân viên AI</title>
+  <link rel="stylesheet" href="/static/admin.css">
+  <script src="/static/admin.js" defer></script>
+</head>
+<body>
+  <section id="login" class="login" hidden>
+    <form id="login-form" class="card login-card">
+      <h1>Quản trị nhân viên AI</h1>
+      <label>Mật khẩu
+        <input id="login-password" type="password" autocomplete="current-password" required autofocus>
+      </label>
+      <button type="submit" class="primary">Đăng nhập</button>
+      <p id="login-error" class="error" role="alert"></p>
+    </form>
+  </section>
+
+  <div id="app" hidden>
+    <header class="topbar">
+      <div class="brand">Nhân viên AI</div>
+      <nav id="nav">
+        <button data-view="overview">Tổng quan</button>
+        <button data-view="employees">Nhân viên</button>
+        <button data-view="approvals">Chờ duyệt <span id="badge" class="badge" hidden></span></button>
+        <button data-view="models">Model AI</button>
+        <button data-view="conversations">Hội thoại</button>
+        <button data-view="runlog">Nhật ký</button>
+      </nav>
+      <button id="logout" class="ghost">Đăng xuất</button>
+    </header>
+    <main id="view"></main>
+    <div id="toast" class="toast" role="status" hidden></div>
+  </div>
+</body>
+</html>

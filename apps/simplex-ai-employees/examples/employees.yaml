@@ -30,6 +30,27 @@ models:
     model: qwen2.5:7b                   # example: must support tool calling
     extra_body: {temperature: 0.3}      # any extra request fields for this API
 
+# Outbound actions: webhooks into your own systems (API, n8n, Zapier, Make, CRM...).
+# Each becomes a skill. Requests wait for a manager's approval ("/ai approve <n>")
+# unless the employee's managers released the action (releases: or "/ai release").
+actions:
+  create_order:
+    description: Create a sales order in the shop system.
+    url: https://n8n.example.com/webhook/create-order
+    headers: {Authorization: "Bearer ${ORDER_WEBHOOK_TOKEN}"}   # ${ENV} is read at send time
+    fields:
+      customer_name: Customer's full name
+      phone: Customer's phone number
+      address: Delivery address
+      items: Products and quantities
+    confirm_message: Đơn hàng của bạn đã được xác nhận. Cảm ơn bạn!
+
+# Admin web UI (optional). Open http://127.0.0.1:8080 and log in with the password.
+admin_ui:
+  host: 127.0.0.1
+  port: 8080
+  password_env: AI_ADMIN_PASSWORD
+
 plugins: [shop_skills]           # Python modules that register extra skills
 plugin_paths: [./plugins]
 
@@ -51,10 +72,18 @@ employees:
       Nhiệm vụ: tư vấn sản phẩm, báo giá theo bảng giá, kiểm tra đơn hàng, ghi nhận nhu cầu khách.
       Không tự đặt ra giá hoặc khuyến mãi ngoài tài liệu. Câu hỏi về hoá đơn, công nợ,
       thanh toán thì hỏi đồng nghiệp kế toán. Khách muốn gặp người thật thì chuyển tiếp.
-    skills: [knowledge_search, notes, order_status, ask_colleague, handoff_to_human, current_time]
+    skills: [knowledge_search, notes, order_status, create_order, ask_colleague, handoff_to_human,
+             current_time, recent_conversations]
     skill_config:
       knowledge_search: {path: ./knowledge/sales}
       ask_colleague: {colleagues: [accountant]}
+    routines:
+      - id: morning-brief
+        days: mon-fri
+        at: "08:00"
+        task: |
+          Đọc các hội thoại 24 giờ qua. Tóm tắt cho quản lý: khách nào quan tâm sản phẩm nào,
+          ai cần gọi lại, câu hỏi nào mình chưa trả lời được. Tối đa 10 dòng.
 
   - id: accountant
     model: gemini
@@ -66,9 +95,15 @@ employees:
       Bạn là Minh, nhân viên kế toán của công ty Minh An.
       Trả lời về hoá đơn VAT, phương thức thanh toán, công nợ theo đúng quy định trong tài liệu.
       Không cung cấp thông tin tài chính nội bộ. Yêu cầu hoàn tiền phải chuyển cho người phụ trách.
-    skills: [knowledge_search, handoff_to_human, current_time]
+    skills: [knowledge_search, handoff_to_human, current_time, recent_conversations]
     skill_config:
       knowledge_search: {path: ./knowledge/accounting}
+    routines:
+      - id: weekly-invoices
+        days: fri
+        at: "16:00"
+        period: week
+        task: Liệt kê các yêu cầu xuất hoá đơn VAT trong tuần và thông tin còn thiếu của từng khách.
 
   - id: writer
     model: local
@@ -83,3 +118,19 @@ employees:
     skills: [knowledge_search, current_time]
     skill_config:
       knowledge_search: {path: ./knowledge/sales}
+
+  - id: chief
+    model: claude
+    display_name: Quân - Chánh văn phòng
+    short_descr: Giám sát các nhân viên AI, báo cáo cho chủ
+    db: ./data/chief
+    system_prompt: |
+      Bạn là Quân, chánh văn phòng. Bạn giám sát các nhân viên AI khác và báo cáo cho chủ doanh nghiệp.
+      Mỗi báo cáo nêu: ai đang tạm dừng hoặc lỗi, yêu cầu nào chờ duyệt quá lâu, lịch làm việc nào không chạy,
+      và tối đa ba việc chủ nên làm hôm nay. Ngắn gọn, đi thẳng vào việc.
+    skills: [office_report, current_time]
+    routines:
+      - id: end-of-day
+        days: mon-fri
+        at: "17:30"
+        task: Dùng office_report cho 24 giờ qua và viết báo cáo cuối ngày cho chủ.

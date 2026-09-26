@@ -151,18 +151,20 @@ def test_model_declarations(tmp_path):
             build()
 
 
-def test_admin_assigns_declared_models(tmp_path):
+async def test_admin_assigns_declared_models(tmp_path):
     office = make_office(tmp_path, ScriptedLLM(), models=LOCAL)
     sales = office.employees["sales"]
-    sales.command(5, "admin", "secret-token")
+    await sales.command(5, "admin", "secret-token")
 
-    listing = sales.command(5, "ai", "models")
+    listing = await sales.command(5, "ai", "models")
     assert "- local: openai: qwen-test @ llm.local" in listing
     assert "- claude-opus-5: anthropic: claude-opus-5 — dùng bởi sales, accountant" in listing
-    assert "Các model đã khai báo" in sales.command(5, "ai", "model gpt-9")
-    assert sales.command(5, "ai", "model local") == "Đã gán model local (openai: qwen-test @ llm.local)."
+    assert "Các model đã khai báo" in await sales.command(5, "ai", "model gpt-9")
+    assert (
+        await sales.command(5, "ai", "model local") == "Đã gán model local (openai: qwen-test @ llm.local)."
+    )
     assert sales.chat_model().profile.name == "local"
-    assert "Model: local (openai: qwen-test @ llm.local)" in sales.command(5, "ai", "show")
+    assert "Model: local (openai: qwen-test @ llm.local)" in await sales.command(5, "ai", "show")
     # an override naming a model removed from the config falls back to the configured one
     sales.state.set_override("model", "removed")
     assert sales.chat_model().profile.name == "claude-opus-5"

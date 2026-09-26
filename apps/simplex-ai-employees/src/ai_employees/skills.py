@@ -22,7 +22,7 @@ import sys
 import unicodedata
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -54,6 +54,9 @@ class Skill:
     input_schema: dict[str, Any] | None = None
     handler: Handler | None = None
     server_tool: dict[str, Any] | None = None
+    # Internal skills read other contacts' data or office internals: offered only in
+    # scheduled routines and to admins, never while serving an ordinary contact.
+    internal: bool = False
 
     def openai_tool(self) -> dict[str, Any]:
         """Function-tool definition for OpenAI-compatible Chat Completions APIs.
@@ -92,7 +95,7 @@ GROUPS: dict[str, tuple[str, ...]] = {"notes": ("remember", "recall")}
 
 
 def skill(
-    name: str, description: str, properties: dict[str, Any] | None = None
+    name: str, description: str, properties: dict[str, Any] | None = None, internal: bool = False
 ) -> Callable[[Handler], Handler]:
     """Register a client skill. Every property is required (strict tool schema)."""
     properties = properties or {}
@@ -104,7 +107,9 @@ def skill(
     }
 
     def deco(fn: Handler) -> Handler:
-        REGISTRY[name] = Skill(name=name, description=description, input_schema=schema, handler=fn)
+        REGISTRY[name] = Skill(
+            name=name, description=description, input_schema=schema, handler=fn, internal=internal
+        )
         return fn
 
     return deco
@@ -257,3 +262,63 @@ register_server_tool(
     "Search the web (runs on Anthropic's servers).",
     {"type": "web_search_20260209", "name": "web_search", "max_uses": 3},
 )
+
+
+@skill(
+    "recent_conversations",
+    "Read your own recent conversations with contacts, for summaries and follow-ups.",
+    {"hours": {"type": "integer", "description": "How many hours back to read, e.g. 24"}},
+    internal=True,
+)
+def recent_conversations(ctx: SkillContext, hours: int) -> str:
+    since = datetime.now().astimezone() - timedelta(hours=max(1, min(int(hours), 24 * 31)))
+    state = ctx.employee.state
+    limit = int(ctx.options.get("max_chars", 12000))
+    parts: list[str] = []
+    for cid, name in state.contacts.items():
+        turns = [
+            t for t in state.timed_history(cid) if "ts" in t and datetime.fromisoformat(t["ts"]) >= since
+        ]
+        if turns:
+            lines = [f"{'Contact' if t['role'] == 'user' else 'You'}: {t['content'][:400]}" for t in turns]
+            parts.append(f"## {name} (contact #{cid}, {len(turns) // 2} exchanges)\n" + "\n".join(lines))
+    if not parts:
+        return f"No conversations in the last {hours} hours."
+    text = "\n\n".join(parts)
+    return text[:limit] + ("\n[truncated]" if len(text) > limit else "")
+
+
+@skill(
+    "office_report",
+    "Report on every AI employee in the office: activity, errors, refusals, pending approvals "
+    "and scheduled routine results. For supervising the team.",
+    {"hours": {"type": "integer", "description": "How many hours back to report on, e.g. 24"}},
+    internal=True,
+)
+def office_report(ctx: SkillContext, hours: int) -> str:
+    office = ctx.employee.office
+    stats = office.runlog.summary(hours=max(1, min(int(hours), 24 * 31)))
+    lines = [f"Office report for the last {hours} hours:"]
+    for e in office.employees.values():
+        s = e.settings
+        st = stats.get(e.id, {})
+        status = "PAUSED" if s.paused else "active"
+        lines.append(f"\n## {s.display_name} ({e.id}), {status}, model {s.model}")
+        lines.append(
+            f"work items: {st.get('total', 0)} {st.get('by_kind', {})}; outcomes: {st.get('by_status', {})}; "
+            f"last activity: {st.get('last') or 'none'}"
+        )
+        pending = e.actions.pending()
+        if pending:
+            ids = ", ".join(f"#{a['id']} {a['action']}" for a in pending)
+            lines.append(f"pending approvals: {ids}")
+        for r in s.routines:
+            rs = e.state.routine(r.id)
+            paused = " (paused)" if r.id in s.paused_routines else ""
+            lines.append(
+                f"routine {r.id}{paused}: last run {rs.get('last_run', 'never')}, status {rs.get('last_status', '-')}"
+            )
+    return "\n".join(lines)
+
+
+BUILTIN = frozenset(REGISTRY)

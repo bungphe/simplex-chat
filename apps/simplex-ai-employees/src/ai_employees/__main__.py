@@ -10,7 +10,7 @@ import sys
 
 from . import skills as sk
 from .config import ConfigError, load_config
-from .employee import Office
+from .employee import Office, prepare_skills
 
 
 def main() -> None:
@@ -25,10 +25,8 @@ def main() -> None:
     )
     try:
         config = load_config(args.config)
-        sk.load_plugins(config.plugins, config.plugin_paths)
-        for e in config.employees:
-            sk.resolve(e.skills)
-    except (ConfigError, KeyError, ImportError) as e:
+        prepare_skills(config)
+    except (ConfigError, KeyError, ImportError, ValueError) as e:
         sys.exit(f"config error: {e}")
 
     if args.command == "check":
@@ -41,9 +39,23 @@ def main() -> None:
                 f"{e.id}: {e.display_name} | model={e.model} ({profile.describe() if profile else '?'}) "
                 f"| skills: {', '.join(sk.expand(e.skills))}"
             )
+            for r in e.routines:
+                print(f"  routine {r.id}: {r.describe()} -> {r.deliver}")
+        for name, a in config.actions.items():
+            print(f"action {name}: {a.method} {a.url} (fields: {', '.join(a.fields)})")
+        if config.admin_ui:
+            ui = config.admin_ui
+            pw = (
+                "password set"
+                if ui.password
+                else "NO PASSWORD: set password_env, or `run` will refuse to start"
+            )
+            print(f"admin UI: http://{ui.host}:{ui.port} ({pw})")
         print(f"available skills: {', '.join(sk.available())}")
         return
 
+    if config.admin_ui and not config.admin_ui.password:
+        sys.exit("config error: admin_ui needs a password (set the variable named in password_env)")
     office = Office(config)
 
     async def run() -> None:

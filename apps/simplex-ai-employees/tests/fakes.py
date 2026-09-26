@@ -16,8 +16,9 @@ from ai_employees.employee import Office
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 
 
-def text(t: str, stop: str = "end_turn") -> NS:
-    return NS(stop_reason=stop, content=[NS(type="text", text=t)])
+def text(t: str, stop: str = "end_turn", tokens: tuple[int, int] = (0, 0)) -> NS:
+    usage = NS(input_tokens=tokens[0], output_tokens=tokens[1])
+    return NS(stop_reason=stop, content=[NS(type="text", text=t)], usage=usage)
 
 
 def tool(name: str, input: dict[str, Any], id: str = "toolu_1") -> NS:
@@ -54,12 +55,14 @@ def make_office(
     models: dict[str, Any] | None = None,
     http: httpx2.AsyncClient | None = None,
     accountant_model: str | None = None,
+    actions: dict[str, Any] | None = None,
     **sales_overrides: Any,
 ) -> Office:
     accountant = {"model": accountant_model} if accountant_model else {}
     raw = {
         "state_dir": str(tmp_path / "state"),
         "models": models or {},
+        "actions": actions or {},
         "servers": {"smp": list(smp)},
         "defaults": {"admin_token": "secret-token"},
         "employees": [
@@ -119,3 +122,21 @@ def oa_tool(name: str, args: dict[str, Any] | str, id: str = "call_1") -> dict[s
     call = {"id": id, "type": "function", "function": {"name": name, "arguments": arguments}}
     msg = {"role": "assistant", "content": None, "tool_calls": [call]}
     return {"choices": [{"message": msg, "finish_reason": "tool_calls"}]}
+
+
+class FakeChatApi:
+    """Records messages an employee sends (admin notifications, contact confirmations)."""
+
+    def __init__(self) -> None:
+        self.sent: list[tuple[int, str]] = []
+
+    async def api_send_text_message(self, chat: list[Any], text: str) -> list[Any]:
+        assert chat[0] == "direct"
+        self.sent.append((chat[1], text))
+        return []
+
+
+def fake_chat(employee: Any) -> FakeChatApi:
+    api = FakeChatApi()
+    employee.bot = NS(api=api, stop=lambda: None)
+    return api

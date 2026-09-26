@@ -13,6 +13,7 @@ import os
 from contextlib import AsyncExitStack
 from typing import Any
 
+import httpx2
 import pytest
 from simplex_chat import Client, Message, Profile, SqliteDb
 
@@ -32,6 +33,8 @@ class RuleLLM:
         if isinstance(last["content"], list):  # tool results came back
             return text("Kết quả: " + " | ".join(r["content"] for r in last["content"])[:600])
         q, names = last["content"], tool_names(p)
+        if "đặt" in q.lower() and "create_order" in names:
+            return tool("create_order", {"customer": "Khách An", "items": q})
         if "quản lý" in q and "handoff_to_human" in names:
             return tool("handoff_to_human", {"summary": q})
         if "hoá đơn" in q and "ask_colleague" in names:
@@ -72,13 +75,30 @@ class Customer(Client):
 
 async def test_customer_chats_with_ai_employees(tmp_path):
     server = OpenAIServer(*([openai_rules] * 10))
+    shop_requests: list[httpx2.Request] = []
+
+    def route(request: httpx2.Request) -> httpx2.Response:
+        if request.url.host == "shop.local":  # the order webhook
+            shop_requests.append(request)
+            return httpx2.Response(201, text="DH-2001 created")
+        return server._handle(request)  # the accountant's OpenAI-compatible model
+
     office = make_office(
         tmp_path,
         RuleLLM(),
         smp=(SMP,),
         models={"local": {"provider": "openai", "base_url": "http://llm.local/v1", "model": "qwen-test"}},
-        http=server.client,
+        http=httpx2.AsyncClient(transport=httpx2.MockTransport(route)),
         accountant_model="local",
+        actions={
+            "create_order": {
+                "description": "Create an order.",
+                "url": "https://shop.local/orders",
+                "fields": {"customer": "Customer", "items": "Items"},
+            }
+        },
+        skills=["knowledge_search", "ask_colleague", "handoff_to_human", "create_order"],
+        routines=[{"id": "morning", "days": "daily", "at": "08:00", "task": "Tóm tắt bảng giá sản phẩm."}],
         welcome="Xin chào, mình là Lan!",
     )
     sales = office.employees["sales"]
@@ -122,8 +142,22 @@ async def test_customer_chats_with_ai_employees(tmp_path):
             got = await customer.ask(cid, "Cho mình gặp quản lý", replies=2)
             assert any(m.startswith("[Chuyển tiếp từ Khách An]") for m in got)
             assert any("Forwarded to 1 supervisor" in m for m in got)
-            # memory of this conversation is kept per contact
-            assert len(sales.state.history(cid)) == 6
+            # a scheduled routine, run on demand: the report reaches the admin over SimpleX
+            got = await customer.ask(cid, "/ai run morning", replies=2)
+            assert got[0] == "Đang chạy morning; kết quả sẽ được gửi khi xong."
+            assert got[1].startswith("📋 *Lan - Sales — morning*") and "4.500.000" in got[1]
+            # an order waits for approval, then runs and the customer hears back
+            got = await customer.ask(cid, "Mình muốn đặt 2 máy MA-100", replies=2)
+            assert any(m.startswith("🔔 *Cần duyệt #1*") for m in got)
+            assert any("Queued as request #1" in m for m in got)
+            assert shop_requests == []
+            got = await customer.ask(cid, "/ai approve 1", replies=2)
+            assert set(got) == {"Đã thực hiện #1: DH-2001 created", "Yêu cầu #1 đã được xác nhận."}
+            assert len(shop_requests) == 1
+            # memory of this conversation is kept per contact, and every step is in the run log
+            assert len(sales.state.history(cid)) == 8
+            kinds = [(r["kind"], r["status"]) for r in office.runlog.tail(employee="sales")]
+            assert ("routine", "ok") in kinds and ("action", "queued") in kinds and ("action", "ok") in kinds
         finally:
             office.stop()
             customer.stop()

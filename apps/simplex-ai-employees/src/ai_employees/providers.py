@@ -94,6 +94,8 @@ class Turn:
     text: str = ""
     tool_calls: list[ToolCall] = field(default_factory=list)
     message: Any = None  # the assistant message in the provider's format, to append back
+    tokens_in: int = 0
+    tokens_out: int = 0
 
 
 class ChatModel(Protocol):
@@ -173,11 +175,18 @@ class AnthropicChatModel:
             "refusal": "refusal",
             "pause_turn": "pause",
         }.get(resp.stop_reason, "end")
+        usage = getattr(resp, "usage", None)
+        tokens_in = sum(
+            getattr(usage, f, 0) or 0
+            for f in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+        )
         return Turn(
             stop=stop,
             text="\n\n".join(b.text for b in resp.content if b.type == "text").strip(),
             tool_calls=[ToolCall(b.id, b.name, b.input) for b in resp.content if b.type == "tool_use"],
             message={"role": "assistant", "content": resp.content},
+            tokens_in=tokens_in,
+            tokens_out=getattr(usage, "output_tokens", 0) or 0,
         )
 
     def tool_result_messages(self, results: list[ToolResult]) -> list[Any]:
@@ -230,7 +239,8 @@ class OpenAICompatibleChatModel:
         if r.status_code >= 400:
             raise ModelError(f"HTTP {r.status_code}: {r.text[:300]}")
         try:
-            choice = r.json()["choices"][0]
+            data = r.json()
+            choice = data["choices"][0]
             msg = choice["message"]
         except (ValueError, KeyError, IndexError, TypeError) as e:
             raise ModelError(f"unexpected response: {r.text[:300]}") from e
@@ -253,7 +263,15 @@ class OpenAICompatibleChatModel:
         message = {"role": "assistant", "content": msg.get("content")}
         if msg.get("tool_calls"):
             message["tool_calls"] = msg["tool_calls"]
-        return Turn(stop=stop, text=(msg.get("content") or "").strip(), tool_calls=calls, message=message)
+        usage = data.get("usage") or {}
+        return Turn(
+            stop=stop,
+            text=(msg.get("content") or "").strip(),
+            tool_calls=calls,
+            message=message,
+            tokens_in=usage.get("prompt_tokens") or 0,
+            tokens_out=usage.get("completion_tokens") or 0,
+        )
 
     def tool_result_messages(self, results: list[ToolResult]) -> list[Any]:
         return [{"role": "tool", "tool_call_id": r.tool_call_id, "content": r.content} for r in results]
