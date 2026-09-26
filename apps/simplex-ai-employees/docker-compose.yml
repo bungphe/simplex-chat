@@ -25,6 +25,20 @@ services:
     ports:
       - "127.0.0.1:8080:8080"
 
+  # Personal Zalo accounts (zca-js, unofficial): "docker compose --profile zalo up -d",
+  # then add a zalo_personal channel (gateway_url: http://zalo-gateway:3000) and log in
+  # with the QR on the admin page "Kênh chat & SimpleX". Not published on the host.
+  zalo-gateway:
+    build: ./zalo-gateway
+    profiles: [zalo]
+    restart: unless-stopped
+    environment:
+      API_SECRET: ${ZALO_GATEWAY_KEY:?set ZALO_GATEWAY_KEY in .env}
+      WEBHOOK_SECRET: ${ZALO_GATEWAY_HOOK_SECRET:?set ZALO_GATEWAY_HOOK_SECRET in .env}
+      WEBHOOK_URL: http://ai-employees:8080/hooks
+    volumes:
+      - zalo-sessions:/app/sessions   # Zalo login sessions: treat like passwords
+
   ollama:
     image: ollama/ollama:latest
     profiles: [local-ai]
@@ -37,3 +51,4 @@ services:
 
 volumes:
   ollama:
+  zalo-sessions:

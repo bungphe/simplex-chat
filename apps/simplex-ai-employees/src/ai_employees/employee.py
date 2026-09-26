@@ -125,8 +125,11 @@ class Employee:
             if word in ("admin", "ai", "forget"):
                 await msg.reply(await self.command(cid, word, rest.strip(), by=name))
                 return
-        if self.settings.paused or not text:
+        if not text:
             return
+        conv = self.office.hub.simplex_inbound(self, cid, name, text)
+        if self.settings.paused or conv.mode == "human":
+            return  # paused, or a person has taken this conversation over in the inbox
         # Answer in the background so one slow reply doesn't block other chats;
         # the per-contact lock keeps each contact's replies in order.
         self._spawn(self._answer(msg, cid, name, text))
@@ -143,10 +146,14 @@ class Employee:
                 log.exception("%s: failed to answer %s", self.id, name)
                 self.log("reply", "error", contact=cid)
                 return
+            conv = self.office.hub.inbox.find(f"simplex:{self.id}", str(cid))
+            if conv is not None and conv.mode == "human":
+                return  # taken over while the AI was answering
             chunks = split_message(answer)
             await msg.reply(chunks[0])
             for chunk in chunks[1:]:
                 await self.bot.api.api_send_text_message(["direct", cid], chunk)
+            self.office.hub.simplex_outbound(self, cid, answer, "ai")
 
     async def notify_admins(self, text: str) -> int:
         sent = 0
@@ -461,6 +468,9 @@ class Office:
         self.employees: dict[str, Employee] = {
             e.id: Employee(e, self, config.state_dir) for e in config.employees
         }
+        from .hub import ChannelHub
+
+        self.hub = ChannelHub(self)
 
     @property
     def http_client(self) -> httpx2.AsyncClient:
@@ -568,7 +578,11 @@ class Office:
 
                 runner = await start_admin_ui(self, self.config.admin_ui)
                 stack.push_async_callback(runner.cleanup)
-            await asyncio.gather(self._scheduler(), *(e.bot.serve_forever() for e in self.employees.values()))
+            await asyncio.gather(
+                self._scheduler(),
+                self.hub.run(self._stopping),
+                *(e.bot.serve_forever() for e in self.employees.values()),
+            )
 
     def stop(self) -> None:
         self._stopping.set()

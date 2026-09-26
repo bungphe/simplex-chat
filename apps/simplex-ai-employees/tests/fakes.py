@@ -56,6 +56,7 @@ def make_office(
     http: httpx2.AsyncClient | None = None,
     accountant_model: str | None = None,
     actions: dict[str, Any] | None = None,
+    channels: list[dict[str, Any]] | None = None,
     **sales_overrides: Any,
 ) -> Office:
     accountant = {"model": accountant_model} if accountant_model else {}
@@ -63,6 +64,7 @@ def make_office(
         "state_dir": str(tmp_path / "state"),
         "models": models or {},
         "actions": actions or {},
+        "channels": channels or [],
         "servers": {"smp": list(smp)},
         "defaults": {"admin_token": "secret-token"},
         "employees": [

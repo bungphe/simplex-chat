@@ -60,7 +60,7 @@ const STATUS = {
   error: ["bad", "lỗi"], queued: ["neutral", "chờ duyệt"], rejected: ["neutral", "bị từ chối"], skipped: ["neutral", "bỏ qua"],
   pending: ["warn", "chờ duyệt"], executing: ["neutral", "đang chạy"], done: ["ok", "đã làm"], failed: ["bad", "thất bại"],
 };
-const KIND = { reply: "trả lời", consult: "hỏi đồng nghiệp", routine: "lịch làm việc", action: "hành động" };
+const KIND = { reply: "trả lời", consult: "hỏi đồng nghiệp", routine: "lịch làm việc", action: "hành động", suggest: "gợi ý trả lời" };
 function pill(status) {
   const [cls, label] = STATUS[status] || ["neutral", status || "—"];
   return h("span", { class: `pill ${cls}` }, label);
@@ -111,8 +111,13 @@ async function refreshBadge() {
     const { pending } = await api("GET", "/api/approvals");
     $("#badge").hidden = pending.length === 0;
     $("#badge").textContent = pending.length;
+    const { channels } = await api("GET", "/api/channels");
+    const unread = channels.reduce((a, c) => a + ((c.stats || {}).unread || 0), 0);
+    $("#inbox-badge").hidden = unread === 0;
+    $("#inbox-badge").textContent = unread;
   } catch (_) { /* shown elsewhere */ }
 }
+setInterval(() => !$("#app").hidden && refreshBadge(), 20000);
 
 // replaceChildren would print "null" for a skipped optional node, so drop them first.
 function put(el, ...nodes) {
@@ -417,6 +422,263 @@ views.conversations = async (arg) => {
   };
   put(listBox, ...(contacts.length ? contacts.map((c) => h("button", { "data-id": c.id, onclick: () => open(c) },
     c.name, h("div", { class: "muted" }, `${c.turns} lượt · ${fmtTime(c.last)}${c.admin ? " · quản trị" : ""}`))) : [h("p", { class: "muted" }, "Chưa có hội thoại.")]));
+};
+
+// --------------------------------------------------------------------------
+// Unified inbox: every channel's conversations in one place
+
+const CH_SHORT = { simplex: "SimpleX", zalo_oa: "Zalo OA", zalo_personal: "Zalo", facebook: "Messenger", webhook: "Web" };
+const SENDER = { customer: "Khách", ai: "AI", human: "Nhân viên", system: "Hệ thống" };
+let inboxSel = null;
+
+function chBadge(info) {
+  return h("span", { class: `ch ch-${info.type}`, title: info.name }, CH_SHORT[info.type] || info.type);
+}
+
+function modePill(mode) {
+  return mode === "human" ? h("span", { class: "pill warn" }, "người trả lời") : h("span", { class: "pill ok" }, "AI trả lời");
+}
+
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch (_) { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch (_) { /* private mode */ } },
+};
+
+views.inbox = async (arg) => {
+  if (arg) inboxSel = arg;
+  const chSel = h("select", {}, h("option", { value: "" }, "Mọi kênh"));
+  const modeSel = h("select", {}, h("option", { value: "" }, "Mọi chế độ"),
+    h("option", { value: "ai" }, "AI đang trả lời"), h("option", { value: "human" }, "Người đang trả lời"));
+  const search = h("input", { type: "search", placeholder: "Tìm khách hoặc nội dung" });
+  const listBox = h("div", { class: "conv-list" });
+  const pane = h("div", { class: "card thread" }, h("p", { class: "muted" }, "Chọn một hội thoại ở bên trái."));
+  let channelsLoaded = false;
+  let thread = null; // {id, head, msgs, side}
+
+  const loadList = async () => {
+    const q = new URLSearchParams({ channel: chSel.value, mode: modeSel.value, q: search.value.trim() });
+    const data = await api("GET", `/api/inbox?${q}`);
+    if (!channelsLoaded) {
+      chSel.append(...data.channels.map((c) => h("option", { value: c.id }, c.name)));
+      channelsLoaded = true;
+    }
+    put(listBox, data.conversations.length ? data.conversations.map((c) => h("button", {
+      class: "conv" + (c.id === inboxSel ? " active" : ""),
+      onclick: () => { inboxSel = c.id; thread = null; run(openConv).then(() => run(loadList)); },
+    },
+    h("div", { class: "row spread" }, h("b", {}, c.customer_name || `Khách ${c.external_id}`), h("span", { class: "muted" }, fmtTime(c.last_ts))),
+    h("div", { class: "row" }, chBadge(c.channel_info), c.mode === "human" ? h("span", { class: "pill warn" }, "người") : null,
+      h("span", { class: "muted" }, c.employee_name), c.unread ? h("span", { class: "badge" }, c.unread) : null),
+    h("div", { class: "preview" }, (c.last_sender && c.last_sender !== "customer" ? `${SENDER[c.last_sender]}: ` : "") + c.last_preview),
+    )) : [h("p", { class: "muted" }, "Chưa có hội thoại nào.")]);
+  };
+
+  const renderMessages = (d) => {
+    const nearBottom = thread.msgs.scrollHeight - thread.msgs.scrollTop - thread.msgs.clientHeight < 80;
+    put(thread.msgs, d.messages.length ? d.messages.map((m) => h("div", { class: `msg ${m.sender}` },
+      h("div", { class: "who" }, m.sender === "customer" ? (m.author || d.conversation.customer_name || "Khách")
+        : `${SENDER[m.sender]}${m.author ? " · " + m.author : ""}`, " · ", fmtTime(m.ts)),
+      h("div", { class: "bubble" }, m.text))) : [h("p", { class: "muted" }, "Chưa có tin nhắn.")]);
+    if (nearBottom || thread.fresh) thread.msgs.scrollTop = thread.msgs.scrollHeight;
+    thread.fresh = false;
+  };
+
+  const renderHead = (d) => {
+    const c = d.conversation;
+    const base = `/api/inbox/${c.id}`;
+    const setMode = (mode) => run(async () => { update(await api("POST", `${base}/mode`, { mode })); loadList(); },
+      mode === "ai" ? "Đã giao lại cho AI" : "Bạn đang trả lời; AI tạm dừng ở hội thoại này");
+    const assign = h("select", { disabled: c.channel.startsWith("simplex:"),
+      onchange: () => run(async () => { update(await api("POST", `${base}/assign`, { employee: assign.value })); loadList(); }, "Đã đổi nhân viên phụ trách") },
+    d.employees.map((e) => h("option", { value: e.id, selected: e.id === c.employee }, e.name)));
+    put(thread.head,
+      h("div", { class: "row spread" },
+        h("div", {}, h("h2", {}, c.customer_name || `Khách ${c.external_id}`),
+          h("div", { class: "row" }, chBadge(c.channel_info), h("span", { class: "muted" }, c.channel_info.name), modePill(c.mode))),
+        h("div", { class: "row" },
+          h("label", { class: "inline" }, "Phụ trách", assign),
+          c.mode === "ai"
+            ? h("button", { onclick: () => setMode("human") }, "Tiếp quản (dừng AI)")
+            : h("button", { class: "primary", onclick: () => setMode("ai") }, "Giao lại cho AI")),
+      ),
+      Object.keys(d.notes || {}).length ? h("details", { class: "notes" }, h("summary", { class: "muted" }, "Ghi chú AI về khách"),
+        h("ul", {}, Object.entries(d.notes).map(([k, v]) => h("li", {}, h("b", {}, k + ": "), v)))) : null,
+    );
+  };
+
+  const update = (d) => {
+    if (!thread || thread.id !== d.conversation.id) return;
+    renderHead(d);
+    renderMessages(d);
+  };
+
+  const openConv = async () => {
+    if (inboxSel === null) return;
+    const d = await api("GET", `/api/inbox/${inboxSel}`);
+    if (!thread || thread.id !== d.conversation.id) {
+      const cid = d.conversation.id;
+      const text = h("textarea", { rows: 3, class: "composer-text", placeholder: "Nhập trả lời… (Enter để gửi, Shift+Enter xuống dòng)" });
+      const author = h("input", { class: "author", placeholder: "Tên bạn", value: store.get("aie-author") || "" });
+      const takeOver = h("input", { type: "checkbox", checked: true });
+      const sendBtn = h("button", { class: "primary" }, "Gửi");
+      const suggestBtn = h("button", {}, "Gợi ý trả lời (AI)");
+      const send = () => {
+        const body = { text: text.value.trim(), author: author.value.trim() || "Nhân viên", take_over: takeOver.checked };
+        if (!body.text) return;
+        store.set("aie-author", author.value.trim());
+        run(async () => {
+          sendBtn.disabled = true;
+          try {
+            update(await api("POST", `/api/inbox/${cid}/reply`, body));
+            text.value = "";
+            loadList();
+          } finally { sendBtn.disabled = false; }
+        }, "Đã gửi");
+      };
+      sendBtn.addEventListener("click", send);
+      text.addEventListener("keydown", (ev) => { if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); send(); } });
+      suggestBtn.addEventListener("click", () => run(async () => {
+        suggestBtn.disabled = true;
+        suggestBtn.textContent = "AI đang soạn…";
+        try {
+          const r = await api("POST", `/api/inbox/${cid}/suggest`, {});
+          text.value = r.text;
+          text.focus();
+        } finally {
+          suggestBtn.disabled = false;
+          suggestBtn.textContent = "Gợi ý trả lời (AI)";
+        }
+      }, "AI đã soạn bản nháp; sửa rồi bấm Gửi"));
+      thread = { id: cid, head: h("div", { class: "thread-head" }), msgs: h("div", { class: "msgs" }), fresh: true };
+      put(pane, thread.head, thread.msgs,
+        h("div", { class: "composer" }, text,
+          h("div", { class: "row spread" },
+            h("div", { class: "row" }, author, h("label", { class: "check inline" }, takeOver, h("span", {}, "Tiếp quản (AI dừng trả lời)"))),
+            h("div", { class: "row" }, suggestBtn, sendBtn))));
+      if (d.conversation.unread) api("POST", `/api/inbox/${cid}/read`, {}).then(refreshBadge).catch(() => {});
+    }
+    update(d);
+  };
+
+  let searchTimer;
+  search.addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => run(loadList), 300); });
+  chSel.addEventListener("change", () => run(loadList));
+  modeSel.addEventListener("change", () => run(loadList));
+  render(
+    h("div", { class: "row spread" }, h("h1", {}, "Hộp thư chung"), h("span", { class: "muted" }, "Mọi kênh chat trong một màn hình · tự làm mới mỗi 5 giây")),
+    h("div", { class: "inbox" },
+      h("div", { class: "inbox-left" }, h("div", { class: "filters" }, search, h("div", { class: "two" }, chSel, modeSel)), listBox),
+      pane),
+  );
+  await run(loadList);
+  await run(openConv);
+  refreshTimer = setInterval(() => {
+    if (current !== "inbox") return;
+    run(loadList);
+    if (thread) run(openConv);
+  }, 5000);
+};
+
+// --------------------------------------------------------------------------
+// Channels and SimpleX accounts
+
+const ZALO_STATE = { idle: "chưa khởi động", qr_pending: "chờ quét mã", qr_scanned: "đã quét, chờ xác nhận trên điện thoại",
+  connected: "đã kết nối", error: "lỗi" };
+
+async function zaloLogin(c, btn, box) {
+  btn.disabled = true;
+  const step = async () => {
+    const r = await api("POST", `/api/channels/${encodeURIComponent(c.id)}/login`, {});
+    put(box, h("p", { class: "muted" }, `Trạng thái: ${ZALO_STATE[r.state] || r.state}`),
+      r.qr ? h("img", { src: r.qr, alt: "Mã QR đăng nhập Zalo", class: "qr" }) : null,
+      r.qr ? h("p", { class: "muted" }, "Mở Zalo trên điện thoại → Quét mã QR. Không chia sẻ mã này.") : null);
+    return r.state;
+  };
+  try {
+    for (let i = 0; i < 100 && current === "channels"; i++) {
+      if ((await step()) === "connected") { toast("Zalo đã kết nối"); break; }
+      await new Promise((ok) => setTimeout(ok, 3000));
+    }
+  } catch (e) {
+    toast("Lỗi: " + e.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+views.channels = async () => {
+  const [chs, sx] = await Promise.all([run(() => api("GET", "/api/channels")), run(() => api("GET", "/api/simplex"))]);
+  if (!chs || !sx) return;
+  const poll = (c, btn) => run(async () => {
+    btn.disabled = true;
+    try {
+      const r = await api("POST", `/api/channels/${encodeURIComponent(c.id)}/poll`, {});
+      toast(r.state.last_error ? `Lỗi: ${r.state.last_error}` : `Đã lấy ${r.added} tin mới`);
+      go("channels");
+    } finally { btn.disabled = false; }
+  });
+  const rows = chs.channels.map((c) => {
+    const st = c.stats || {};
+    const s = c.state || {};
+    let how;
+    if (c.type === "simplex") how = "tin đến trực tiếp";
+    else if (c.type === "webhook") how = h("span", { class: "mono" }, `POST /hooks/${c.id}`);
+    else if (c.type === "zalo_personal") {
+      const box = h("div", { class: "zalo-login" });
+      const btn = h("button", {}, "Đăng nhập Zalo (QR)");
+      btn.addEventListener("click", () => zaloLogin(c, btn, box));
+      how = h("div", {}, h("div", { class: "muted" }, "tin đẩy về từ Zalo gateway"), btn, box);
+    }
+    else {
+      const btn = h("button", {}, "Lấy tin ngay");
+      btn.addEventListener("click", () => poll(c, btn));
+      how = h("div", {}, h("div", { class: "muted" }, `mỗi ${c.poll_seconds}s · lần cuối ${fmtTime(s.last_poll)}`), btn);
+    }
+    return h("tr", {},
+      h("td", {}, chBadge(c), " ", h("b", {}, c.name)),
+      h("td", {}, c.employee),
+      h("td", {}, c.auto_reply ? h("span", { class: "pill ok" }, "AI tự trả lời") : h("span", { class: "pill neutral" }, "chỉ gom tin")),
+      h("td", {}, `${st.conversations || 0} hội thoại · ${st.unread || 0} chưa đọc · ${st.human || 0} người trả lời`),
+      h("td", {}, how),
+      h("td", {}, s.last_error ? h("span", { class: "pill bad", title: s.last_error }, "lỗi") : h("span", { class: "pill ok" }, "ổn")),
+    );
+  });
+  const accounts = sx.accounts.map((a) => {
+    const out = h("div", { class: "invite" });
+    const link = h("input", { placeholder: "Dán link SimpleX (địa chỉ hoặc link mời 1 lần)" });
+    const invite = () => run(async () => {
+      const r = await api("POST", `/api/simplex/${encodeURIComponent(a.id)}/invite`, {});
+      put(out, h("p", { class: "muted" }, "Link mời dùng một lần — gửi cho khách hoặc quét mã:"),
+        h("img", { src: r.qr, alt: "QR link mời", class: "qr" }), h("p", { class: "mono" }, r.link),
+        h("button", { onclick: () => navigator.clipboard.writeText(r.link).then(() => toast("Đã chép link")) }, "Chép link"));
+    }, "Đã tạo link mời");
+    const connect = () => link.value.trim() && run(async () => {
+      await api("POST", `/api/simplex/${encodeURIComponent(a.id)}/connect`, { link: link.value.trim() });
+      link.value = "";
+    }, "Đã gửi yêu cầu kết nối; hội thoại sẽ hiện trong Hộp thư khi bên kia chấp nhận");
+    return h("div", { class: "card" },
+      h("div", { class: "row spread" }, h("h2", {}, a.name), h("span", { class: "muted" }, `${a.contacts} khách · ${a.admins} quản trị`)),
+      a.address ? h("div", { class: "addr" },
+        h("img", { src: a.qr, alt: `QR địa chỉ của ${a.name}`, class: "qr" }),
+        h("div", {}, h("p", { class: "muted" }, "Địa chỉ liên hệ cố định (khách quét mã bằng app SimpleX để nhắn):"),
+          h("p", { class: "mono" }, a.address),
+          h("button", { onclick: () => navigator.clipboard.writeText(a.address).then(() => toast("Đã chép địa chỉ")) }, "Chép địa chỉ")))
+        : h("p", { class: "muted" }, "Chưa có địa chỉ (bot đang khởi động?)."),
+      h("div", { class: "row section" }, h("button", { onclick: invite }, "Tạo link mời 1 lần"),
+        h("button", { onclick: () => go("inbox") }, "Mở hộp thư")),
+      out,
+      h("div", { class: "row section" }, link, h("button", { onclick: connect }, "Kết nối")),
+    );
+  });
+  render(
+    h("h1", {}, "Kênh chat"),
+    h("div", { class: "card table-wrap" }, h("table", {},
+      h("thead", {}, h("tr", {}, ["Kênh", "Nhân viên", "Chế độ", "Thống kê", "Nhận tin", "Trạng thái"].map((t) => h("th", {}, t)))),
+      h("tbody", {}, rows))),
+    h("p", { class: "muted" }, "Thêm kênh Zalo OA, Zalo cá nhân (qua zalo-gateway), Facebook Messenger hoặc webhook trong file cấu hình (channels:). Token chỉ đặt qua biến môi trường."),
+    h("h1", { class: "section" }, "SimpleX"),
+    h("div", { class: "grid wide" }, accounts),
+  );
 };
 
 // --------------------------------------------------------------------------

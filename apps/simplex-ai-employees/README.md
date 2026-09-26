@@ -246,6 +246,8 @@ Mở `http://127.0.0.1:8080` và đăng nhập bằng mật khẩu. Giao diện 
 | Trang | Làm được gì |
 |---|---|
 | Tổng quan | Trạng thái từng nhân viên, số việc 24 giờ, yêu cầu chờ duyệt, lịch tiếp theo, địa chỉ SimpleX |
+| Hộp thư | **Mọi kênh chat trong một màn hình**: SimpleX, Zalo OA, Zalo cá nhân, Messenger, webhook. Trả lời khách, AI gợi ý câu trả lời, tiếp quản / giao lại cho AI, đổi nhân viên phụ trách |
+| Kênh chat & SimpleX | Trạng thái từng kênh, lấy tin ngay, đăng nhập Zalo cá nhân bằng QR; địa chỉ SimpleX kèm mã QR, tạo link mời một lần, kết nối bằng link |
 | Nhân viên | Sửa vai trò, gán model, mức suy nghĩ, bật/tắt skill, mở kênh hành động, quy tắc sửa sai, chạy/tạm dừng lịch, gỡ quản trị viên, khôi phục cấu hình gốc |
 | Chờ duyệt | Duyệt hoặc từ chối yêu cầu của mọi nhân viên, xem lịch sử |
 | Model AI | Xem model, **thêm model mới kèm API key**, thử kết nối, xoá |
@@ -257,6 +259,78 @@ Bảo mật của giao diện:
 - Mọi thao tác thay đổi đều cần một header riêng mà trang web khác không gửi được (chống CSRF).
 - API key chỉ nhập vào được, không bao giờ hiện lại. Key thêm từ giao diện được lưu trong `state_dir/office.json` với quyền `600`.
 - Muốn truy cập từ xa, đặt giao diện sau reverse proxy có HTTPS. Đừng mở cổng trực tiếp ra Internet.
+
+## Kênh chat và hộp thư chung
+
+Ngoài SimpleX, nhân viên AI trả lời khách trên Zalo, Facebook Messenger và mọi nền tảng khác qua
+webhook. Mọi hội thoại vào **Hộp thư** chung trên giao diện web (lưu ở `state_dir/inbox.db`).
+
+```yaml
+channels:
+  - id: zalo-shop                  # Zalo Official Account: API chính thức, tự lấy tin định kỳ
+    type: zalo_oa
+    employee: sales                # nhân viên AI phụ trách kênh
+    app_id: "1234567890"
+    app_secret_env: ZALO_APP_SECRET
+    access_token_env: ZALO_ACCESS_TOKEN
+    refresh_token_env: ZALO_REFRESH_TOKEN
+    poll_seconds: 30               # lấy tin mỗi 30 giây (mặc định)
+    debounce_seconds: 5            # chờ khách nhắn xong rồi mới trả lời một lần
+  - id: zalo-canhan                # tài khoản Zalo cá nhân, qua zalo-gateway/ (đăng nhập bằng QR)
+    type: zalo_personal
+    employee: sales
+    gateway_url: http://zalo-gateway:3000
+    api_key_env: ZALO_GATEWAY_KEY
+    secret_env: ZALO_GATEWAY_HOOK_SECRET
+  - id: fanpage                    # Facebook Page / Messenger
+    type: facebook
+    employee: sales
+    page_id: "100000000000000"
+    access_token_env: FB_PAGE_TOKEN
+  - id: website                    # nền tảng khác (chat trên web, Telegram qua n8n…)
+    type: webhook
+    employee: sales
+    secret_env: WEBCHAT_SECRET
+    reply_url: https://example.com/chat/reply
+    auto_reply: false              # chỉ gom tin về hộp thư, người trả lời
+```
+
+Cách hoạt động:
+- **AI trả lời trước.** Khách nhắn, nhân viên AI được gán trả lời (dùng skill, kho kiến thức, trí nhớ
+  riêng từng khách như trên SimpleX). Tin cũ có sẵn khi khởi động chỉ được nhập vào làm ngữ cảnh, không trả lời lại.
+- **Người tiếp quản bất cứ lúc nào.** Nhân viên trả lời trong Hộp thư (hoặc trả lời thẳng trên Zalo/Facebook)
+  thì hội thoại chuyển sang chế độ "người trả lời" và AI im lặng. Bấm **Giao lại cho AI** để AI tiếp tục; AI
+  nhớ cả những gì nhân viên đã nói.
+- **Gợi ý trả lời:** AI soạn sẵn câu trả lời vào ô nhập để nhân viên sửa rồi gửi. Chế độ này không gửi gì,
+  không tạo đơn, không ghi vào trí nhớ.
+- Nếu không gọi được model AI, hệ thống **không** gửi câu xin lỗi cho khách trên các kênh này; tin nhắn nằm
+  chờ (chưa đọc) cho nhân viên.
+- Hành động cần duyệt (tạo đơn…) và `handoff_to_human` hoạt động như trên SimpleX; tin xác nhận gửi về
+  đúng kênh của khách.
+
+**Zalo OA** là cách được khuyến nghị cho bán hàng: API chính thức, token làm mới tự động (refresh token
+mới được lưu trong `state_dir/channel_secrets.json`, quyền `600`).
+
+**Zalo cá nhân** dùng gateway trong `zalo-gateway/` (chỉnh sửa từ `zalo_personal` của m.agent, thư viện
+zca-js). zca-js **không phải API chính thức**: Zalo có thể hạn chế tài khoản dùng cách này, nên dùng một
+tài khoản riêng cho bán hàng. Chạy gateway: đặt `ZALO_GATEWAY_KEY` và `ZALO_GATEWAY_HOOK_SECRET` (chuỗi ngẫu
+nhiên dài) trong `.env`, `docker compose --profile zalo up -d`, rồi vào **Kênh chat & SimpleX → Đăng nhập
+Zalo (QR)** và quét mã bằng app Zalo. Id của kênh chính là id tài khoản trên gateway. Phiên đăng nhập nằm
+trong volume `zalo-sessions`; coi như mật khẩu.
+
+**Webhook** cho mọi nền tảng khác. Cầu nối của bạn gửi tin của khách:
+
+```bash
+curl -X POST http://127.0.0.1:8080/hooks/website -H "X-Hook-Secret: $WEBCHAT_SECRET" \
+  -H 'Content-Type: application/json' \
+  -d '{"conversation_id": "visitor-42", "customer_name": "Linh", "text": "Shop có ship COD không?", "message_id": "m-1"}'
+```
+
+Câu trả lời được POST tới `reply_url` dạng `{"conversation_id", "text"}`; hoặc cầu nối tự đọc
+`GET /hooks/website/visitor-42?after=<id tin cuối>` (cùng header). `message_id` giúp bỏ tin gửi trùng.
+
+Webhook `/hooks/...` dùng chung cổng với giao diện quản trị. Nếu nền tảng ở ngoài máy chủ cần gọi vào, chỉ
+mở đường dẫn `/hooks/` qua reverse proxy có HTTPS, không mở `/api/` và trang quản trị.
 
 ## Quản trị trong chat
 
@@ -291,6 +365,10 @@ cho khách biết họ đang nói chuyện với trợ lý AI, và đừng đưa
 skill nếu không cần thiết. Trí nhớ hội thoại, ghi chú, hàng chờ duyệt, nhật ký (`runlog.jsonl`) và
 API key thêm từ giao diện (`office.json`) được lưu dạng không mã hoá trong `state_dir`; hãy bảo vệ thư mục
 này. Dữ liệu gửi tới webhook của hành động đi ra hệ thống của bạn, nên chỉ khai báo địa chỉ bạn tin cậy.
+
+Hộp thư chung (`inbox.db`) lưu bản sao mọi tin nhắn của mọi kênh, kể cả SimpleX, để nhân viên xem và trả
+lời trên web: tin SimpleX không còn chỉ nằm trong ứng dụng đã mã hoá. Zalo và Facebook không mã hoá đầu-cuối;
+nội dung đi qua máy chủ của các nền tảng đó.
 
 ## Kiểm thử
 

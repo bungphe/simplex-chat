@@ -69,6 +69,9 @@ class Agent:
 
     async def respond(self, contact_id: int, contact_name: str, text: str) -> str:
         """Answer a contact, with memory of earlier turns with them."""
+        return (await self.respond_run(contact_id, contact_name, text)).text
+
+    async def respond_run(self, contact_id: int, contact_name: str, text: str) -> RunResult:
         s = self.employee.settings
         state = self.employee.state
         state.remember_contact(contact_id, contact_name)
@@ -81,7 +84,7 @@ class Agent:
         if r.status != "busy":  # don't remember turns that never reached the model
             state.append_turn(contact_id, text, r.text, keep=s.history_messages)
         self.employee.log("reply", r.status, contact=contact_id, **r.log_fields())
-        return r.text
+        return r
 
     async def consult(self, question: str, asker: str) -> str:
         """Answer a colleague's one-off question: no memory, no further delegation."""
@@ -95,6 +98,21 @@ class Agent:
         tools = [t for t in sk.resolve(s.skills) if t.name not in excluded and not t.internal]
         r = await self._run(situation, [], question, tools, ctx)
         self.employee.log("consult", r.status, asker=asker, **r.log_fields())
+        return r.text
+
+    async def suggest(self, contact_id: int, contact_name: str, text: str) -> str:
+        """Draft a reply for a staff member to review: nothing is sent, stored or acted on."""
+        s = self.employee.settings
+        ctx = sk.SkillContext(self.employee, contact_id, contact_name, consulting=True)
+        situation = (
+            f'Draft the next reply to the contact "{safe_name(contact_name)}" for a staff member, who will '
+            "review and send it. Write only the message text, in the contact's language."
+        )
+        no_side_effects = (*CONTACT_SKILLS, "handoff_to_human", *self.employee.office.config.actions)
+        tools = [t for t in sk.resolve(s.skills) if t.name not in no_side_effects and not t.internal]
+        history = self.employee.state.history(contact_id)
+        r = await self._run(situation, history, text or "(Reply to the conversation so far.)", tools, ctx)
+        self.employee.log("suggest", r.status, contact=contact_id, **r.log_fields())
         return r.text
 
     async def run_routine(self, routine: Routine, now: datetime) -> RunResult:

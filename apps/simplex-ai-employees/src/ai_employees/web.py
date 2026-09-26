@@ -488,6 +488,257 @@ async def runlog(request: web.Request) -> web.Response:
 # --------------------------------------------------------------------------- #
 
 
+# --------------------------------------------------------------------------- #
+# Unified inbox
+
+
+def _hub(request: web.Request):
+    return request.app[OFFICE].hub
+
+
+def _channel_label(office: Office, channel: str) -> dict[str, str]:
+    if channel.startswith("simplex:"):
+        e = office.employees.get(channel.split(":", 1)[1])
+        return {"type": "simplex", "name": f"SimpleX · {e.settings.display_name if e else channel}"}
+    ch = office.hub.channels.get(channel)
+    names = {
+        "zalo_oa": "Zalo OA",
+        "zalo_personal": "Zalo cá nhân",
+        "facebook": "Messenger",
+        "webhook": "Webhook",
+    }
+    return {"type": ch.type if ch else "?", "name": f"{names.get(ch.type, '?') if ch else '?'} · {channel}"}
+
+
+def _conv_json(office: Office, conv: Any) -> dict[str, Any]:
+    e = office.employees.get(conv.employee)
+    return {
+        **conv.to_dict(),
+        "channel_info": _channel_label(office, conv.channel),
+        "employee_name": e.settings.display_name if e else conv.employee,
+    }
+
+
+async def inbox_list(request: web.Request) -> web.Response:
+    office = request.app[OFFICE]
+    q = request.query
+    convs = office.hub.inbox.list(
+        channel=q.get("channel") or None, mode=q.get("mode") or None, query=q.get("q") or None
+    )
+    channels = [
+        {"id": f"simplex:{e.id}", **_channel_label(office, f"simplex:{e.id}")}
+        for e in office.employees.values()
+    ] + [{"id": c, **_channel_label(office, c)} for c in office.hub.channels]
+    return _json({"conversations": [_conv_json(office, c) for c in convs], "channels": channels})
+
+
+def _inbox_conv(request: web.Request) -> Any:
+    conv = _hub(request).inbox.conversation(int(request.match_info["cid"]))
+    if conv is None:
+        raise ApiError(404, "no such conversation")
+    return conv
+
+
+async def inbox_get(request: web.Request) -> web.Response:
+    office = request.app[OFFICE]
+    conv = _inbox_conv(request)
+    e = office.employees.get(conv.employee)
+    notes = e.state.notes(conv.contact_id) if e else {}
+    return _json(
+        {
+            "conversation": _conv_json(office, conv),
+            "messages": office.hub.inbox.messages(conv.id),
+            "notes": notes,
+            "employees": [{"id": x.id, "name": x.settings.display_name} for x in office.employees.values()],
+        }
+    )
+
+
+async def inbox_reply(request: web.Request) -> web.Response:
+    conv = _inbox_conv(request)
+    data = await _body(request)
+    text = str(data.get("text", "")).strip()
+    if not text:
+        raise ApiError(400, "Nội dung trống")
+    author = str(data.get("author") or "Nhân viên")[:40]
+    try:
+        await _hub(request).human_reply(conv.id, text, author, take_over=bool(data.get("take_over", True)))
+    except Exception as e:  # noqa: BLE001 - surface the platform's error to the agent
+        raise ApiError(502, f"Không gửi được: {e}") from None
+    return await inbox_get(request)
+
+
+async def inbox_mode(request: web.Request) -> web.Response:
+    conv = _inbox_conv(request)
+    mode = (await _body(request)).get("mode")
+    if mode not in ("ai", "human"):
+        raise ApiError(400, "mode phải là ai hoặc human")
+    hub = _hub(request)
+    hub.inbox.set_mode(conv.id, mode)
+    if mode == "ai" and hub.inbox.pending_customer_text(conv.id):
+        hub.schedule_reply(conv.id, 0)  # answer what is waiting
+    return await inbox_get(request)
+
+
+async def inbox_assign(request: web.Request) -> web.Response:
+    conv = _inbox_conv(request)
+    emp = str((await _body(request)).get("employee", ""))
+    if emp not in request.app[OFFICE].employees or conv.is_simplex:
+        raise ApiError(400, "Không đổi được nhân viên cho hội thoại này")
+    _hub(request).inbox.set_employee(conv.id, emp)
+    return await inbox_get(request)
+
+
+async def inbox_read(request: web.Request) -> web.Response:
+    conv = _inbox_conv(request)
+    _hub(request).inbox.mark_read(conv.id)
+    return _json({"ok": True})
+
+
+async def inbox_suggest(request: web.Request) -> web.Response:
+    conv = _inbox_conv(request)
+    return _json({"text": await _hub(request).suggest(conv.id)})
+
+
+async def channels_get(request: web.Request) -> web.Response:
+    office = request.app[OFFICE]
+    hub = office.hub
+    stats = hub.inbox.stats()
+    rows = []
+    for e in office.employees.values():
+        cid = f"simplex:{e.id}"
+        rows.append(
+            {
+                "id": cid,
+                **_channel_label(office, cid),
+                "employee": e.id,
+                "auto_reply": True,
+                "stats": stats.get(cid, {}),
+                "state": {},
+            }
+        )
+    for c, ch in hub.channels.items():
+        rows.append(
+            {
+                "id": c,
+                **_channel_label(office, c),
+                "employee": ch.cfg.employee,
+                "auto_reply": ch.cfg.auto_reply,
+                "poll_seconds": ch.cfg.poll_seconds,
+                "stats": stats.get(c, {}),
+                "state": hub.inbox.channel_state(c),
+            }
+        )
+    return _json({"channels": rows})
+
+
+async def channel_poll(request: web.Request) -> web.Response:
+    hub = _hub(request)
+    cid = request.match_info["channel"]
+    if cid not in hub.channels:
+        raise ApiError(404, "no such channel")
+    return _json({"added": await hub.poll_once(cid), "state": hub.inbox.channel_state(cid)})
+
+
+async def channel_login(request: web.Request) -> web.Response:
+    """Zalo personal accounts: start the gateway login and return its QR (a data: URI)."""
+    hub = _hub(request)
+    ch = hub.channels.get(request.match_info["channel"])
+    if ch is None or not hasattr(ch, "login"):
+        raise ApiError(404, "this channel has no QR login")
+    try:
+        return _json(await ch.login())
+    except Exception as e:  # noqa: BLE001 - gateway down or misconfigured
+        raise ApiError(502, str(e)) from None
+
+
+# --------------------------------------------------------------------------- #
+# SimpleX accounts
+
+
+def _qr(link: str) -> str:
+    import segno
+
+    return segno.make(link, error="m").svg_data_uri(scale=4, border=2)
+
+
+async def simplex_get(request: web.Request) -> web.Response:
+    office = request.app[OFFICE]
+    rows = []
+    for e in office.employees.values():
+        address = getattr(e.bot, "address", None)
+        rows.append(
+            {
+                "id": e.id,
+                "name": e.settings.display_name,
+                "address": address,
+                "qr": _qr(address) if address else None,
+                "contacts": len(e.state.contacts),
+                "admins": len(e.state.admins),
+            }
+        )
+    return _json({"accounts": rows})
+
+
+async def simplex_invite(request: web.Request) -> web.Response:
+    e = _employee(request)
+    user = await e.bot.api.api_get_active_user()
+    link = await e.bot.api.api_create_link(user["userId"])
+    return _json({"link": link, "qr": _qr(link)})
+
+
+async def simplex_connect(request: web.Request) -> web.Response:
+    e = _employee(request)
+    link = str((await _body(request)).get("link", "")).strip()
+    if not link:
+        raise ApiError(400, "Thiếu link")
+    try:
+        kind = await e.bot.api.api_connect_active_user(link)
+    except Exception as err:  # noqa: BLE001 - invalid or already-used links
+        raise ApiError(400, f"Không kết nối được: {err}") from None
+    return _json({"ok": True, "kind": kind})
+
+
+# --------------------------------------------------------------------------- #
+# Public webhook for "webhook" channels (server-to-server, authenticated by a shared secret)
+
+
+def _push_channel(request: web.Request) -> Any:
+    ch = request.app[OFFICE].hub.channels.get(request.match_info["channel"])
+    if ch is None or not ch.secret():
+        raise ApiError(404, "no such channel")
+    if not hmac.compare_digest(request.headers.get("X-Hook-Secret", "").encode(), ch.secret().encode()):
+        raise ApiError(401, "bad secret")
+    return ch
+
+
+async def hook_inbound(request: web.Request) -> web.Response:
+    ch = _push_channel(request)
+    # The Zalo gateway posts to {WEBHOOK_URL}/{account}: the account must be this channel's.
+    if (account := request.match_info.get("account")) is not None and account != getattr(ch, "account", None):
+        raise ApiError(404, "no such account")
+    try:
+        conv = request.app[OFFICE].hub.push_inbound(ch.id, await _body(request))
+    except ValueError as e:
+        raise ApiError(400, str(e)) from None
+    return _json({"ok": True, "conversation": conv.id if conv else None})
+
+
+async def hook_messages(request: web.Request) -> web.Response:
+    """Replies for a bridge that polls instead of receiving reply_url calls."""
+    office = request.app[OFFICE]
+    ch = _push_channel(request)
+    if ch.type != "webhook":
+        raise ApiError(404, "no such channel")
+    conv = office.hub.inbox.find(ch.id, request.match_info["conversation"])
+    try:
+        after = int(request.query.get("after", "0"))
+    except ValueError:
+        raise ApiError(400, "after must be a message id") from None
+    msgs = [m for m in office.hub.inbox.messages(conv.id) if m["id"] > after] if conv else []
+    return _json({"messages": msgs})
+
+
 def create_app(office: Office, password: str) -> web.Application:
     app = web.Application(middlewares=[guard], client_max_size=256 * 1024)
     app[OFFICE] = office
@@ -518,6 +769,22 @@ def create_app(office: Office, password: str) -> web.Application:
     r.add_delete("/api/models/{name}", model_delete)
     r.add_post("/api/models/{name}/test", model_test)
     r.add_get("/api/runlog", runlog)
+    r.add_get("/api/inbox", inbox_list)
+    r.add_get("/api/inbox/{cid}", inbox_get)
+    r.add_post("/api/inbox/{cid}/reply", inbox_reply)
+    r.add_post("/api/inbox/{cid}/mode", inbox_mode)
+    r.add_post("/api/inbox/{cid}/assign", inbox_assign)
+    r.add_post("/api/inbox/{cid}/read", inbox_read)
+    r.add_post("/api/inbox/{cid}/suggest", inbox_suggest)
+    r.add_get("/api/channels", channels_get)
+    r.add_post("/api/channels/{channel}/poll", channel_poll)
+    r.add_get("/api/simplex", simplex_get)
+    r.add_post("/api/simplex/{emp}/invite", simplex_invite)
+    r.add_post("/api/simplex/{emp}/connect", simplex_connect)
+    r.add_post("/api/channels/{channel}/login", channel_login)
+    r.add_post("/hooks/{channel}", hook_inbound)
+    r.add_post("/hooks/{channel}/{account}", hook_inbound)
+    r.add_get("/hooks/{channel}/{conversation}", hook_messages)
     return app
 
 

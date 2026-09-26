@@ -204,6 +204,6 @@ class ActionDesk:
         if rec.get("contact") is None:
             return
         try:
-            await self.employee.bot.api.api_send_text_message(["direct", rec["contact"]], text)
+            await self.employee.office.hub.send_to_contact(self.employee, rec["contact"], text)
         except Exception:
             log.exception("%s: cannot notify contact %s", self.employee.id, rec.get("contact"))

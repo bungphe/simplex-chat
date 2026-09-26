@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import yaml
 
 from .actions import ActionDef, parse_action
+from .channels import ChannelConfig, parse_channel
 from .providers import PROVIDERS, ModelProfile, fallback_default
 from .routines import Routine, parse_routine
 
@@ -86,6 +87,7 @@ class AppConfig:
     models: dict[str, ModelProfile] = field(default_factory=dict)
     actions: dict[str, ActionDef] = field(default_factory=dict)
     admin_ui: AdminUIConfig | None = None
+    channels: tuple[ChannelConfig, ...] = ()
 
     def model_profile(self, name: str) -> ModelProfile | None:
         """A declared model by name, or an implicit Claude model for a bare `claude-*` id."""
@@ -195,6 +197,15 @@ def parse_config(raw: dict[str, Any], base_dir: Path) -> AppConfig:
     if not employees:
         raise ConfigError("at least one employee is required")
 
+    channels = []
+    for c in raw.get("channels") or []:
+        try:
+            channels.append(parse_channel(c or {}, {e.id for e in employees}))
+        except ValueError as e:
+            raise ConfigError(str(e)) from None
+    if len({c.id for c in channels}) != len(channels):
+        raise ConfigError("duplicate channel id")
+
     servers = raw.get("servers") or {}
     return AppConfig(
         employees=tuple(employees),
@@ -205,6 +216,7 @@ def parse_config(raw: dict[str, Any], base_dir: Path) -> AppConfig:
         models=models,
         actions=actions,
         admin_ui=parse_admin_ui(raw.get("admin_ui")),
+        channels=tuple(channels),
     )
 
 

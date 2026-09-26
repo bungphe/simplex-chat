@@ -1,0 +1,263 @@
+"""The channel hub: moves messages between chat platforms, the inbox and the AI employees.
+
+- Polls every channel for new messages and stores them in the unified inbox.
+- When a customer writes in a conversation in "ai" mode, waits a few seconds for
+  follow-up messages, then has the assigned employee answer them all at once.
+- Anyone replying from the inbox, or directly on the platform, takes the
+  conversation over ("human" mode): the AI stays silent until switched back.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+from .channels import Channel, ChannelError, InboundMessage, make_channel
+from .inbox import EXTERNAL_BASE, Conversation, Inbox
+from .state import now_iso
+
+if TYPE_CHECKING:
+    from .employee import Employee, Office
+
+log = logging.getLogger(__name__)
+
+ECHO_WINDOW = timedelta(minutes=10)
+
+
+def iso(ts: datetime) -> str:
+    return ts.astimezone().isoformat(timespec="seconds")
+
+
+class ChannelHub:
+    def __init__(self, office: Office):
+        self.office = office
+        state_dir = Path(office.config.state_dir)
+        self.inbox = Inbox(state_dir / "inbox.db")
+        self._secrets_file = state_dir / "channel_secrets.json"
+        self.secrets: dict[str, dict[str, str]] = (
+            json.loads(self._secrets_file.read_text(encoding="utf-8")) if self._secrets_file.exists() else {}
+        )
+        self.channels: dict[str, Channel] = {c.id: make_channel(c, self) for c in office.config.channels}
+        self.started = datetime.now(UTC)
+        self._timers: dict[int, asyncio.Task[None]] = {}
+        self._tasks: set[asyncio.Task[Any]] = set()
+
+    # ------------------------------------------------------------------ #
+    # secrets that change at runtime (rotating Zalo tokens), owner-only file
+
+    def save_secret(self, channel_id: str, **values: str) -> None:
+        self.secrets.setdefault(channel_id, {}).update(values)
+        self._secrets_file.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self._secrets_file.with_suffix(".tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(self.secrets, f)
+        os.replace(tmp, self._secrets_file)
+
+    # ------------------------------------------------------------------ #
+    # polling
+
+    async def run(self, stopping: asyncio.Event) -> None:
+        await asyncio.gather(*(self._poll_loop(ch, stopping) for ch in self.channels.values()))
+
+    async def _poll_loop(self, ch: Channel, stopping: asyncio.Event) -> None:
+        if ch.cfg.poll_seconds <= 0 or type(ch).poll is Channel.poll:
+            return  # push-only channel (webhook)
+        while not stopping.is_set():
+            await self.poll_once(ch.id)
+            try:
+                await asyncio.wait_for(stopping.wait(), timeout=ch.cfg.poll_seconds)
+            except TimeoutError:
+                pass
+
+    async def poll_once(self, channel_id: str) -> int:
+        ch = self.channels[channel_id]
+        st = self.inbox.channel_state(ch.id)
+        # First run: import the last day for context, but only answer what arrives from now on.
+        since = datetime.fromisoformat(st["cursor"]) if st.get("cursor") else self.started - timedelta(days=1)
+        try:
+            msgs = await ch.poll(since - timedelta(minutes=2))  # overlap; duplicates are dropped
+        except (ChannelError, Exception) as e:  # noqa: BLE001 - a channel must never stop the loop
+            log.warning("%s: poll failed: %s", ch.id, e)
+            self.inbox.set_channel_state(ch.id, last_poll=now_iso(), last_error=str(e)[:300])
+            return 0
+        added = self.ingest(ch, msgs)
+        cursor = max([m.ts for m in msgs], default=since)
+        self.inbox.set_channel_state(ch.id, cursor=iso(cursor), last_poll=now_iso(), last_error=None)
+        return added
+
+    def ingest(self, ch: Channel, msgs: list[InboundMessage]) -> int:
+        added = 0
+        to_answer: set[int] = set()
+        for m in sorted(msgs, key=lambda m: m.ts):
+            conv = self.inbox.upsert(ch.id, m.conversation, m.customer_name, ch.cfg.employee)
+            if m.sender == "customer":
+                if self.inbox.add(conv.id, "customer", m.text, m.customer_name, m.external_id, iso(m.ts)):
+                    added += 1
+                    if m.ts >= self.started:
+                        to_answer.add(conv.id)
+                continue
+            # A message from the business side that we did not send: someone answered on
+            # the platform itself (or it is the echo of our own message).
+            if self.inbox.has_external(conv.id, m.external_id):
+                continue
+            if m.text in self.inbox.recent_outbound(conv.id, iso(m.ts - ECHO_WINDOW)):
+                continue
+            if self.inbox.add(conv.id, "human", m.text, f"trên {ch.type}", m.external_id, iso(m.ts)):
+                added += 1
+                if m.ts >= self.started:
+                    self.inbox.set_mode(conv.id, "human")
+                    to_answer.discard(conv.id)
+        if ch.cfg.auto_reply:
+            for conv_id in to_answer:
+                self.schedule_reply(conv_id, ch.cfg.debounce_seconds)
+        return added
+
+    def push_inbound(self, channel_id: str, payload: dict[str, Any]) -> Conversation | None:
+        """A message pushed to /hooks/<channel id> (webhook bridges, the Zalo gateway)."""
+        ch = self.channels.get(channel_id)
+        if ch is None or not ch.secret():
+            raise KeyError(channel_id)
+        msgs = [m for m in ch.parse_push(payload) if m.conversation and m.external_id]
+        if not msgs:
+            return None
+        self.ingest(ch, msgs)
+        return self.inbox.find(ch.id, msgs[-1].conversation)
+
+    webhook_inbound = push_inbound
+
+    # ------------------------------------------------------------------ #
+    # answering
+
+    def schedule_reply(self, conv_id: int, delay: float) -> None:
+        """Answer after `delay` seconds without new messages (customers often send several)."""
+        if (old := self._timers.get(conv_id)) and not old.done():
+            old.cancel()
+
+        async def later() -> None:
+            await asyncio.sleep(delay)
+            self._timers.pop(conv_id, None)
+            try:
+                await self.reply_ai(conv_id)
+            except ChannelError as e:
+                log.warning("inbox: AI reply to conversation %s not delivered: %s", conv_id, e)
+            except Exception:
+                log.exception("inbox: AI reply to conversation %s failed", conv_id)
+
+        task = asyncio.create_task(later())
+        self._timers[conv_id] = task
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    def employee_for(self, conv: Conversation) -> Employee | None:
+        return self.office.employees.get(conv.employee)
+
+    async def reply_ai(self, conv_id: int) -> str | None:
+        conv = self.inbox.conversation(conv_id)
+        if conv is None or conv.mode != "ai":
+            return None
+        employee = self.employee_for(conv)
+        pending = self.inbox.pending_customer_text(conv_id)
+        if employee is None or employee.settings.paused or not pending:
+            return None
+        async with employee._locks[conv.contact_id]:
+            pending = self.inbox.pending_customer_text(conv_id)  # may have been answered meanwhile
+            if not pending:
+                return None
+            text = "\n".join(m["text"] for m in pending)
+            r = await employee.agent.respond_run(conv.contact_id, conv.customer_name or "khách", text)
+            if r.status == "busy":
+                # No model reachable: don't send an apology on a business channel. The
+                # message stays unread and waiting, for staff or the customer's next message.
+                log.warning("%s: no model available; conversation %s left for staff", conv.channel, conv_id)
+                return None
+            answer = r.text
+            if (now := self.inbox.conversation(conv_id)) is None or now.mode != "ai":
+                log.info(
+                    "%s: conversation %s taken over while the AI was answering; not sent",
+                    conv.channel,
+                    conv_id,
+                )
+                return None
+            await self.deliver(now, answer, "ai", employee.settings.display_name)
+            return answer
+
+    async def deliver(self, conv: Conversation, text: str, sender: str, author: str) -> None:
+        """Send on the conversation's own channel and record it in the inbox."""
+        from .employee import split_message
+
+        external_id = None
+        if conv.is_simplex:
+            employee = self.office.employees[conv.channel.split(":", 1)[1]]
+            for chunk in split_message(text):
+                await employee.bot.api.api_send_text_message(["direct", int(conv.external_id)], chunk)
+        else:
+            ch = self.channels.get(conv.channel)
+            if ch is None:
+                raise ChannelError(f"channel {conv.channel} is no longer configured")
+            try:
+                external_id = await ch.send(conv.external_id, text)
+            except ChannelError as e:
+                self.inbox.set_channel_state(ch.id, last_error=f"gửi tin: {e}"[:300])
+                raise
+        self.inbox.add(conv.id, sender, text, author, external_id)
+
+    async def human_reply(self, conv_id: int, text: str, author: str, take_over: bool = True) -> None:
+        conv = self.inbox.conversation(conv_id)
+        if conv is None:
+            raise KeyError(conv_id)
+        if (timer := self._timers.pop(conv_id, None)) is not None:
+            timer.cancel()
+        if take_over:
+            self.inbox.set_mode(conv_id, "human")
+        pending = "\n".join(m["text"] for m in self.inbox.pending_customer_text(conv_id)) or "(…)"
+        await self.deliver(conv, text, "human", author)
+        self.inbox.mark_read(conv_id)
+        # Keep the AI's memory complete, so it knows what staff said if it takes over again.
+        if (employee := self.employee_for(conv)) is not None:
+            employee.state.append_turn(
+                conv.contact_id,
+                pending,
+                f"[nhân viên {author}] {text}",
+                keep=employee.settings.history_messages,
+            )
+
+    async def suggest(self, conv_id: int) -> str:
+        conv = self.inbox.conversation(conv_id)
+        if conv is None:
+            raise KeyError(conv_id)
+        employee = self.employee_for(conv)
+        if employee is None:
+            raise KeyError(conv.employee)
+        pending = "\n".join(m["text"] for m in self.inbox.pending_customer_text(conv_id))
+        return await employee.agent.suggest(conv.contact_id, conv.customer_name or "khách", pending)
+
+    # ------------------------------------------------------------------ #
+    # SimpleX conversations are answered by the employee's own bot; mirror them here
+
+    def simplex_inbound(self, employee: Employee, contact_id: int, name: str, text: str) -> Conversation:
+        conv = self.inbox.upsert(f"simplex:{employee.id}", str(contact_id), name, employee.id)
+        self.inbox.add(conv.id, "customer", text, name)
+        return conv
+
+    def simplex_outbound(self, employee: Employee, contact_id: int, text: str, sender: str) -> None:
+        conv = self.inbox.upsert(f"simplex:{employee.id}", str(contact_id), "", employee.id)
+        self.inbox.add(conv.id, sender, text, employee.settings.display_name if sender == "ai" else "")
+
+    async def send_to_contact(
+        self, employee: Employee, contact_id: int, text: str, sender: str = "system"
+    ) -> None:
+        """Message a customer of this employee on whichever channel they use."""
+        if contact_id >= EXTERNAL_BASE:
+            conv = self.inbox.conversation(contact_id - EXTERNAL_BASE)
+            if conv is None:
+                raise KeyError(contact_id)
+            await self.deliver(conv, text, sender, employee.settings.display_name)
+            return
+        await employee.bot.api.api_send_text_message(["direct", contact_id], text)
+        self.simplex_outbound(employee, contact_id, text, sender)

@@ -46,6 +46,34 @@ actions:
     confirm_message: Đơn hàng của bạn đã được xác nhận. Cảm ơn bạn!
 
 # Admin web UI (optional). Open http://127.0.0.1:8080 and log in with the password.
+# Chat channels besides SimpleX: every conversation appears in the admin "Hộp thư"
+# (unified inbox), and the assigned employee answers automatically until a person
+# takes over. Tokens only through environment variables. Uncomment what you use.
+# channels:
+#   - id: zalo-shop                 # Zalo Official Account (official API, polled)
+#     type: zalo_oa
+#     employee: sales
+#     app_id: "1234567890"
+#     app_secret_env: ZALO_APP_SECRET
+#     access_token_env: ZALO_ACCESS_TOKEN
+#     refresh_token_env: ZALO_REFRESH_TOKEN
+#   - id: zalo-canhan               # a personal Zalo account via zalo-gateway/ (QR login)
+#     type: zalo_personal
+#     employee: sales
+#     gateway_url: http://zalo-gateway:3000
+#     api_key_env: ZALO_GATEWAY_KEY
+#     secret_env: ZALO_GATEWAY_HOOK_SECRET
+#   - id: fanpage                   # Facebook Page / Messenger (polled)
+#     type: facebook
+#     employee: sales
+#     page_id: "100000000000000"
+#     access_token_env: FB_PAGE_TOKEN
+#   - id: website                   # anything else: your bridge POSTs to /hooks/website
+#     type: webhook
+#     employee: sales
+#     secret_env: WEBCHAT_SECRET
+#     reply_url: https://example.com/chat/reply
+
 admin_ui:
   host: 127.0.0.1
   port: 8080

@@ -231,9 +231,10 @@ class OpenAICompatibleChatModel:
         if key := self.profile.key():
             headers.setdefault("Authorization", f"Bearer {key}")
         try:
-            r = await self.http.post(self.url, json=body, headers=headers)
+            # per request: the client may be shared with channels and actions (shorter timeouts)
+            r = await self.http.post(self.url, json=body, headers=headers, timeout=self.profile.timeout)
         except httpx2.HTTPError as e:
-            raise ModelError(f"{self.url}: {e}") from e
+            raise ModelError(f"{self.url}: {type(e).__name__} {e}".rstrip()) from e
         if r.status_code in (401, 403):
             raise ModelAuthError(f"HTTP {r.status_code}: {r.text[:300]}")
         if r.status_code >= 400:
