@@ -21,7 +21,10 @@ function h(tag, attrs = {}, ...children) {
   return el;
 }
 
-async function api(method, path, body) {
+// A GET answered after the user has moved to another page never settles (unless keep), so a
+// view still loading cannot render over the newer one or start its refresh timer.
+async function api(method, path, body, { keep = false } = {}) {
+  const nav = navSeq;
   const opts = { method, headers: { "X-Requested-With": "ai-employees" }, credentials: "same-origin" };
   if (body !== undefined) {
     opts.headers["Content-Type"] = "application/json";
@@ -32,6 +35,7 @@ async function api(method, path, body) {
   try { data = await r.json(); } catch (_) { /* empty body */ }
   if (r.status === 401 && path !== "/api/login") { showLogin(); throw new Error(tr("Hết phiên đăng nhập")); }
   if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+  if (method === "GET" && !keep && nav !== navSeq) return new Promise(() => {});
   return data;
 }
 
@@ -70,6 +74,8 @@ function pill(status) {
 // Login and navigation
 
 function showLogin() {
+  navSeq++; // pages still loading are dropped
+  clearInterval(refreshTimer);
   $("#app").hidden = true;
   $("#login").hidden = false;
   if (!$("#login-lang").firstChild) $("#login-lang").append(languageSelect(LANG, setLanguage));
@@ -91,6 +97,7 @@ $("#login-form").addEventListener("submit", async (ev) => {
 $("#logout").addEventListener("click", async () => {
   await run(() => api("POST", "/api/logout", {}));
   clearInterval(refreshTimer);
+  if (typeof clearPosDrafts === "function") clearPosDrafts(); // bills in progress stay with their account
   me = null;
   showLogin();
 });
@@ -98,8 +105,10 @@ $("#logout").addEventListener("click", async () => {
 const views = {};
 let current = "overview";
 let refreshTimer;
+let navSeq = 0; // bumped on every navigation: see api()
 
 function go(view, arg) {
+  navSeq++;
   current = view;
   for (const b of document.querySelectorAll("#nav button")) b.classList.toggle("active", b.dataset.view === view);
   clearInterval(refreshTimer);
@@ -112,11 +121,11 @@ for (const b of document.querySelectorAll("#nav button")) b.addEventListener("cl
 async function refreshBadge() {
   try {
     if (me && me.role === "admin") {
-      const { pending } = await api("GET", "/api/approvals");
+      const { pending } = await api("GET", "/api/approvals", undefined, { keep: true });
       $("#badge").hidden = pending.length === 0;
       $("#badge").textContent = pending.length;
     }
-    const { channels } = await api("GET", "/api/channels");
+    const { channels } = await api("GET", "/api/channels", undefined, { keep: true });
     const unread = channels.reduce((a, c) => a + ((c.stats || {}).unread || 0), 0);
     $("#inbox-badge").hidden = unread === 0;
     $("#inbox-badge").textContent = unread;
@@ -509,8 +518,10 @@ function attachmentView(cid, m, a, i) {
     return h("a", { class: "att-link", href: a.url, target: "_blank", rel: "noopener noreferrer" },
       a.thumb && a.thumb.startsWith("data:image/") ? h("img", { src: a.thumb, alt: "" }) : null, label);
   }
-  if (["image", "sticker", "video"].includes(a.kind) && (a.thumb || remote(a.url))) {
-    const src = a.thumb && a.thumb.startsWith("data:image/") ? a.thumb : remote(a.thumb) ? `${media}?thumb=1` : media;
+  const thumb = a.thumb && a.thumb.startsWith("data:image/") ? a.thumb : remote(a.thumb) ? `${media}?thumb=1` : null;
+  // a video shows as a picture only through its thumbnail; without one, just the download link
+  if (["image", "sticker"].includes(a.kind) ? a.thumb || remote(a.url) : a.kind === "video" && thumb) {
+    const src = thumb || media;
     const img = h("img", { src, alt: label, loading: "lazy", class: "att-img" });
     img.addEventListener("error", () => img.replaceWith(h("span", { class: "att-file" }, tr("{0} (hết hạn hoặc không tải được)", label))));
     return remote(a.url) ? h("a", { href: media, target: "_blank", rel: "noopener", title: tr("Mở bản đầy đủ") }, img) : img;
@@ -1091,7 +1102,7 @@ views.desk = async () => {
     x.keywords.length ? tr("có \"{0}\"", x.keywords.join('", "')) : tr("mọi tin"),
   ].join(", ") + " → " + [
     x.labels.length ? tr("gắn {0}", x.labels.join(", ")) : null, x.team ? tr("nhóm {0}", teamName(x.team)) : null,
-    x.assignee ? `giao ${uName[x.assignee] || x.assignee}` : null, x.handoff ? tr("chuyển người trả lời (AI dừng)") : null,
+    x.assignee ? tr("giao {0}", uName[x.assignee] || x.assignee) : null, x.handoff ? tr("chuyển người trả lời (AI dừng)") : null,
   ].filter(Boolean).join(", ");
   deskMeta = { ...deskMeta, ...meta };
   const rules = h("div", { class: "card section" }, h("h2", {}, tr("Quy tắc tự phân loại")),
@@ -1136,7 +1147,7 @@ views.sla = async () => {
         tile(d.counts.open, tr("hội thoại đang mở")), tile(d.counts.waiting, tr("khách đang chờ trả lời")),
         tile(d.counts.late, tr("chờ quá {0}", fmtDur(target))), tile(d.counts.unassigned, tr("đang mở, chưa giao ai"))),
       h("div", { class: "card section" }, h("h2", {}, tr("Thời gian trả lời")),
-        d.responders.length ? h("table", {}, h("thead", {}, h("tr", {}, [tr("Ai trả lời"), tr("Số lần"), tr("Trung bình"), tr("Lâu nhất"), `Trong ${fmtDur(target)}`].map((t) => h("th", {}, t)))),
+        d.responders.length ? h("table", {}, h("thead", {}, h("tr", {}, [tr("Ai trả lời"), tr("Số lần"), tr("Trung bình"), tr("Lâu nhất"), tr("Trong {0}", fmtDur(target))].map((t) => h("th", {}, t)))),
           h("tbody", {}, d.responders.map((x) => h("tr", {},
             h("td", {}, x.responder === "ai" ? "AI" : x.author || tr("Nhân viên")), h("td", {}, x.answers),
             h("td", {}, fmtDur(x.avg_seconds)), h("td", {}, fmtDur(x.max_seconds)), h("td", {}, pct(x)))))) : h("p", { class: "muted" }, tr("Chưa có câu trả lời nào trong khoảng này."))),

@@ -17,8 +17,11 @@ const MOVE = {
   transfer_out: tr("Chuyển đi"), transfer_in: tr("Chuyển đến"), transfer_loss: tr("Thiếu khi chuyển"), damaged: tr("Hỏng khi nhận"),
 };
 const TRIGGER = { system: tr("tự động"), admin: tr("cập nhật ngay"), manual: tr("sửa tay"), activate: tr("lô mới") };
+// the shop's settings, mail and marketplaces: managers may look, only admins change them
 const INV_TABS = [["products", tr("Sản phẩm")], ["purchase", tr("Nhập hàng")], ["orders", tr("Đơn bán")], ["transfers", tr("Chuyển kho")],
-  ["reorder", tr("Đặt hàng lại")], ["pricing", tr("Định giá")], ["setup", tr("Kho & nhà cung cấp")], ["shop", tr("Cửa hàng & tích điểm")], ["marketplaces", tr("Sàn TMĐT")]];
+  ["reorder", tr("Đặt hàng lại")], ["pricing", tr("Định giá")], ["setup", tr("Kho & nhà cung cấp")], ["shop", tr("Cửa hàng & tích điểm"), "manager"], ["marketplaces", tr("Sàn TMĐT"), "manager"]];
+const invAdmin = () => !!me && me.role === "admin";
+const invTabs = () => INV_TABS.filter(([, , who]) => !who || invAdmin() || me.role === who);
 
 let invMeta = { settings: { currency: "VND" }, warehouses: [], suppliers: [] };
 let invTab = "products";
@@ -31,6 +34,7 @@ const ask = (msg, dflt = "") => { const v = prompt(msg, dflt); return v === null
 
 views.inventory = async (tab) => {
   if (tab) invTab = tab;
+  if (!invTabs().some(([k]) => k === invTab)) invTab = "products";
   const data = await run(() => api("GET", "/api/inventory"));
   if (!data) return;
   invMeta = data;
@@ -42,7 +46,7 @@ views.inventory = async (tab) => {
     h("div", { class: "tiles" },
       tile(t.stock_in, tr("nhập hôm nay")), tile(t.sold, tr("bán hôm nay")),
       tile(money(m.revenue), tr("doanh thu 30 ngày")), tile(money(m.profit), tr("lãi gộp 30 ngày"))),
-    h("div", { class: "tabs" }, INV_TABS.map(([k, label]) => h("button", {
+    h("div", { class: "tabs" }, invTabs().map(([k, label]) => h("button", {
       class: k === invTab ? "active" : "", onclick: () => go("inventory", k),
     }, label))),
     body,
@@ -502,7 +506,7 @@ INV_VIEWS.pricing = async (box) => {
       h("p", { class: "muted" }, tr(
         "Từng sản phẩm có thể tắt tự định giá, hoặc được quản lý chuyển giai đoạn bằng tay trong trang sản phẩm."
       )),
-      h("button", { class: "primary", onclick: save }, tr("Lưu cài đặt"))),
+      invAdmin() ? h("button", { class: "primary", onclick: save }, tr("Lưu cài đặt")) : null),
     h("div", { class: "card section table-wrap" }, h("h2", {}, tr("Lịch sử đổi giá")),
       log.length ? h("table", {}, h("tbody", {}, log.map((x) => h("tr", {}, h("td", {}, fmtTime(x.ts)), h("td", { class: "mono" }, x.sku), h("td", {}, TRIGGER[x.trigger] || x.trigger),
         h("td", {}, x.old_stage ? tr("GĐ{0} {1}", x.old_stage, money(x.old_price)) : "—", " → ", x.new_stage ? tr("GĐ{0} {1}", x.new_stage, money(x.new_price)) : "—"), h("td", {}, x.reason))))) : h("p", { class: "muted" }, tr("Chưa đổi giá lần nào."))));
@@ -555,10 +559,10 @@ INV_VIEWS.shop = async (box) => {
     h("p", { class: "muted" }, tr(
       "Điểm được cộng khi đơn đã giao; trả hàng thì trừ lại. Lên VIP: khách nhận lời chúc mừng kèm số thẻ trên kênh chat, quản lý được báo, và từ đơn sau được giá VIP."
     )),
-    h("button", { class: "primary", onclick: () => run(async () => {
+    invAdmin() ? h("button", { class: "primary", onclick: () => run(async () => {
       invMeta.settings = await api("PUT", "/api/inventory/settings", { ...Object.fromEntries(Object.entries(f).map(([k, el]) => [k, el.value])),
         ...Object.fromEntries(Object.entries(n).map(([k, el]) => [k, Number(el.value || 0)])) });
-    }, tr("Đã lưu")) }, tr("Lưu"))),
+    }, tr("Đã lưu")) }, tr("Lưu")) : null),
     await mailCard());
 };
 
@@ -618,10 +622,10 @@ INV_VIEWS.marketplaces = async (box) => {
         h("td", {}, h("b", {}, x.name), ` ${x.type}`, h("div", { class: "muted" }, x.type === "amazon" ? `${x.seller_id} · ${x.marketplace_id} · ${x.currency}` : x.url)),
         h("td", {}, Object.entries(x.env_set).map(([k, ok]) => h("span", { class: `pill ${ok ? "ok" : "bad"}` }, `${x[k]} ${ok ? "✓" : tr("chưa đặt")}`))),
         h("td", {}, tr("{0} chờ đẩy", x.queued), x.last ? h("div", { class: "muted" }, `${fmtTime(x.last.ts)} · ${x.last.ok ? tr("ổn") : tr("lỗi")}: ${x.last.detail}`) : null),
-        h("td", {}, h("div", { class: "row" },
+        h("td", {}, invAdmin() && h("div", { class: "row" },
           h("button", { class: "small", onclick: () => run(async () => { const s = await api("POST", `/api/inventory/marketplaces/${x.id}/sync`, {}); toast(tr("Đã đẩy {0}/{1}", s.pushed, s.queued)); reload(); }) }, tr("Đồng bộ tất cả")),
           h("button", { class: "small danger", onclick: () => confirm(tr("Gỡ sàn này?")) && run(async () => { await api("DELETE", `/api/inventory/marketplaces/${x.id}`); reload(); }) }, tr("Gỡ")))))))) : h("p", { class: "muted" }, tr("Chưa kết nối sàn nào."))),
-    h("div", { class: "card section" }, h("h2", {}, tr("Kết nối sàn")), h("div", { class: "two" }, field(tr("Loại"), kind), field(tr("Mã"), f.id), field(tr("Tên"), f.name)), amazonFields, hookFields,
+    invAdmin() && h("div", { class: "card section" }, h("h2", {}, tr("Kết nối sàn")), h("div", { class: "two" }, field(tr("Loại"), kind), field(tr("Mã"), f.id), field(tr("Tên"), f.name)), amazonFields, hookFields,
       h("p", { class: "muted" }, tr(
         "Amazon: tạo ứng dụng SP-API trong Seller Central, lấy LWA client id/secret và refresh token của người bán, đặt vào biến môi trường. Mỗi sản phẩm có thể dùng SKU khác trên sàn, hoặc '-' để không bán trên sàn đó (trong trang sản phẩm)."
       )),

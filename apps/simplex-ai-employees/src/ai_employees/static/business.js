@@ -9,14 +9,36 @@ const BOOK_ST = { booked: ["neutral", tr("chờ xếp xe")], assigned: ["warn", 
 const ROUTE_ST = { planned: ["neutral", tr("chưa chạy")], in_progress: ["warn", tr("đang chạy")], completed: ["ok", tr("xong")], cancelled: ["neutral", tr("đã huỷ")] };
 const isManager = () => me && (me.role === "admin" || me.role === "manager");
 const store = { get: (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch (_) { return d; } }, set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (_) { /* private mode */ } } };
-const today = () => new Date().toISOString().slice(0, 10);
+// YYYY-MM-DD of the staff member's own calendar (toISOString would give the UTC date)
+const localDate = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const today = () => localDate(new Date());
 const moneyOf = (cur) => (n) => (n === null || n === undefined ? "—" : `${Number(n).toLocaleString(LOCALE)} ${cur === "VND" ? tr("đ") : cur}`);
+// The shop's currency comes with /api/inventory (invMeta, once the Kho hàng page has loaded).
+// Roles that may read it fetch it once; the others (delivery) show amounts in VND.
+let currencyLoad = null;
+async function shopCurrency() {
+  const canRead = me && (me.role === "admin" || ["manager", "warehouse", "marketing"].includes(me.role));
+  if (!invMeta.today && canRead) {
+    currencyLoad = currencyLoad || api("GET", "/api/inventory", undefined, { keep: true })
+      .then((d) => { if (!invMeta.today) invMeta = d; })
+      .catch(() => { currencyLoad = null; });
+    await currencyLoad;
+  }
+  return invMeta.settings.currency || "VND";
+}
+// A button that posts money or stock: disabled while its request runs, so a double click
+// cannot send it twice.
+const once = (fn) => async (ev) => {
+  const btn = ev && ev.currentTarget;
+  if (btn) { if (btn.disabled) return; btn.disabled = true; }
+  try { await fn(); } finally { if (btn) btn.disabled = false; }
+};
 
 // ---------------------------------------------------------------- start-of-day notices
 
 async function showNotices() {
   let r;
-  try { r = await api("GET", "/api/notices"); } catch (_) { return; }
+  try { r = await api("GET", "/api/notices", undefined, { keep: true }); } catch (_) { return; }
   for (const n of r.pending) {
     const box = h("div", { class: "modal" }, h("div", { class: "card modal-card" },
       h("h2", {}, "📢 ", n.title), h("p", { class: "pre" }, n.body), h("p", { class: "muted" }, `${n.created_by} · ${fmtTime(n.created)}`),
@@ -29,12 +51,31 @@ async function showNotices() {
 
 // ---------------------------------------------------------------- point of sale
 
-// Several bills open at once (multi-tab billing); kept in this browser until paid.
-let posTabs = store.get("pos-tabs", [{ id: 1, name: tr("Đơn 1"), lines: [], contact: null, kind: "now", voucher: "", order: null }]);
-let posActive = store.get("pos-active", 1);
-const saveTabs = () => { store.set("pos-tabs", posTabs); store.set("pos-active", posActive); };
+// Several bills open at once (multi-tab billing); kept in this browser, for each account,
+// until paid or the staff member logs out.
+const posKeys = () => [`pos-tabs:${me.username}`, `pos-active:${me.username}`];
+let posTabs = [];
+let posActive = 1;
+let posUser = null;
+const loadTabs = () => {
+  if (posUser === me.username) return;
+  posUser = me.username;
+  try { localStorage.removeItem("pos-tabs"); localStorage.removeItem("pos-active"); } catch (_) { /* shared by every account: older versions */ }
+  const [tabsKey, activeKey] = posKeys();
+  posTabs = store.get(tabsKey, [{ id: 1, name: tr("Đơn 1"), lines: [], contact: null, kind: "now", voucher: "", order: null }]);
+  posActive = store.get(activeKey, 1);
+};
+const saveTabs = () => { const [tabsKey, activeKey] = posKeys(); store.set(tabsKey, posTabs); store.set(activeKey, posActive); };
+// on logout (admin.js): the next person on this browser must not see these bills
+function clearPosDrafts() {
+  if (!me) return;
+  try { for (const k of posKeys()) localStorage.removeItem(k); } catch (_) { /* private mode */ }
+  posUser = null;
+  posTabs = [];
+}
 
 views.pos = async () => {
+  loadTabs();
   const search = h("input", { type: "search", placeholder: tr("Tìm sản phẩm: tên, SKU (F2)") });
   const results = h("div", { class: "pos-results" });
   const cart = h("div", { class: "card pos-cart" });
@@ -133,6 +174,7 @@ views.pos = async () => {
     const discount = h("input", { value: t.discount || "", placeholder: tr("Giảm thêm (số tiền)"), class: "narrow" });
     discount.addEventListener("change", () => { t.discount = discount.value; saveTabs(); });
     const create = () => run(async () => {
+      if (t.order) return;
       if (!t.lines.length) throw new Error(tr("Chưa có sản phẩm"));
       const items = t.lines.map((l) => l.combo ? { combo: l.combo, qty: l.qty }
         : { product_id: l.product_id, qty: l.qty, ...(l.unit_price ? { unit_price: l.unit_price } : {}), ...(l.discount_pct ? { discount_pct: l.discount_pct } : {}) });
@@ -163,7 +205,7 @@ views.pos = async () => {
       h("div", { class: "row" }, voucher, discount),
       h("div", { class: "row spread" }, h("span", { class: "pos-total" }, tr("Tạm tính: {0}", m(Math.round(total)))),
         h("div", { class: "row" }, h("button", { class: "danger", onclick: () => confirm(tr("Bỏ đơn này?")) && closeTab() }, tr("Bỏ")),
-          h("button", { class: "primary", onclick: create }, tr("Tạo đơn")))));
+          h("button", { class: "primary", onclick: once(create) }, tr("Tạo đơn")))));
   };
 
   const drawPayment = (t) => run(async () => {
@@ -177,9 +219,12 @@ views.pos = async () => {
     const showChange = () => { const d = Number(tendered.value) - Number(amount.value || o.due); change.textContent = tendered.value && d >= 0 ? tr("Tiền thối: {0}", m(d)) : ""; };
     tendered.addEventListener("input", showChange);
     amount.addEventListener("input", showChange);
+    // one key per payment form: a retry after a lost answer is not recorded twice;
+    // the form drawn after a successful payment has a new key
+    const payKey = `${o.id}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     const pay = () => run(async () => {
       await api("POST", `/api/pos/orders/${o.id}/payments`, { method: method.value, amount: amount.value || null,
-        tendered: method.value === "cash" && tendered.value ? tendered.value : null, idempotency_key: `${o.id}-${Date.now()}` });
+        tendered: method.value === "cash" && tendered.value ? tendered.value : null, idempotency_key: payKey });
       drawPayment(t);
     }, tr("Đã ghi nhận thanh toán"));
     const step = (s, msg, body) => run(async () => { await api("POST", `/api/pos/orders/${o.id}/${s}`, body || {}); drawPayment(t); run(loadMine); }, msg);
@@ -200,15 +245,15 @@ views.pos = async () => {
         h("div", { class: "row" }, method, amount, tendered, change),
         o.change_hints.length ? h("div", { class: "row" }, h("span", { class: "muted" }, tr("Khách đưa:")), o.change_hints.map((x) =>
           h("button", { class: "small", onclick: () => { method.value = "cash"; tendered.value = x; showChange(); } }, m(x)))) : null,
-        h("button", { class: "primary", onclick: pay }, tr("Thu tiền"))) : null,
+        h("button", { class: "primary", onclick: once(pay) }, tr("Thu tiền"))) : null,
       h("div", { class: "row section" },
-        o.status === "confirmed" && !o.items.some((i) => i.status === "awaiting") ? h("button", { class: "primary", onclick: () => step("complete", tr("Đã giao hàng, trừ kho")) }, tr("Đã giao (xuất kho)")) : null,
+        o.status === "confirmed" && !o.items.some((i) => i.status === "awaiting") ? h("button", { class: "primary", onclick: once(() => step("complete", tr("Đã giao hàng, trừ kho"))) }, tr("Đã giao (xuất kho)")) : null,
         h("a", { class: "button", href: `/api/pos/orders/${o.id}/receipt`, target: "_blank", rel: "noopener" }, tr("In hoá đơn")),
         o.contact_id || o.conversation_id ? h("button", { onclick: () => step("send-receipt", tr("Đã gửi hoá đơn cho khách")) }, tr("Gửi hoá đơn qua chat")) : null,
         h("button", { onclick: () => { const to = prompt(tr("Gửi hoá đơn tới email (để trống: email của khách):"), o.email || ""); if (to !== null) run(async () => {
           const r = await api("POST", `/api/pos/orders/${o.id}/email-invoice`, { to }); toast(tr("Đã gửi hoá đơn tới {0}", r.sent_to)); drawPayment(t); }); } }, tr("Gửi hoá đơn qua email")),
-        isManager() && o.status === "confirmed" ? h("button", { class: "danger", onclick: () => confirm(tr("Huỷ {0}?", o.code)) && step("cancel", tr("Đã huỷ")) }, tr("Huỷ đơn")) : null,
-        isManager() && o.status === "completed" ? h("button", { class: "danger", onclick: () => { const why = prompt(tr("Lý do trả hàng:")); if (why !== null) step("return", tr("Đã nhận trả hàng"), { reason: why }); } }, tr("Trả hàng / hoàn tác")) : null,
+        isManager() && o.status === "confirmed" ? h("button", { class: "danger", onclick: once(() => confirm(tr("Huỷ {0}?", o.code)) && step("cancel", tr("Đã huỷ"))) }, tr("Huỷ đơn")) : null,
+        isManager() && o.status === "completed" ? h("button", { class: "danger", onclick: once(() => { const why = prompt(tr("Lý do trả hàng:")); return why !== null && step("return", tr("Đã nhận trả hàng"), { reason: why }); }) }, tr("Trả hàng / hoàn tác")) : null,
         h("button", { onclick: closeTab }, tr("Xong, đóng đơn"))));
   });
 
@@ -257,7 +302,7 @@ views.delivery = async (arg) => {
   if (arg) dlDate = arg;
   const d = await run(() => api("GET", `/api/delivery?date=${dlDate}&month=${dlDate.slice(0, 7)}`));
   if (!d) return;
-  const m = moneyOf(invMeta.settings.currency || "VND");
+  const m = moneyOf(await shopCurrency());
   const reload = (day) => go("delivery", day || dlDate);
   // month calendar
   const first = new Date(`${d.month}-01T00:00:00`);
@@ -271,7 +316,7 @@ views.delivery = async (arg) => {
     cells.push(h("button", { class: "cal-cell" + (day === dlDate ? " active" : ""), onclick: () => reload(day) },
       h("b", {}, n), info ? h("div", {}, tr("{0} đơn · {1} kiện", info.bookings, info.boxes), info.special ? h("span", { class: "pill warn" }, `⚠ ${info.special}`) : null) : null));
   }
-  const shift = (months) => { const x = new Date(first); x.setMonth(x.getMonth() + months); reload(`${x.toISOString().slice(0, 7)}-01`); };
+  const shift = (months) => reload(localDate(new Date(first.getFullYear(), first.getMonth() + months, 1)));
   const calendar = h("div", { class: "card section" },
     h("div", { class: "row spread" }, h("button", { onclick: () => shift(-1) }, "‹"), h("h2", {}, tr("Lịch giao tháng {0}", d.month)), h("button", { onclick: () => shift(1) }, "›")),
     h("div", { class: "cal" }, [tr("T2"), tr("T3"), tr("T4"), tr("T5"), tr("T6"), tr("T7"), tr("CN")].map((x) => h("div", { class: "cal-head" }, x)), cells));
@@ -304,7 +349,7 @@ views.delivery = async (arg) => {
     h("td", {}, h("span", { class: "mono" }, b.order_code), h("div", { class: "muted" }, b.items.map((i) => `${i.name} x${i.qty}`).join(", "))),
     h("td", {}, b.slot_name, b.window ? h("div", { class: "pill warn" }, b.window) : null),
     h("td", {}, tr("{0} kiện", b.boxes), b.assembling ? h("div", { class: "pill warn" }, tr("Lắp ráp")) : null, b.floors ? h("div", { class: "pill warn" }, tr("Vác {0} tầng", b.floors)) : null),
-    h("td", {}, b.surcharge ? m(b.surcharge) : "", b.due ? h("div", { class: "muted" }, `thu ${m(b.due)}`) : null), h("td", {}, pillOf(BOOK_ST, b.status)),
+    h("td", {}, b.surcharge ? m(b.surcharge) : "", b.due ? h("div", { class: "muted" }, tr("thu {0}", m(b.due))) : null), h("td", {}, pillOf(BOOK_ST, b.status)),
     h("td", {}, h("div", { class: "row" },
       !b.lat && d.settings.maps ? h("button", { class: "small", onclick: () => run(async () => { await api("POST", `/api/delivery/bookings/${b.id}/geocode`, {}); reload(); }, tr("Đã tìm toạ độ")) }, tr("Tìm toạ độ")) : null,
       ["booked", "assigned"].includes(b.status) ? h("button", { class: "small danger", onclick: () => confirm(tr("Huỷ lịch giao?")) && run(async () => { await api("POST", `/api/delivery/bookings/${b.id}/cancel`, {}); reload(); }) }, tr("Huỷ")) : null)));
@@ -385,7 +430,7 @@ views.delivery = async (arg) => {
 views.marketing = async () => {
   const d = await run(() => api("GET", "/api/marketing"));
   if (!d) return;
-  const m = moneyOf(invMeta.settings.currency || "VND");
+  const m = moneyOf(await shopCurrency());
   const products = (await api("GET", "/api/inventory/products")).products;
   const reload = () => go("marketing");
   const save = (kind, body, msg) => run(async () => { await api("POST", `/api/marketing/${kind}`, body); reload(); }, msg);
@@ -406,7 +451,7 @@ views.marketing = async () => {
     amount: h("input", { class: "price", placeholder: tr("chi phí") }), start: h("input", { type: "date", value: now }), end: h("input", { type: "date", value: now }) };
   const seg = { kind: h("select", {}, h("option", { value: "top" }, tr("Mua nhiều nhất")), h("option", { value: "vip" }, tr("Khách VIP"))),
     channel: h("select", {}, h("option", { value: "" }, tr("mọi kênh")), d.channel_types.map((c) => h("option", { value: c }, c))), min: h("input", { class: "narrow", value: 1 }),
-    near: h("select", {}, h("option", { value: "" }, tr("mọi nơi")), d.showrooms.map((w) => h("option", { value: w.id, disabled: !w.located }, `quanh ${w.name}${w.located ? "" : tr(" (chưa có toạ độ)")}`))),
+    near: h("select", {}, h("option", { value: "" }, tr("mọi nơi")), d.showrooms.map((w) => h("option", { value: w.id, disabled: !w.located }, tr("quanh {0}{1}", w.name, w.located ? "" : tr(" (chưa có toạ độ)"))))),
     km: h("input", { class: "narrow", value: 30, type: "number", min: 1 }) };
   const segQuery = () => `kind=${seg.kind.value}&channel=${seg.channel.value}&min_orders=${seg.min.value || 0}` + (seg.near.value ? `&near_wh=${seg.near.value}&radius_km=${seg.km.value || 30}` : "");
   const segOut = h("div", {});
@@ -471,10 +516,10 @@ views.marketing = async () => {
 
 // ---------------------------------------------------------------- reports
 
-let rpStart = new Date(Date.now() - 29 * 864e5).toISOString().slice(0, 10);
+let rpStart = (() => { const d = new Date(); d.setDate(d.getDate() - 29); return localDate(d); })();
 let rpEnd = today();
 views.reports = async () => {
-  const m = moneyOf(invMeta.settings.currency || "VND");
+  const m = moneyOf(await shopCurrency());
   const start = h("input", { type: "date", value: rpStart });
   const end = h("input", { type: "date", value: rpEnd });
   const box = h("div", {});
