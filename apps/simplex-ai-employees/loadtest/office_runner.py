@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import signal
 import sys
 from pathlib import Path
@@ -17,6 +18,8 @@ from ai_employees.web import start_admin_ui
 
 async def main(config_path: str) -> None:
     raw = yaml.safe_load(Path(config_path).read_text())
+    if port := os.environ.get("AIE_PORT"):  # several processes from one config
+        raw["admin_ui"]["port"] = int(port)
     config = parse_config(raw, base_dir=Path(config_path).parent)
     office = Office(config)
     runner = await start_admin_ui(office, config.admin_ui)
@@ -25,9 +28,10 @@ async def main(config_path: str) -> None:
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, stopping.set)
     print("READY", flush=True)
-    hub = asyncio.create_task(office.hub.run(stopping))
+    tasks = [asyncio.create_task(office.hub.run(stopping)), asyncio.create_task(office.cluster.run(stopping))]
     await stopping.wait()
-    hub.cancel()
+    for t in tasks:
+        t.cancel()
     await runner.cleanup()
 
 

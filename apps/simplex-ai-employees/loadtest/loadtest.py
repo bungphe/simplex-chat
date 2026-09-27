@@ -15,7 +15,6 @@ import asyncio
 import json
 import os
 import random
-import statistics
 import subprocess
 import sys
 import tempfile
@@ -50,8 +49,15 @@ async def start_fakes(stats: Stats, llm_latency: float) -> web.AppRunner:
     async def completions(request: web.Request) -> web.Response:
         stats.llm_calls += 1
         await asyncio.sleep(llm_latency * random.uniform(0.7, 1.3))
-        body = {"choices": [{"message": {"role": "assistant", "content": "Dạ, máy MA-100 giá 4.500.000đ ạ."}, "finish_reason": "stop"}],
-                "usage": {"prompt_tokens": 3000, "completion_tokens": 40}}
+        body = {
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": "Dạ, máy MA-100 giá 4.500.000đ ạ."},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 3000, "completion_tokens": 40},
+        }
         return web.json_response(body)
 
     async def reply(request: web.Request) -> web.Response:
@@ -77,14 +83,30 @@ def write_config(state_dir: str, extra: dict) -> str:
 
     cfg = {
         "state_dir": state_dir,
-        "models": {"fake": {"provider": "openai", "base_url": f"http://127.0.0.1:{LLM_PORT}/v1", "model": "fake"}},
+        "models": {
+            "fake": {"provider": "openai", "base_url": f"http://127.0.0.1:{LLM_PORT}/v1", "model": "fake"}
+        },
         "defaults": {"model": "fake", "history_messages": 20},
         "admin_ui": {"host": "127.0.0.1", "port": OFFICE_PORT, "password": "loadtest-password"},
-        "channels": [{"id": "website", "type": "webhook", "employee": "sales", "secret": SECRET,
-                      "reply_url": f"http://127.0.0.1:{SINK_PORT}/reply", "debounce_seconds": 0.2}],
-        "employees": [{"id": "sales", "display_name": "Lan", "db": f"{state_dir}/db-sales",
-                       "system_prompt": "Bạn là Lan, nhân viên bán hàng. " * 40,
-                       "skills": ["memory", "current_time"]}],
+        "channels": [
+            {
+                "id": "website",
+                "type": "webhook",
+                "employee": "sales",
+                "secret": SECRET,
+                "reply_url": f"http://127.0.0.1:{SINK_PORT}/reply",
+                "debounce_seconds": 0.2,
+            }
+        ],
+        "employees": [
+            {
+                "id": "sales",
+                "display_name": "Lan",
+                "db": f"{state_dir}/db-sales",
+                "system_prompt": "Bạn là Lan, nhân viên bán hàng. " * 40,
+                "skills": ["memory", "current_time"],
+            }
+        ],
         **extra,
     }
     path = Path(state_dir) / "office.yaml"
@@ -104,22 +126,51 @@ def rss_mb(pid: int) -> float:
     return 0.0
 
 
-async def run_rate(session: ClientSession, stats: Stats, rate: float, seconds: float, conversations: int, pid: int) -> dict:
-    stats.latencies.clear(); stats.hook_ms.clear(); stats.errors = 0
-    replies0, calls0, cpu0 = stats.replies, stats.llm_calls, cpu_seconds(pid)
+PORTS: list[int] = [OFFICE_PORT]
+
+
+def machine_busy() -> tuple[float, float]:
+    fields = [float(x) for x in Path("/proc/stat").read_text().splitlines()[0].split()[1:]]
+    idle = fields[3] + fields[4]
+    return sum(fields) - idle, sum(fields)
+
+
+def reset_database(url: str) -> None:
+    import psycopg
+
+    with psycopg.connect(url, autocommit=True) as c:
+        c.execute("DROP SCHEMA public CASCADE")
+        c.execute("CREATE SCHEMA public")
+
+
+async def run_rate(
+    session: ClientSession, stats: Stats, rate: float, seconds: float, conversations: int, pids: list[int]
+) -> dict:
+    stats.latencies.clear()
+    stats.hook_ms.clear()
+    stats.errors = 0
+    replies0, calls0 = stats.replies, stats.llm_calls
+    cpu0, (busy0, all0) = sum(cpu_seconds(p) for p in pids), machine_busy()
     sent = 0
     start = time.monotonic()
     tasks: set[asyncio.Task] = set()
 
     async def send(i: int) -> None:
         conv = f"lt-{i % conversations}"
-        body = {"conversation_id": conv, "customer_name": f"Khách {i % conversations}",
-                "text": f"Cho mình hỏi giá máy lọc nước MA-100, lần {i}", "message_id": f"m{i}-{random.random()}"}
+        body = {
+            "conversation_id": conv,
+            "customer_name": f"Khách {i % conversations}",
+            "text": f"Cho mình hỏi giá máy lọc nước MA-100, lần {i}",
+            "message_id": f"m{i}-{random.random()}",
+        }
         t0 = time.monotonic()
         stats.sent.setdefault(conv, t0)
         try:
-            async with session.post(f"http://127.0.0.1:{OFFICE_PORT}/hooks/website", json=body,
-                                    headers={"X-Hook-Secret": SECRET}) as r:
+            async with session.post(
+                f"http://127.0.0.1:{random.choice(PORTS)}/hooks/website",
+                json=body,
+                headers={"X-Hook-Secret": SECRET},
+            ) as r:
                 await r.read()
                 if r.status != 200:
                     stats.errors += 1
@@ -132,8 +183,10 @@ async def run_rate(session: ClientSession, stats: Stats, rate: float, seconds: f
         due = int(elapsed * rate)
         while sent < due:
             t = asyncio.create_task(send(random.randrange(10**9)))
-            tasks.add(t); t.add_done_callback(tasks.discard)
-            sent += 1; i += 1
+            tasks.add(t)
+            t.add_done_callback(tasks.discard)
+            sent += 1
+            i += 1
         await asyncio.sleep(0.005)
     await asyncio.gather(*tasks, return_exceptions=True)
     # let replies drain (up to 30 s)
@@ -144,11 +197,20 @@ async def run_rate(session: ClientSession, stats: Stats, rate: float, seconds: f
     unanswered = len(stats.sent)
     stats.sent.clear()
     return {
-        "rate": rate, "sent": sent, "errors": stats.errors,
-        "replies": stats.replies - replies0, "llm_calls": stats.llm_calls - calls0, "unanswered": unanswered,
-        "hook_p50": pct(stats.hook_ms, 50), "hook_p99": pct(stats.hook_ms, 99),
-        "e2e_p50": pct(stats.latencies, 50), "e2e_p95": pct(stats.latencies, 95), "e2e_p99": pct(stats.latencies, 99),
-        "cpu": (cpu_seconds(pid) - cpu0) / wall, "rss": rss_mb(pid),
+        "rate": rate,
+        "sent": sent,
+        "errors": stats.errors,
+        "replies": stats.replies - replies0,
+        "llm_calls": stats.llm_calls - calls0,
+        "unanswered": unanswered,
+        "hook_p50": pct(stats.hook_ms, 50),
+        "hook_p99": pct(stats.hook_ms, 99),
+        "e2e_p50": pct(stats.latencies, 50),
+        "e2e_p95": pct(stats.latencies, 95),
+        "e2e_p99": pct(stats.latencies, 99),
+        "cpu": (sum(cpu_seconds(p) for p in pids) - cpu0) / wall,
+        "rss": sum(rss_mb(p) for p in pids),
+        "machine": (machine_busy()[0] - busy0) / max(1e-9, machine_busy()[1] - all0),
     }
 
 
@@ -161,39 +223,69 @@ async def main() -> None:
     ap.add_argument("--config", default="{}", help="extra top-level config as JSON (e.g. database_url)")
     ap.add_argument("--json", help="write results here")
     ap.add_argument("--profile", help="record a py-spy profile of the office to this file (SVG)")
+    ap.add_argument(
+        "--processes", type=int, default=1, help="office processes (needs --database-url when > 1)"
+    )
+    ap.add_argument("--database-url", help="PostgreSQL for the office(s)")
     args = ap.parse_args()
 
     stats = Stats()
     fakes = await start_fakes(stats, args.llm_latency)
     state_dir = tempfile.mkdtemp(prefix="aie-load-")
-    cfg = write_config(state_dir, json.loads(args.config))
+    extra = json.loads(args.config)
+    if args.database_url:
+        extra["database_url"] = args.database_url
+        reset_database(args.database_url)
+    if args.processes > 1:
+        extra["cluster"] = {"shards": args.processes}
+    cfg = write_config(state_dir, extra)
     env = {**os.environ, "NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost"}
-    proc = subprocess.Popen([sys.executable, str(HERE / "office_runner.py"), cfg], stdout=subprocess.PIPE, env=env)
-    assert proc.stdout is not None
-    while b"READY" not in proc.stdout.readline():
-        if proc.poll() is not None:
-            raise SystemExit("office failed to start")
+    procs = []
+    for i in range(args.processes):
+        p = subprocess.Popen(  # noqa: ASYNC220 - started before any load is sent
+            [sys.executable, str(HERE / "office_runner.py"), cfg],
+            stdout=subprocess.PIPE,
+            env={**env, "AIE_SHARD": str(i), "AIE_PORT": str(OFFICE_PORT + i)},
+        )
+        assert p.stdout is not None
+        while b"READY" not in p.stdout.readline():
+            if p.poll() is not None:
+                raise SystemExit("office failed to start")
+        procs.append(p)
+    proc = procs[0]
+    PORTS[:] = [OFFICE_PORT + i for i in range(args.processes)]
     spy = None
     if args.profile:
-        spy = subprocess.Popen(["py-spy", "record", "-p", str(proc.pid), "-o", args.profile, "-f", "raw", "--nonblocking"],
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        spy = subprocess.Popen(  # noqa: ASYNC220
+            ["py-spy", "record", "-p", str(proc.pid), "-o", args.profile, "-f", "raw", "--nonblocking"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
     results = []
     try:
-        async with ClientSession(connector=TCPConnector(limit=2000), timeout=ClientTimeout(total=30)) as session:
+        async with ClientSession(
+            connector=TCPConnector(limit=2000), timeout=ClientTimeout(total=30)
+        ) as session:
             for rate in [float(r) for r in args.rates.split(",")]:
-                r = await run_rate(session, stats, rate, args.seconds, args.conversations, proc.pid)
+                r = await run_rate(
+                    session, stats, rate, args.seconds, args.conversations, [p.pid for p in procs]
+                )
                 results.append(r)
                 print(
                     f"{r['rate']:>6.0f}/s  sent {r['sent']:>6}  err {r['errors']:>4}  replies {r['replies']:>6}  "
                     f"unanswered {r['unanswered']:>5}  hook p50/p99 {r['hook_p50']:.0f}/{r['hook_p99']:.0f} ms  "
                     f"reply p50/p95/p99 {r['e2e_p50']:.2f}/{r['e2e_p95']:.2f}/{r['e2e_p99']:.2f} s  "
-                    f"cpu {r['cpu']*100:.0f}%  rss {r['rss']:.0f} MB",
+                    f"office cpu {r['cpu'] * 100:.0f}%  machine {r['machine'] * 100:.0f}% of {os.cpu_count()} cores  rss {r['rss']:.0f} MB",
                     flush=True,
                 )
     finally:
         if spy is not None:
-            spy.send_signal(2); spy.wait(timeout=30)
-        proc.terminate(); proc.wait(timeout=10)
+            spy.send_signal(2)
+            spy.wait(timeout=30)
+        for p in procs:
+            p.terminate()
+        for p in procs:
+            p.wait(timeout=10)
         await fakes.cleanup()
     if args.json:
         Path(args.json).write_text(json.dumps(results, indent=1))

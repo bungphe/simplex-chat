@@ -58,6 +58,7 @@ def make_office(
     accountant_model: str | None = None,
     actions: dict[str, Any] | None = None,
     channels: list[dict[str, Any]] | None = None,
+    cluster: dict[str, Any] | None = None,
     **sales_overrides: Any,
 ) -> Office:
     accountant = {"model": accountant_model} if accountant_model else {}
@@ -66,6 +67,7 @@ def make_office(
         "models": models or {},
         "actions": actions or {},
         "channels": channels or [],
+        **({"cluster": cluster} if cluster else {}),
         "servers": {"smp": list(smp)},
         "defaults": {"admin_token": "secret-token"},
         "employees": [

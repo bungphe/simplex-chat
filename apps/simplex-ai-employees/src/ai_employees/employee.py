@@ -191,8 +191,7 @@ class Employee:
         sent = 0
         for cid in self.state.admins:
             try:
-                for chunk in split_message(text):
-                    await self.bot.api.api_send_text_message(["direct", cid], chunk)
+                await self.office.cluster.simplex_send(self, cid, text)  # from any shard
                 sent += 1
             except Exception:
                 log.exception("%s: cannot notify admin contact %s", self.id, cid)
@@ -506,6 +505,9 @@ class Office:
         from .hub import ChannelHub
 
         self.hub = ChannelHub(self)
+        from .cluster import Cluster
+
+        self.cluster = Cluster(self)
 
     @property
     def http_client(self) -> httpx2.AsyncClient:
@@ -605,8 +607,9 @@ class Office:
                 pass
 
     async def run(self) -> None:
+        primary = self.cluster.is_primary  # other shards: web, webhooks and their conversations
         async with AsyncExitStack() as stack:
-            for e in self.employees.values():
+            for e in self.employees.values() if primary else ():
                 await stack.enter_async_context(e.bot)
                 log.info("%s (%s) address: %s", e.base.display_name, e.id, e.bot.address)
             if self.config.admin_ui:
@@ -615,9 +618,10 @@ class Office:
                 runner = await start_admin_ui(self, self.config.admin_ui)
                 stack.push_async_callback(runner.cleanup)
             await asyncio.gather(
-                self._scheduler(),
+                *([self._scheduler()] if primary else []),
                 self.hub.run(self._stopping),
-                *(e.bot.serve_forever() for e in self.employees.values()),
+                self.cluster.run(self._stopping),
+                *(e.bot.serve_forever() for e in self.employees.values() if primary),
             )
 
     def stop(self) -> None:

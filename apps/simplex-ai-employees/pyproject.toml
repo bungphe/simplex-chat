@@ -21,6 +21,7 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=8", "pytest-asyncio>=0.23"]
+postgres = ["psycopg[binary]>=3.2"]
 
 [project.scripts]
 ai-employees = "ai_employees.__main__:main"

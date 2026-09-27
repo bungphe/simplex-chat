@@ -30,7 +30,7 @@ COPY apps/simplex-ai-employees /app/apps/simplex-ai-employees
 RUN --mount=type=secret,id=ca_cert,required=false \
     if [ -f /run/secrets/ca_cert ]; then export PIP_CERT=/run/secrets/ca_cert; fi \
  && python3 -m venv /app/venv \
- && /app/venv/bin/pip install /app/packages/simplex-chat-python /app/apps/simplex-ai-employees
+ && /app/venv/bin/pip install /app/packages/simplex-chat-python "/app/apps/simplex-ai-employees[postgres]"
 
 ARG DOWNLOAD_LIBSIMPLEX=1
 ENV XDG_CACHE_HOME=/app/cache

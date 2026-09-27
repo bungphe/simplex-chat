@@ -415,6 +415,45 @@ Câu trả lời được POST tới `reply_url` dạng `{"conversation_id", "te
 Webhook `/hooks/...` dùng chung cổng với giao diện quản trị. Nếu nền tảng ở ngoài máy chủ cần gọi vào, chỉ
 mở đường dẫn `/hooks/` qua reverse proxy có HTTPS, không mở `/api/` và trang quản trị.
 
+## Mở rộng quy mô và đo tải
+
+**Lưu trữ.** Mọi dữ liệu nằm trong cơ sở dữ liệu: mặc định là các file SQLite trong `state_dir` (quyền `600`),
+hoặc một PostgreSQL dùng chung cho nhiều tiến trình:
+
+```yaml
+database_url_env: DATABASE_URL   # vd. postgresql://aie:***@db:5432/aie (pip install "simplex-ai-employees[postgres]")
+cluster:
+  shards: 4                      # số tiến trình; mỗi tiến trình chạy với AIE_SHARD=0..3
+```
+
+- Mỗi hội thoại thuộc về một tiến trình (theo số hội thoại), chỉ tiến trình đó trả lời, nên khách không bao giờ
+  nhận hai câu trả lời. Tin đến tiến trình nào cũng được (sau bộ cân bằng tải); tiến trình đó lưu tin rồi báo
+  cho tiến trình phụ trách qua PostgreSQL `NOTIFY`.
+- Tiến trình số 0 chạy các tài khoản SimpleX, lịch làm việc và việc lấy tin Zalo OA/Facebook. Tin SimpleX gửi từ
+  tiến trình khác (nhân viên trả lời, xác nhận đơn, báo quản lý) đi qua bảng `simplex_outbox`.
+- Tài khoản nhân viên, phiên đăng nhập, model thêm từ giao diện và token Zalo nằm trong cơ sở dữ liệu nên mọi
+  tiến trình dùng chung. Dữ liệu cũ (các file `*.json`, `runlog.jsonl`) được chuyển vào một lần khi khởi động.
+- Docker: `docker compose --profile scale up -d` chạy thêm PostgreSQL và tiến trình thứ hai (xem `docker-compose.yml`).
+
+**Đo tải** bằng `loadtest/loadtest.py`: model giả (trễ cố định 1 giây), kênh webhook, hàng nghìn hội thoại:
+
+```bash
+python loadtest/loadtest.py --rates 50,100,200 --conversations 10000
+python loadtest/loadtest.py --processes 4 --database-url postgresql://... --rates 200,300,400
+```
+
+Kết quả đo trên máy thử 4 nhân (chung máy với PostgreSQL, bộ tạo tải và model giả):
+
+| Cấu hình | Chịu được (trả lời ~1,2–1,3 giây) |
+|---|---|
+| Trước khi chuyển sang cơ sở dữ liệu (file JSON) | ~25 tin/giây (CPU đầy ở 50/giây) |
+| 1 tiến trình, SQLite | ~150 tin/giây |
+| 1 tiến trình, PostgreSQL | ~100 tin/giây |
+| 4 tiến trình, PostgreSQL | ~300 tin/giây |
+
+Giới hạn tiếp theo: mỗi tin cần khoảng 23 lượt truy vấn cơ sở dữ liệu, gọi đồng bộ; chuyển sang truy vấn bất
+đồng bộ sẽ tăng số tin mỗi tiến trình. Chi phí thật khi chạy lớn là tiền gọi model AI, không phải máy chủ.
+
 ## Quản trị trong chat
 
 Nhắn cho nhân viên `/admin <AI_ADMIN_TOKEN>` để trở thành quản trị viên. Sau đó dùng các lệnh:

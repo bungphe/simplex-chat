@@ -741,7 +741,7 @@ async def inbox_mode(request: web.Request) -> web.Response:
     hub = _hub(request)
     hub.inbox.set_mode(conv.id, mode)
     if mode == "ai" and hub.inbox.pending_customer_text(conv.id):
-        hub.schedule_reply(conv.id, 0)  # answer what is waiting
+        request.app[OFFICE].cluster.request_reply(conv, 0)  # answer what is waiting
     return await inbox_get(request)
 
 

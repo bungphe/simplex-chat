@@ -104,6 +104,8 @@ class ChannelHub:
                 conv.is_simplex and conv.channel.split(":", 1)[1] in self.office.employees
             ):
                 continue  # a channel no longer configured
+            if not self.office.cluster.owns(conv):
+                continue  # its own shard answers it
             self.schedule_reply(conv.id, self.resume_delay + i)  # staggered, not all at once
             resumed.append(conv.id)
         if resumed:
@@ -113,6 +115,8 @@ class ChannelHub:
     async def _poll_loop(self, ch: Channel, stopping: asyncio.Event) -> None:
         if ch.cfg.poll_seconds <= 0 or type(ch).poll is Channel.poll:
             return  # push-only channel (webhook)
+        if not self.office.cluster.is_primary:
+            return  # one shard polls; the owners answer
         while not stopping.is_set():
             await self.poll_once(ch.id)
             try:
@@ -166,7 +170,9 @@ class ChannelHub:
                     to_answer.discard(conv.id)
         if ch.cfg.auto_reply:
             for conv_id in to_answer:
-                self.schedule_reply(conv_id, ch.cfg.debounce_seconds)
+                conv = self.inbox.conversation(conv_id)
+                if conv is not None:
+                    self.office.cluster.request_reply(conv, ch.cfg.debounce_seconds)
         return added
 
     def push_inbound(self, channel_id: str, payload: dict[str, Any]) -> Conversation | None:
@@ -242,13 +248,10 @@ class ChannelHub:
         self, conv: Conversation, text: str, sender: str, author: str, original: str = ""
     ) -> None:
         """Send on the conversation's own channel and record it in the inbox."""
-        from .employee import split_message
-
         external_id = None
         if conv.is_simplex:
             employee = self.office.employees[conv.channel.split(":", 1)[1]]
-            for chunk in split_message(text):
-                await employee.bot.api.api_send_text_message(["direct", int(conv.external_id)], chunk)
+            await self.office.cluster.simplex_send(employee, int(conv.external_id), text)
         else:
             ch = self.channels.get(conv.channel)
             if ch is None:
@@ -358,5 +361,5 @@ class ChannelHub:
                 raise KeyError(contact_id)
             await self.deliver(conv, text, sender, employee.settings.display_name)
             return
-        await employee.bot.api.api_send_text_message(["direct", contact_id], text)
+        await self.office.cluster.simplex_send(employee, contact_id, text)
         self.simplex_outbound(employee, contact_id, text, sender)

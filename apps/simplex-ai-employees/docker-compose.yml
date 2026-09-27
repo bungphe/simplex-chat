@@ -39,6 +39,34 @@ services:
     volumes:
       - zalo-sessions:/app/sessions   # Zalo login sessions: treat like passwords
 
+  # Many customers: PostgreSQL shared by several office processes ("docker compose --profile
+  # scale up -d"). In employees.yaml: database_url_env: DATABASE_URL and cluster: {shards: 2};
+  # ai-employees is shard 0 (SimpleX accounts, routines, polling), ai-employees-2 is shard 1.
+  # Put both behind a load balancer for /hooks and the admin UI.
+  postgres:
+    image: postgres:16
+    profiles: [scale]
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: aie
+      POSTGRES_USER: aie
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres:/var/lib/postgresql/data
+
+  ai-employees-2:
+    image: simplex-ai-employees
+    profiles: [scale]
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      AIE_SHARD: "1"
+    volumes:
+      - ./data:/data
+    ports:
+      - "127.0.0.1:8081:8080"
+    depends_on: [postgres, ai-employees]
+
   ollama:
     image: ollama/ollama:latest
     profiles: [local-ai]
@@ -52,3 +80,4 @@ services:
 volumes:
   ollama:
   zalo-sessions:
+  postgres:
