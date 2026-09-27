@@ -887,6 +887,7 @@ async def test_staff_accounts_roles_and_channel_scope(ui, tmp_path):
         "name": "Thu Trần",
         "role": "agent",
         "channels": ["website"],
+        "lang": "",
         "disabled": False,
         "created": users["thu"]["created"],
     }

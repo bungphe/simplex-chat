@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from datetime import datetime, time, timedelta
 from typing import Any
 
+from .i18n import tr
+
 DAY_NAMES = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 PERIODS = ("day", "week", "month")
 DELIVERY = ("admins", "none")
@@ -66,7 +68,7 @@ class Routine:
         return None
 
     def describe(self) -> str:
-        per = {"day": "", "week": ", mỗi tuần một lần", "month": ", mỗi tháng một lần"}[self.period]
+        per = {"day": "", "week": tr(", mỗi tuần một lần"), "month": tr(", mỗi tháng một lần")}[self.period]
         return f"{self.days_spec} {self.at:%H:%M}{per}"
 
 

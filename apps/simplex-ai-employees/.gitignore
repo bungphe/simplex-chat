@@ -8,3 +8,4 @@ __pycache__/
 data/
 examples/data/
 .env
+src/ai_employees/locales/.work/

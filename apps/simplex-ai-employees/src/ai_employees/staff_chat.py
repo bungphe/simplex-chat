@@ -15,9 +15,11 @@ import hashlib
 import logging
 import secrets
 import time
+from collections.abc import Callable
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from .i18n import tr, use_language
 from .inventory import PAYMENT_METHODS, InventoryError
 from .users import ROLE_AREAS, User, Users
 
@@ -87,12 +89,20 @@ def allowed(user: User, command: str) -> bool:
 
 def staff_menu(user: User) -> list[dict[str, Any]]:
     """The menu the SimpleX apps show this staff member: their role's commands."""
-    menu: list[dict[str, Any]] = []
-    for label, words in GROUPS:
-        items = [{"type": "command", "keyword": w, **COMMANDS[w][1]} for w in words if allowed(user, w)]
-        if items:
-            menu.append({"type": "menu", "label": label, "commands": items})
-    menu += [{"type": "command", "keyword": w, **COMMANDS[w][1]} for w in ("me", "unlink")]
+
+    def entry(w: str) -> dict[str, Any]:
+        e = {"type": "command", "keyword": w, "label": tr(COMMANDS[w][1]["label"])}
+        if "params" in COMMANDS[w][1]:
+            e["params"] = tr(COMMANDS[w][1]["params"])
+        return e
+
+    with use_language(user.lang or None):  # in the staff member's own language
+        menu: list[dict[str, Any]] = []
+        for label, words in GROUPS:
+            items = [entry(w) for w in words if allowed(user, w)]
+            if items:
+                menu.append({"type": "menu", "label": tr(label), "commands": items})
+        menu += [entry(w) for w in ("me", "unlink")]
     return menu
 
 
@@ -179,15 +189,18 @@ class StaffLinks:
                 out.append((employee, int(cid), user))
         return out
 
-    async def notify(self, area: str, text: str) -> int:
-        """Tell the linked staff whose role covers `area` (inbox, pos, ...)."""
+    async def notify(self, area: str, text: str | Callable[[], str]) -> int:
+        """Tell the linked staff whose role covers `area` (inbox, pos, ...); a callable text
+        is made for each of them, in their own language."""
         sent = 0
         for employee_id, cid, user in self.linked():
             employee = self.office.employees.get(employee_id)
             if employee is None or not (user.is_admin or area in ROLE_AREAS.get(user.role, ())):
                 continue
+            with use_language(user.lang or None):
+                message = text() if callable(text) else text
             try:
-                await self.office.cluster.simplex_send(employee, cid, text)
+                await self.office.cluster.simplex_send(employee, cid, message)
                 sent += 1
             except Exception:  # noqa: BLE001 - one unreachable phone must not stop the others
                 log.warning("staff: could not notify %s (%s:%s)", user.username, employee_id, cid)
@@ -212,29 +225,40 @@ class StaffChat:
         if word == "link":
             user = self.links.redeem(args, self.employee.id, cid) if args.strip() else None
             if user is None:
-                return "Mã liên kết không đúng hoặc đã hết hạn. Lấy mã mới trong trang quản trị: Tài khoản → Liên kết SimpleX."
+                return tr(
+                    "Mã liên kết không đúng hoặc đã hết hạn. Lấy mã mới trong trang quản trị: Tài khoản → Liên kết SimpleX."
+                )
             await self.sync_menu(cid)
-            return f"Đã liên kết với tài khoản {user.name} ({user.role}). Gõ / hoặc bấm // để xem các lệnh của bạn."
+            with use_language(user.lang or None):
+                return tr(
+                    "Đã liên kết với tài khoản {0} ({1}). Gõ / hoặc bấm // để xem các lệnh của bạn.",
+                    user.name,
+                    user.role,
+                )
         user = self.links.user(self.employee.id, cid)
         if user is None:
-            return "Lệnh dành cho nhân viên. Liên kết trước: trang quản trị → Tài khoản → Liên kết SimpleX, rồi gửi /link <mã>."
-        if not allowed(user, word):
-            return "Vai trò của bạn không dùng được lệnh này."
-        try:
-            result = getattr(self, f"cmd_{word}")(user, args.strip(), cid)
-            return await result if hasattr(result, "__await__") else result
-        except (InventoryError, ValueError) as e:
-            return str(e)
+            return tr(
+                "Lệnh dành cho nhân viên. Liên kết trước: trang quản trị → Tài khoản → Liên kết SimpleX, rồi gửi /link <mã>."
+            )
+        with use_language(user.lang or None):  # replies (and errors) in the staff member's language
+            if not allowed(user, word):
+                return tr("Vai trò của bạn không dùng được lệnh này.")
+            try:
+                result = getattr(self, f"cmd_{word}")(user, args.strip(), cid)
+                return await result if hasattr(result, "__await__") else result
+            except (InventoryError, ValueError) as e:
+                return str(e)
 
     async def sync_menu(self, cid: int) -> None:
         """This contact's menu: their role's commands (plus the admin menu for AI admins), or
         for a customer the customer menu in their language."""
-        from .chat_menu import ADMIN_MENU, customer_menu
+        from .chat_menu import admin_menu_entry, customer_menu
 
         user = self.links.user(self.employee.id, cid)
         commands = staff_menu(user) if user else customer_menu(self._menu_language(cid))
         if self.employee.state.is_admin(cid):
-            commands.append(ADMIN_MENU)
+            with use_language(user.lang if user else None):
+                commands.append(admin_menu_entry())
         try:
             await self.employee.bot.api.api_set_contact_prefs(cid, {"commands": commands})
         except Exception:  # noqa: BLE001 - typed commands work without the menu
@@ -257,13 +281,13 @@ class StaffChat:
     # ------------------------------------------------------------------ #
 
     def cmd_me(self, user: User, args: str, cid: int) -> str:
-        areas = "tất cả" if user.is_admin else ", ".join(ROLE_AREAS.get(user.role, ())) or "-"
-        return f"👤 {user.name} ({user.username}) · vai trò {user.role} · phần việc: {areas}"
+        areas = tr("tất cả") if user.is_admin else ", ".join(ROLE_AREAS.get(user.role, ())) or "-"
+        return tr("👤 {0} ({1}) · vai trò {2} · phần việc: {3}", user.name, user.username, user.role, areas)
 
     async def cmd_unlink(self, user: User, args: str, cid: int) -> str:
         self.links.unlink(self.employee.id, cid)
         await self.sync_menu(cid)
-        return "Đã huỷ liên kết chat này với tài khoản nhân viên."
+        return tr("Đã huỷ liên kết chat này với tài khoản nhân viên.")
 
     # inbox
 
@@ -271,7 +295,7 @@ class StaffChat:
         num = ref.strip().lstrip("#")
         conv = self.office.hub.inbox.conversation(int(num)) if num.isdigit() else None
         if conv is None or not user.sees(conv.channel):
-            raise InventoryError(f"Không có hội thoại #{num}. Xem danh sách: /inbox")
+            raise InventoryError(tr("Không có hội thoại #{0}. Xem danh sách: /inbox", num))
         return conv
 
     def cmd_inbox(self, user: User, args: str, cid: int) -> str:
@@ -279,50 +303,61 @@ class StaffChat:
         convs = [c for c in inbox.list(status="open", limit=100) if user.sees(c.channel)]
         waiting = [c for c in convs if c.waiting_since or c.unread or c.mode == "human"][:12]
         if not waiting:
-            return "Không có khách nào đang chờ. 👍"
+            return tr("Không có khách nào đang chờ. 👍")
         lines = []
         for c in waiting:
-            who = "🙋 người" if c.mode == "human" else "🤖 AI"
+            who = tr("🙋 người") if c.mode == "human" else "🤖 AI"
             lines.append(
                 f"#{c.id} *{c.customer_name or c.external_id}* · {c.channel.split(':')[0]} · {who}"
-                f"{' · ' + str(c.unread) + ' tin mới' if c.unread else ''}\n  {c.last_preview[:80]}\n  /'open {c.id}'"
+                f"{' · ' + str(c.unread) + tr(' tin mới') if c.unread else ''}\n  {c.last_preview[:80]}\n  /'open {c.id}'"
             )
-        return "*Khách đang chờ*\n" + "\n".join(lines)
+        return tr("*Khách đang chờ*\n") + "\n".join(lines)
 
     def cmd_open(self, user: User, args: str, cid: int) -> str:
         conv = self._conv(user, args)
         msgs = self.office.hub.inbox.messages(conv.id, limit=10)
         names = {
-            "customer": conv.customer_name or "Khách",
+            "customer": conv.customer_name or tr("Khách"),
             "ai": "AI",
             "human": "NV",
-            "system": "hệ thống",
-            "note": "ghi chú",
+            "system": tr("hệ thống"),
+            "note": tr("ghi chú"),
         }
         body = "\n".join(f"[{names.get(m['sender'], m['sender'])}] {m['text'][:300]}" for m in msgs)
-        return (
-            f"*#{conv.id} {conv.customer_name or conv.external_id}* ({conv.channel.split(':')[0]}, "
-            f"{'người trả lời' if conv.mode == 'human' else 'AI trả lời'})\n{body}\n\n"
-            f"Trả lời: /reply {conv.id} <nội dung> · trả lại AI: /'aion {conv.id}' · đóng: /'close {conv.id}'"
+        return tr(
+            "*#{0} {1}* ({2}, {3})\n{4}\n\nTrả lời: /reply {5} <nội dung> · trả lại AI: /'aion {6}' · đóng: /'close {7}'",
+            conv.id,
+            conv.customer_name or conv.external_id,
+            conv.channel.split(":")[0],
+            tr("người trả lời") if conv.mode == "human" else tr("AI trả lời"),
+            body,
+            conv.id,
+            conv.id,
+            conv.id,
         )
 
     async def cmd_reply(self, user: User, args: str, cid: int) -> str:
         ref, _, text = args.partition(" ")
         conv = self._conv(user, ref)
         if not text.strip():
-            return f"Cú pháp: /reply {conv.id} <nội dung>"
+            return tr("Cú pháp: /reply {0} <nội dung>", conv.id)
         await self.office.hub.human_reply(conv.id, text.strip(), user.name, take_over=True, translate=True)
-        return f"Đã gửi cho {conv.customer_name or 'khách'} (#{conv.id}). AI tạm dừng ở hội thoại này: /'aion {conv.id}' để trả lại."
+        return tr(
+            "Đã gửi cho {0} (#{1}). AI tạm dừng ở hội thoại này: /'aion {2}' để trả lại.",
+            conv.customer_name or tr("khách"),
+            conv.id,
+            conv.id,
+        )
 
     def cmd_aion(self, user: User, args: str, cid: int) -> str:
         conv = self._conv(user, args)
         self.office.hub.inbox.set_mode(conv.id, "ai")
-        return f"#{conv.id}: AI trả lời tiếp."
+        return tr("#{0}: AI trả lời tiếp.", conv.id)
 
     def cmd_close(self, user: User, args: str, cid: int) -> str:
         conv = self._conv(user, args)
         self.office.hub.inbox.set_status(conv.id, "closed")
-        return f"Đã đóng hội thoại #{conv.id}."
+        return tr("Đã đóng hội thoại #{0}.", conv.id)
 
     # the counter
 
@@ -330,21 +365,28 @@ class StaffChat:
         try:
             order = self.office.inventory.order(int(code.strip().upper().removeprefix("DH")))
         except (ValueError, InventoryError):
-            raise InventoryError(f"Không có đơn {code}") from None
+            raise InventoryError(tr("Không có đơn {0}", code)) from None
         if not (user.is_admin or user.role == "manager"):
             today = datetime.now().astimezone().date().isoformat()
             if order["salesperson"] != user.username or not order["created"].startswith(today):
-                raise InventoryError(f"Không có đơn {code} của bạn hôm nay")
+                raise InventoryError(tr("Không có đơn {0} của bạn hôm nay", code))
         return order
 
     def _describe(self, o: dict[str, Any]) -> str:
         items = "\n".join(
             f"  • {i['name']} × {i['qty']} = {self._money(i['line_total'])}" for i in o["items"]
         )
-        return (
-            f"*{o['code']}* · {o['customer_name'] or 'Khách lẻ'} {o['phone']} · {o['status']}"
-            f"{' · đặt trước' if o['kind'] == 'preorder' else ''}\n{items}\n"
-            f"Tổng {self._money(o['total'])} · đã trả {self._money(o['paid'])} · còn {self._money(o['due'])}"
+        return tr(
+            "*{0}* · {1} {2} · {3}{4}\n{5}\nTổng {6} · đã trả {7} · còn {8}",
+            o["code"],
+            o["customer_name"] or tr("Khách lẻ"),
+            o["phone"],
+            o["status"],
+            tr(" · đặt trước") if o["kind"] == "preorder" else "",
+            items,
+            self._money(o["total"]),
+            self._money(o["paid"]),
+            self._money(o["due"]),
         )
 
     def cmd_sell(self, user: User, args: str, cid: int) -> str:
@@ -358,7 +400,7 @@ class StaffChat:
             sku = words[0]
             items.append({"sku": sku, "qty": qty})
         if not items:
-            return "Cú pháp: /sell SOFA-01 1, GHE-02 4; 0901234567 Chị Lan"
+            return tr("Cú pháp: /sell SOFA-01 1, GHE-02 4; 0901234567 Chị Lan")
         phone, _, name = who.strip().partition(" ")
         crm = self.office.hub.crm
         contact = None
@@ -380,8 +422,8 @@ class StaffChat:
             salesperson=user.username,
             actor=user.name,
         )
-        return (
-            self._describe(order) + f"\nThu tiền: /pay {order['code']} cash · giao: /'done {order['code']}'"
+        return self._describe(order) + tr(
+            "\nThu tiền: /pay {0} cash · giao: /'done {1}'", order["code"], order["code"]
         )
 
     def cmd_order(self, user: User, args: str, cid: int) -> str:
@@ -390,8 +432,9 @@ class StaffChat:
     def cmd_pay(self, user: User, args: str, cid: int) -> str:
         words = args.split()
         if len(words) < 2 or words[1] not in PAYMENT_METHODS:
-            return (
-                f"Cú pháp: /pay <mã đơn> <{'|'.join(m for m in PAYMENT_METHODS if m != 'refund')}> [số tiền]"
+            return tr(
+                "Cú pháp: /pay <mã đơn> <{0}> [số tiền]",
+                "|".join(m for m in PAYMENT_METHODS if m != "refund"),
             )
         order = self._order(user, words[0])
         o = self.office.inventory.add_payment(
@@ -406,9 +449,8 @@ class StaffChat:
 
     def cmd_done(self, user: User, args: str, cid: int) -> str:
         order = self._order(user, args)
-        return (
-            self._describe(self.office.inventory.complete_order(int(order["id"]), user.name))
-            + "\n✅ Đã xuất kho."
+        return self._describe(self.office.inventory.complete_order(int(order["id"]), user.name)) + tr(
+            "\n✅ Đã xuất kho."
         )
 
     def cmd_sales(self, user: User, args: str, cid: int) -> str:
@@ -420,10 +462,10 @@ class StaffChat:
         )
         orders = self.office.inventory.orders(salesperson=user.username, since=today)
         if not orders:
-            return "Hôm nay bạn chưa có đơn."
+            return tr("Hôm nay bạn chưa có đơn.")
         total = sum(o["total"] for o in orders if o["status"] != "cancelled")
-        return f"*Đơn của bạn hôm nay* ({len(orders)} đơn, {self._money(total)})\n" + "\n".join(
-            f"{o['code']} · {o['customer_name'] or 'Khách lẻ'} · {o['status']} · {self._money(o['total'])}"
+        return tr("*Đơn của bạn hôm nay* ({0} đơn, {1})\n", len(orders), self._money(total)) + "\n".join(
+            f"{o['code']} · {o['customer_name'] or tr('Khách lẻ')} · {o['status']} · {self._money(o['total'])}"
             for o in orders[:20]
         )
 
@@ -439,10 +481,18 @@ class StaffChat:
         inv = self.office.inventory
         rows = [p for s in ("ordered", "shipping", "arrived", "partial") for p in inv.pos(s)]
         if not rows:
-            return "Không có đơn nhập nào đang về."
-        return "*Hàng đang về*\n" + "\n".join(
-            f"{p['po_number']} · {p['supplier_name']} → {p['warehouse_name']} · {p['status']}"
-            f"{' · ETA ' + p['eta'] if p['eta'] else ''} · {p['qty']} sp\n  nhận đủ: /'receive {p['po_number']}'"
+            return tr("Không có đơn nhập nào đang về.")
+        return tr("*Hàng đang về*\n") + "\n".join(
+            tr(
+                "{0} · {1} → {2} · {3}{4} · {5} sp\n  nhận đủ: /'receive {6}'",
+                p["po_number"],
+                p["supplier_name"],
+                p["warehouse_name"],
+                p["status"],
+                " · ETA " + p["eta"] if p["eta"] else "",
+                p["qty"],
+                p["po_number"],
+            )
             for p in rows[:15]
         )
 
@@ -450,7 +500,7 @@ class StaffChat:
         inv = self.office.inventory
         row = inv.db.row("SELECT id FROM inv_purchase_orders WHERE po_number=?", (args.strip().upper(),))
         if row is None:
-            return f"Không có đơn nhập {args}. Xem: /incoming"
+            return tr("Không có đơn nhập {0}. Xem: /incoming", args)
         po = inv.po(int(row["id"]))
         items = [
             {
@@ -461,13 +511,13 @@ class StaffChat:
         ]
         items = [i for i in items if i["qty"] > 0]
         if not items:
-            return f"{po['po_number']} đã nhận đủ."
+            return tr("{0} đã nhận đủ.", po["po_number"])
         result = inv.receive_po(int(row["id"]), items, actor=user.name)
         served = result.get("served_preorders") or []
         return (
-            f"📥 Đã nhận {sum(i['qty'] for i in items)} sản phẩm của {po['po_number']} vào kho."
-            + (f" Đã giữ hàng cho {len(served)} đơn đặt trước." if served else "")
-            + " Hàng hỏng hay thiếu: sửa trong trang Kho hàng."
+            tr("📥 Đã nhận {0} sản phẩm của {1} vào kho.", sum(i["qty"] for i in items), po["po_number"])
+            + (tr(" Đã giữ hàng cho {0} đơn đặt trước.", len(served)) if served else "")
+            + tr(" Hàng hỏng hay thiếu: sửa trong trang Kho hàng.")
         )
 
     # deliveries
@@ -478,20 +528,20 @@ class StaffChat:
             r for r in self.office.delivery.routes(today, today) if r["status"] in ("planned", "in_progress")
         ]
         if not routes:
-            return "Hôm nay không có chuyến giao nào."
+            return tr("Hôm nay không có chuyến giao nào.")
         out = []
         for r in routes:
             head = f"*{r['code']}* · {r['status']} · {r['carrier_name']}" + (
                 f" · {r['driver']['name']}" if r["driver"] else ""
             )
             if r["status"] == "planned":
-                head += f"\n  bắt đầu: /'go {r['code']}'"
+                head += tr("\n  bắt đầu: /'go {0}'", r["code"])
             stops = []
             for n, s in enumerate(r["stops"], 1):
                 b = s["booking"]
                 line = f"  {n}. #{b['id']} {b['customer_name']} {b['phone']} · {b['address']}"
                 if s["status"] == "pending" and r["status"] == "in_progress":
-                    line += f"\n     /'delivered {b['id']}' · /failed {b['id']} <lý do>"
+                    line += tr("\n     /'delivered {0}' · /failed {1} <lý do>", b["id"], b["id"])
                 elif s["status"] != "pending":
                     line += f" · {'✅' if s['status'] == 'done' else '↩️'}"
                 stops.append(line)
@@ -501,12 +551,12 @@ class StaffChat:
     def _route_id(self, ref: str) -> int:
         num = ref.strip().upper().removeprefix("CX")
         if not num.isdigit():
-            raise InventoryError("Cú pháp: /go CX00001")
+            raise InventoryError(tr("Cú pháp: /go CX00001"))
         return int(num)
 
     async def cmd_go(self, user: User, args: str, cid: int) -> str:
         r = await self.office.delivery.start_route(self._route_id(args), user.name)
-        return f"🚚 {r['code']} đã chạy; khách được báo. Xem điểm giao: /trips"
+        return tr("🚚 {0} đã chạy; khách được báo. Xem điểm giao: /trips", r["code"])
 
     def _stop(self, ref: str) -> tuple[int, int]:
         num = ref.strip().lstrip("#")
@@ -516,22 +566,22 @@ class StaffChat:
             (int(num) if num.isdigit() else -1,),
         )
         if row is None:
-            raise InventoryError(f"Lịch giao #{num} không thuộc chuyến nào đang chạy. Xem: /trips")
+            raise InventoryError(tr("Lịch giao #{0} không thuộc chuyến nào đang chạy. Xem: /trips", num))
         return int(row["route_id"]), int(num)
 
     def cmd_delivered(self, user: User, args: str, cid: int) -> str:
         rid, bid = self._stop(args)
         r = self.office.delivery.stop_result(rid, bid, "done", actor=user.name)
         left = sum(1 for s in r["stops"] if s["status"] == "pending")
-        return f"✅ Đã giao #{bid}." + (f" Còn {left} điểm." if left else " Xong chuyến! 🎉")
+        return tr("✅ Đã giao #{0}.", bid) + (tr(" Còn {0} điểm.", left) if left else tr(" Xong chuyến! 🎉"))
 
     def cmd_failed(self, user: User, args: str, cid: int) -> str:
         ref, _, note = args.partition(" ")
         if not note.strip():
-            return f"Cú pháp: /failed {ref or '<số>'} <lý do>"
+            return tr("Cú pháp: /failed {0} <lý do>", ref or tr("<số>"))
         rid, bid = self._stop(ref)
         self.office.delivery.stop_result(rid, bid, "comeback", note.strip(), actor=user.name)
-        return f"↩️ #{bid}: mang hàng về ({note.strip()}). Quản lý sẽ hẹn lại."
+        return tr("↩️ #{0}: mang hàng về ({1}). Quản lý sẽ hẹn lại.", bid, note.strip())
 
     # managers
 

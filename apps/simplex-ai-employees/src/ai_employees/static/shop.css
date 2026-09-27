@@ -78,3 +78,6 @@ th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border);
   .detail { grid-template-columns: 1fr; }
   .cart th:nth-child(2), .cart td:nth-child(2) { display: none; }
 }
+footer .langs { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 10px; margin-top: 10px; font-size: 13px; }
+footer .langs a { color: var(--muted); text-decoration: none; }
+footer .langs a.on { color: var(--accent); font-weight: 600; }

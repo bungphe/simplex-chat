@@ -18,6 +18,8 @@ import unicodedata
 import uuid
 from typing import TYPE_CHECKING, Any
 
+from .i18n import tr
+
 if TYPE_CHECKING:
     from .db import DocStore
 
@@ -29,15 +31,15 @@ _ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,47}$")
 
 def fold(text: str) -> str:
     """Lower case without accents: "Khiếu nại" matches "khieu nai" and "KHIẾU NẠI"."""
-    decomposed = unicodedata.normalize("NFD", text.casefold().replace("đ", "d"))
+    decomposed = unicodedata.normalize("NFD", text.casefold().replace(tr("đ"), "d"))
     return "".join(c for c in decomposed if unicodedata.category(c) != "Mn")
 
 
 def _text(value: Any, name: str, limit: int, required: bool = True) -> str:
     if not isinstance(value, str) or (required and not value.strip()):
-        raise ValueError(f"{name} là bắt buộc")
+        raise ValueError(tr("{0} là bắt buộc", name))
     if len(value) > limit:
-        raise ValueError(f"{name} dài quá {limit} ký tự")
+        raise ValueError(tr("{0} dài quá {1} ký tự", name, limit))
     return value.strip()
 
 
@@ -45,7 +47,7 @@ def _names(value: Any, name: str) -> list[str]:
     if value in (None, ""):
         return []
     if not isinstance(value, list) or not all(isinstance(x, str) for x in value):
-        raise ValueError(f"{name} phải là danh sách")
+        raise ValueError(tr("{0} phải là danh sách", name))
     return [x.strip() for x in value if x.strip()]
 
 
@@ -85,67 +87,67 @@ class Desk:
         current = self.get()
         if section == "sla_minutes":
             if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 7 * 24 * 60:
-                raise ValueError("sla_minutes phải là số phút từ 1 đến 10080")
+                raise ValueError(tr("sla_minutes phải là số phút từ 1 đến 10080"))
             return value
         if section not in ("labels", "canned", "teams", "rules") or not isinstance(value, list):
             raise ValueError("unknown section")
         if len(value) > 200:
-            raise ValueError("tối đa 200 mục")
+            raise ValueError(tr("tối đa 200 mục"))
         out: list[dict[str, Any]] = []
         if section == "labels":
             for x in value:
-                name = _text(x.get("name"), "Tên nhãn", 40)
+                name = _text(x.get("name"), tr("Tên nhãn"), 40)
                 color = x.get("color") or "#64748b"
                 if not isinstance(color, str) or not _COLOR.match(color):
-                    raise ValueError("màu phải có dạng #rrggbb")
+                    raise ValueError(tr("màu phải có dạng #rrggbb"))
                 if any(o["name"] == name for o in out):
-                    raise ValueError(f"nhãn '{name}' bị trùng")
+                    raise ValueError(tr("nhãn '{0}' bị trùng", name))
                 out.append({"name": name, "color": color})
         elif section == "canned":
             for x in value:
                 out.append(
                     {
                         "id": str(x.get("id") or uuid.uuid4().hex[:8])[:16],
-                        "title": _text(x.get("title"), "Tiêu đề", 80),
-                        "text": _text(x.get("text"), "Nội dung", 4000),
+                        "title": _text(x.get("title"), tr("Tiêu đề"), 80),
+                        "text": _text(x.get("text"), tr("Nội dung"), 4000),
                     }
                 )
         elif section == "teams":
             for x in value:
                 tid = str(x.get("id") or "")
                 if not _ID.match(tid):
-                    raise ValueError("mã nhóm chỉ gồm chữ thường, số, '-' hoặc '_'")
+                    raise ValueError(tr("mã nhóm chỉ gồm chữ thường, số, '-' hoặc '_'"))
                 if any(o["id"] == tid for o in out):
-                    raise ValueError(f"nhóm '{tid}' bị trùng")
-                members = _names(x.get("members"), "Thành viên")
+                    raise ValueError(tr("nhóm '{0}' bị trùng", tid))
+                members = _names(x.get("members"), tr("Thành viên"))
                 if unknown := set(members) - usernames:
-                    raise ValueError(f"không có tài khoản: {', '.join(sorted(unknown))}")
-                out.append({"id": tid, "name": _text(x.get("name"), "Tên nhóm", 60), "members": members})
+                    raise ValueError(tr("không có tài khoản: {0}", ", ".join(sorted(unknown))))
+                out.append({"id": tid, "name": _text(x.get("name"), tr("Tên nhóm"), 60), "members": members})
         else:  # rules
             labels = {lb["name"] for lb in current["labels"]}
             teams = {t["id"] for t in current["teams"]}
             for x in value:
                 rule = {
                     "id": str(x.get("id") or uuid.uuid4().hex[:8])[:16],
-                    "name": _text(x.get("name"), "Tên quy tắc", 80),
+                    "name": _text(x.get("name"), tr("Tên quy tắc"), 80),
                     "enabled": bool(x.get("enabled", True)),
-                    "channels": _names(x.get("channels"), "Kênh"),
-                    "keywords": [k for k in _names(x.get("keywords"), "Từ khoá") if len(k) <= 80],
-                    "labels": _names(x.get("labels"), "Nhãn"),
+                    "channels": _names(x.get("channels"), tr("Kênh")),
+                    "keywords": [k for k in _names(x.get("keywords"), tr("Từ khoá")) if len(k) <= 80],
+                    "labels": _names(x.get("labels"), tr("Nhãn")),
                     "team": str(x.get("team") or ""),
                     "assignee": str(x.get("assignee") or ""),
                     "handoff": bool(x.get("handoff", False)),
                 }
                 if unknown := set(rule["channels"]) - channels:
-                    raise ValueError(f"không có kênh: {', '.join(sorted(unknown))}")
+                    raise ValueError(tr("không có kênh: {0}", ", ".join(sorted(unknown))))
                 if unknown := set(rule["labels"]) - labels:
-                    raise ValueError(f"chưa khai báo nhãn: {', '.join(sorted(unknown))}")
+                    raise ValueError(tr("chưa khai báo nhãn: {0}", ", ".join(sorted(unknown))))
                 if rule["team"] and rule["team"] not in teams:
-                    raise ValueError(f"không có nhóm: {rule['team']}")
+                    raise ValueError(tr("không có nhóm: {0}", rule["team"]))
                 if rule["assignee"] and rule["assignee"] not in usernames:
-                    raise ValueError(f"không có tài khoản: {rule['assignee']}")
+                    raise ValueError(tr("không có tài khoản: {0}", rule["assignee"]))
                 if not (rule["labels"] or rule["team"] or rule["assignee"] or rule["handoff"]):
-                    raise ValueError(f"quy tắc '{rule['name']}' chưa có việc gì để làm")
+                    raise ValueError(tr("quy tắc '{0}' chưa có việc gì để làm", rule["name"]))
                 out.append(rule)
         return out
 

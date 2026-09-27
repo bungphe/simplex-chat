@@ -25,8 +25,10 @@ from typing import TYPE_CHECKING, Any
 
 from aiohttp import BodyPartReader, web
 
+from . import i18n
 from . import skills as sk
 from .config import EFFORT_LEVELS, AdminUIConfig, ConfigError
+from .i18n import tr
 from .providers import PROVIDERS, ModelError
 from .users import ROLE_AREAS, Sessions, User, Users
 
@@ -66,6 +68,7 @@ SECURITY_HEADERS = {
     "Cache-Control": "no-store",
 }
 
+UI_LANG = "ui_lang"  # cookie: the admin UI's language in this browser
 OFFICE: web.AppKey[Office] = web.AppKey("office")
 PASSWORD: web.AppKey[str] = web.AppKey("password")
 SESSIONS: web.AppKey[Sessions] = web.AppKey("sessions")
@@ -88,9 +91,13 @@ _AREA_PREFIXES = {
 def _may(user: User, method: str, path: str) -> bool:
     if user.is_admin:
         return True
-    if path in ("/api/me", "/api/me/password", "/api/logout", "/api/notices") or path.startswith(
-        ("/api/notices/", "/api/me/simplex")
-    ):
+    if path in (
+        "/api/me",
+        "/api/me/password",
+        "/api/me/lang",
+        "/api/logout",
+        "/api/notices",
+    ) or path.startswith(("/api/notices/", "/api/me/simplex")):
         return True
     if method == "GET" and path == "/api/channels":
         return True
@@ -130,12 +137,14 @@ async def guard(request: web.Request, handler: Any) -> web.StreamResponse:
         if path.startswith("/api/"):
             if request.method not in ("GET", "HEAD") and request.headers.get(CSRF_HEADER) != CSRF_VALUE:
                 raise ApiError(403, "missing request header")
+            i18n.activate(request_language(request))
             if path != "/api/login":
                 user = _session_user(request)
                 if user is None:
                     raise ApiError(401, "not logged in")
+                i18n.activate(request_language(request, user))  # texts and errors in their language
                 if not _may(user, request.method, path):
-                    raise ApiError(403, "Tài khoản của bạn không có quyền này")
+                    raise ApiError(403, tr("Tài khoản của bạn không có quyền này"))
                 request[USER] = user
         resp = await handler(request)
     except ApiError as e:
@@ -214,7 +223,7 @@ async def login(request: web.Request) -> web.Response:
     if user is None:
         await asyncio.sleep(1.0)  # slow down guessing
         log.warning("admin UI: failed login for %r from %s", username[:40], request.remote)
-        raise ApiError(401, "Sai tên đăng nhập hoặc mật khẩu")
+        raise ApiError(401, tr("Sai tên đăng nhập hoặc mật khẩu"))
     token = secrets.token_urlsafe(32)
     request.app[SESSIONS].purge(time.time())
     request.app[SESSIONS].add(token, user.username, time.time() + SESSION_TTL)
@@ -241,15 +250,55 @@ async def me(request: web.Request) -> web.Response:
     return _json({"user": _user(request).to_dict()})
 
 
+async def me_language(request: web.Request) -> web.Response:
+    data = await _body(request)
+    code = i18n.normalize(str(data.get("lang") or ""))
+    if data.get("lang") and code is None:
+        raise ApiError(400, i18n.tr("Ngôn ngữ không hỗ trợ"))
+    request.app[USERS].set_language(_user(request).username, code or "")
+    resp = _json({"lang": code or ""})
+    if code:
+        resp.set_cookie(UI_LANG, code, max_age=365 * 86400, samesite="Lax", path="/")
+    return resp
+
+
+def request_language(request: web.Request, user: User | None = None) -> str:
+    """The staff member's choice, else the language this browser asked for, else the office's."""
+    return (
+        (user.lang if user else "")
+        or i18n.normalize(request.cookies.get(UI_LANG))
+        or i18n.best_match(request.headers.get("Accept-Language"))
+        or i18n.default()
+    )
+
+
+async def i18n_catalog(request: web.Request) -> web.Response:
+    """The admin UI's texts in the visitor's language: loaded before the page's scripts."""
+    lang = (
+        i18n.normalize(request.cookies.get(UI_LANG))
+        or i18n.best_match(request.headers.get("Accept-Language"))
+        or i18n.default()
+    )
+    ui = i18n.ui_texts()
+    data = {
+        "lang": lang,
+        "rtl": lang in i18n.RTL,
+        "languages": i18n.LANGUAGES,
+        "msgs": {k: v for k, v in i18n.catalog(lang).items() if k in ui},
+    }
+    body = "const I18N = " + json.dumps(data, ensure_ascii=False) + ";\n"
+    return web.Response(text=body, content_type="application/javascript", charset="utf-8")
+
+
 async def me_password(request: web.Request) -> web.Response:
     user = _user(request)
     data = await _body(request)
     if user.username == "admin":
-        raise ApiError(400, "Mật khẩu của tài khoản chủ đặt trong file cấu hình (admin_ui)")
+        raise ApiError(400, tr("Mật khẩu của tài khoản chủ đặt trong file cấu hình (admin_ui)"))
     users = request.app[USERS]
     if await asyncio.to_thread(users.authenticate, user.username, str(data.get("old", ""))) is None:
         await asyncio.sleep(1.0)
-        raise ApiError(400, "Mật khẩu hiện tại không đúng")
+        raise ApiError(400, tr("Mật khẩu hiện tại không đúng"))
     try:
         await asyncio.to_thread(users.update, user.username, password=str(data.get("new", "")))
     except ValueError as e:
@@ -271,7 +320,7 @@ async def users_add(request: web.Request) -> web.Response:
     data = await _body(request)
     channels = data.get("channels") or []
     if set(channels) - _channel_ids(request.app[OFFICE]):
-        raise ApiError(400, "Có kênh không tồn tại")
+        raise ApiError(400, tr("Có kênh không tồn tại"))
     try:
         user = await asyncio.to_thread(
             request.app[USERS].add,
@@ -291,14 +340,14 @@ async def users_patch(request: web.Request) -> web.Response:
     username = request.match_info["username"]
     data = await _body(request)
     if data.get("channels") is not None and set(data["channels"]) - _channel_ids(request.app[OFFICE]):
-        raise ApiError(400, "Có kênh không tồn tại")
+        raise ApiError(400, tr("Có kênh không tồn tại"))
     fields = {k: data.get(k) for k in ("name", "role", "channels", "disabled", "password")}
     if fields["password"] is not None:
         fields["password"] = str(fields["password"])
     try:
         await asyncio.to_thread(request.app[USERS].update, username, **fields)
     except KeyError:
-        raise ApiError(404, "Không có tài khoản này") from None
+        raise ApiError(404, tr("Không có tài khoản này")) from None
     except ValueError as e:
         raise ApiError(400, str(e)) from None
     if any(fields[k] is not None for k in ("role", "channels", "disabled", "password")):
@@ -311,7 +360,7 @@ async def users_delete(request: web.Request) -> web.Response:
     try:
         request.app[USERS].remove(username)
     except KeyError:
-        raise ApiError(404, "Không có tài khoản này") from None
+        raise ApiError(404, tr("Không có tài khoản này")) from None
     _drop_sessions(request.app, username)
     return await users_list(request)
 
@@ -385,7 +434,7 @@ def _detail(e: Employee) -> dict[str, Any]:
                 "name": n,
                 "description": sk.REGISTRY[n].description
                 if n in sk.REGISTRY
-                else "Nhóm skill: " + ", ".join(sk.GROUPS.get(n, ())),
+                else tr("Nhóm skill: ") + ", ".join(sk.GROUPS.get(n, ())),
             }
             for n in sk.available()
         ],
@@ -412,27 +461,27 @@ async def employee_patch(request: web.Request) -> web.Response:
     if "system_prompt" in data:
         text = str(data["system_prompt"]).strip()
         if not text:
-            raise ApiError(400, "Prompt không được để trống")
+            raise ApiError(400, tr("Prompt không được để trống"))
         st.set_override("system_prompt", text)
     if "model" in data:
         if office.model_profile(str(data["model"])) is None:
-            raise ApiError(400, f"Model '{data['model']}' chưa được khai báo")
+            raise ApiError(400, tr("Model '{0}' chưa được khai báo", data["model"]))
         st.set_override("model", str(data["model"]))
     if "effort" in data:
         if data["effort"] is not None and data["effort"] not in EFFORT_LEVELS:
-            raise ApiError(400, "effort không hợp lệ")
+            raise ApiError(400, tr("effort không hợp lệ"))
         st.set_override("effort", data["effort"])
     if "paused" in data:
         st.set_override("paused", bool(data["paused"]))
     if "skills" in data:
         skills = [str(x) for x in data["skills"]]
         if unknown := [x for x in skills if x not in sk.available()]:
-            raise ApiError(400, f"Skill không tồn tại: {', '.join(unknown)}")
+            raise ApiError(400, tr("Skill không tồn tại: {0}", ", ".join(unknown)))
         st.set_override("skills", skills)
     if "releases" in data:
         releases = [str(x) for x in data["releases"]]
         if unknown := [x for x in releases if x not in office.config.actions]:
-            raise ApiError(400, f"Hành động không tồn tại: {', '.join(unknown)}")
+            raise ApiError(400, tr("Hành động không tồn tại: {0}", ", ".join(unknown)))
         st.set_override("releases", releases)
     return _json(_detail(e))
 
@@ -447,8 +496,8 @@ async def memory_add(request: web.Request) -> web.Response:
     e = _employee(request)
     text = str((await _body(request)).get("text", "")).strip()
     if not text:
-        raise ApiError(400, "Nội dung trống")
-    e.state.add_memory(text, "active", f"quản trị {_user(request).name}")
+        raise ApiError(400, tr("Nội dung trống"))
+    e.state.add_memory(text, "active", tr("quản trị {0}", _user(request).name))
     return _json(_detail(e))
 
 
@@ -461,7 +510,7 @@ async def memory_approve(request: web.Request) -> web.Response:
     try:
         e.state.update_memory(int(request.match_info["mid"]), **fields)
     except (KeyError, ValueError):
-        raise ApiError(404, "Không có ghi nhớ này") from None
+        raise ApiError(404, tr("Không có ghi nhớ này")) from None
     return _json(_detail(e))
 
 
@@ -470,7 +519,7 @@ async def memory_delete(request: web.Request) -> web.Response:
     try:
         e.state.remove_memory(int(request.match_info["mid"]))
     except (KeyError, ValueError):
-        raise ApiError(404, "Không có ghi nhớ này") from None
+        raise ApiError(404, tr("Không có ghi nhớ này")) from None
     return _json(_detail(e))
 
 
@@ -478,7 +527,7 @@ async def correction_add(request: web.Request) -> web.Response:
     e = _employee(request)
     text = str((await _body(request)).get("text", "")).strip()
     if not text:
-        raise ApiError(400, "Nội dung trống")
+        raise ApiError(400, tr("Nội dung trống"))
     e.add_correction(text)
     return _json(_detail(e))
 
@@ -591,13 +640,13 @@ async def model_add(request: web.Request) -> web.Response:
     data = await _body(request)
     name = str(data.pop("name", "")).strip()
     if not name or not name.replace("-", "").replace("_", "").isalnum():
-        raise ApiError(400, "Tên model chỉ gồm chữ, số, '-' hoặc '_'")
+        raise ApiError(400, tr("Tên model chỉ gồm chữ, số, '-' hoặc '_'"))
     raw = {k: v for k, v in data.items() if v not in (None, "", {})}
     if isinstance(raw.get("extra_body"), str):
         try:
             raw["extra_body"] = json.loads(raw["extra_body"])
         except json.JSONDecodeError:
-            raise ApiError(400, "extra_body phải là JSON") from None
+            raise ApiError(400, tr("extra_body phải là JSON")) from None
     try:
         office.add_runtime_model(name, raw)
     except ConfigError as e:
@@ -612,7 +661,7 @@ async def model_delete(request: web.Request) -> web.Response:
         office.remove_runtime_model(name)
     except KeyError:
         raise ApiError(
-            400, "Chỉ xoá được model thêm từ giao diện; model trong file cấu hình sửa trong file"
+            400, tr("Chỉ xoá được model thêm từ giao diện; model trong file cấu hình sửa trong file")
         ) from None
     return _json({"models": _model_rows(office)})
 
@@ -695,7 +744,7 @@ def _channel_label(office: Office, channel: str) -> dict[str, str]:
     ch = office.hub.channels.get(channel)
     names = {
         "zalo_oa": "Zalo OA",
-        "zalo_personal": "Zalo cá nhân",
+        "zalo_personal": tr("Zalo cá nhân"),
         "facebook": "Messenger",
         "webhook": "Webhook",
         "telegram": "Telegram",
@@ -787,7 +836,7 @@ async def inbox_reply(request: web.Request) -> web.Response:
     data = await _body(request)
     text = str(data.get("text", "")).strip()
     if not text:
-        raise ApiError(400, "Nội dung trống")
+        raise ApiError(400, tr("Nội dung trống"))
     author = _user(request).name  # who replied is the logged-in account, not a typed name
     try:
         await _hub(request).human_reply(
@@ -798,7 +847,7 @@ async def inbox_reply(request: web.Request) -> web.Response:
             translate=bool(data.get("translate")),
         )
     except Exception as e:  # noqa: BLE001 - surface the platform's error to the agent
-        raise ApiError(502, f"Không gửi được: {e}") from None
+        raise ApiError(502, tr("Không gửi được: {0}", e)) from None
     return await inbox_get(request)
 
 
@@ -806,7 +855,7 @@ async def inbox_mode(request: web.Request) -> web.Response:
     conv = _inbox_conv(request)
     mode = (await _body(request)).get("mode")
     if mode not in ("ai", "human"):
-        raise ApiError(400, "mode phải là ai hoặc human")
+        raise ApiError(400, tr("mode phải là ai hoặc human"))
     hub = _hub(request)
     hub.inbox.set_mode(conv.id, mode)
     if mode == "ai" and hub.inbox.pending_customer_text(conv.id):
@@ -818,7 +867,7 @@ async def inbox_assign(request: web.Request) -> web.Response:
     conv = _inbox_conv(request)
     emp = str((await _body(request)).get("employee", ""))
     if emp not in request.app[OFFICE].employees or conv.is_simplex:
-        raise ApiError(400, "Không đổi được nhân viên cho hội thoại này")
+        raise ApiError(400, tr("Không đổi được nhân viên cho hội thoại này"))
     _hub(request).inbox.set_employee(conv.id, emp)
     return await inbox_get(request)
 
@@ -827,7 +876,7 @@ async def inbox_note(request: web.Request) -> web.Response:
     conv = _inbox_conv(request)
     text = str((await _body(request)).get("text", "")).strip()
     if not text:
-        raise ApiError(400, "Nội dung trống")
+        raise ApiError(400, tr("Nội dung trống"))
     _hub(request).add_note(conv.id, text[:4000], _user(request).name)
     return await inbox_get(request)
 
@@ -836,7 +885,7 @@ async def inbox_status(request: web.Request) -> web.Response:
     conv = _inbox_conv(request)
     status = (await _body(request)).get("status")
     if status not in ("open", "closed"):
-        raise ApiError(400, "status phải là open hoặc closed")
+        raise ApiError(400, tr("status phải là open hoặc closed"))
     _hub(request).inbox.set_status(conv.id, status)
     return await inbox_get(request)
 
@@ -847,9 +896,9 @@ async def inbox_assignee(request: web.Request) -> web.Response:
     assignee, team = str(data.get("assignee") or ""), str(data.get("team") or "")
     users = request.app[USERS]
     if assignee and ((u := users.get(assignee)) is None or not u.sees(conv.channel)):
-        raise ApiError(400, "Tài khoản này không có hoặc không được xem kênh này")
+        raise ApiError(400, tr("Tài khoản này không có hoặc không được xem kênh này"))
     if team and team not in {t["id"] for t in _hub(request).desk.teams}:
-        raise ApiError(400, "Không có nhóm này")
+        raise ApiError(400, tr("Không có nhóm này"))
     _hub(request).inbox.set_assignee(conv.id, assignee, team)
     return await inbox_get(request)
 
@@ -859,7 +908,7 @@ async def inbox_labels(request: web.Request) -> web.Response:
     labels = (await _body(request)).get("labels")
     known = {lb["name"] for lb in _hub(request).desk.labels}
     if not isinstance(labels, list) or not set(labels) <= known:
-        raise ApiError(400, "Nhãn chưa được khai báo trong cài đặt hộp thư")
+        raise ApiError(400, tr("Nhãn chưa được khai báo trong cài đặt hộp thư"))
     _hub(request).inbox.set_labels(conv.id, labels)
     return await inbox_get(request)
 
@@ -871,7 +920,7 @@ async def inbox_summary(request: web.Request) -> web.Response:
     except KeyError:
         raise ApiError(404, "no employee for this conversation") from None
     except Exception as e:  # noqa: BLE001 - no model reachable
-        raise ApiError(502, f"AI chưa tóm tắt được: {e}") from None
+        raise ApiError(502, tr("AI chưa tóm tắt được: {0}", e)) from None
     return _json({"text": text})
 
 
@@ -895,7 +944,7 @@ async def inbox_meta(request: web.Request) -> web.Response:
 async def inbox_sla(request: web.Request) -> web.Response:
     """Answer times and who is waiting (admins: it counts every channel)."""
     if not _user(request).is_admin:
-        raise ApiError(403, "Chỉ quản trị viên xem được báo cáo SLA")
+        raise ApiError(403, tr("Chỉ quản trị viên xem được báo cáo SLA"))
     from datetime import datetime, timedelta
 
     from .state import now_iso
@@ -904,7 +953,7 @@ async def inbox_sla(request: web.Request) -> web.Response:
     try:
         hours = min(max(float(request.query.get("hours", "24")), 1), 24 * 90)
     except ValueError:
-        raise ApiError(400, "hours phải là số") from None
+        raise ApiError(400, tr("hours phải là số")) from None
     since = (datetime.now().astimezone() - timedelta(hours=hours)).isoformat(timespec="seconds")
     target = office.hub.desk.sla_seconds()
     report = office.hub.inbox.sla(since, now_iso(), target)
@@ -960,7 +1009,7 @@ def _int(value: Any, what: str) -> int:
     try:
         return int(value)
     except (TypeError, ValueError):
-        raise ApiError(400, f"{what} phải là số") from None
+        raise ApiError(400, tr("{0} phải là số", what)) from None
 
 
 def _contact_json(request: web.Request, contact: dict[str, Any], full: bool = False) -> dict[str, Any]:
@@ -1018,7 +1067,7 @@ async def crm_contact_merge(request: web.Request) -> web.Response:
     try:
         _crm(request).merge(int(contact["id"]), other)
     except (KeyError, ValueError) as e:
-        raise ApiError(400, f"Không gộp được: {e}") from None
+        raise ApiError(400, tr("Không gộp được: {0}", e)) from None
     log.info("admin UI: %s merged customer %s into %s", _user(request).username, other, contact["id"])
     return await crm_contact_get(request)
 
@@ -1083,7 +1132,7 @@ async def inbox_contact_save(request: web.Request) -> web.Response:
 async def inbox_contact_merge(request: web.Request) -> web.Response:
     """Admins: join another contact into this conversation's customer, or split it off."""
     if not _user(request).is_admin:
-        raise ApiError(403, "Chỉ quản trị viên gộp hoặc tách khách")
+        raise ApiError(403, tr("Chỉ quản trị viên gộp hoặc tách khách"))
     conv, contact = _inbox_contact(request)
     data = await _body(request)
     try:
@@ -1092,7 +1141,7 @@ async def inbox_contact_merge(request: web.Request) -> web.Response:
         else:
             _crm(request).merge(int(contact["id"]), _int(data.get("other"), "other"))
     except (KeyError, ValueError) as e:
-        raise ApiError(400, f"Không gộp được: {e}") from None
+        raise ApiError(400, tr("Không gộp được: {0}", e)) from None
     return await inbox_contact(request)
 
 
@@ -1229,11 +1278,11 @@ async def inv_import(request: web.Request) -> web.Response:
     while chunk := await request.content.read(65536):
         data.extend(chunk)
         if len(data) > 5 * 1024 * 1024:
-            raise ApiError(413, "Tệp quá lớn (tối đa 5 MB)")
+            raise ApiError(413, tr("Tệp quá lớn (tối đa 5 MB)"))
     try:
         text = bytes(data).decode("utf-8")
     except UnicodeDecodeError:
-        raise ApiError(400, "Tệp phải là CSV UTF-8 (trong Excel: Lưu thành CSV UTF-8)") from None
+        raise ApiError(400, tr("Tệp phải là CSV UTF-8 (trong Excel: Lưu thành CSV UTF-8)")) from None
     return await _inv_call(_inv(request).import_csv, text)
 
 
@@ -1429,7 +1478,7 @@ async def inbox_media(request: web.Request) -> web.Response:
             raise MediaError("channel unavailable")
         ctype, body = got or await fetch(request.app[OFFICE].http_client, url)
     except (MediaError, Exception) as e:  # noqa: BLE001 - expired links, platform errors
-        raise ApiError(502, f"Không tải được tệp: {e}") from None
+        raise ApiError(502, tr("Không tải được tệp: {0}", e)) from None
     cache = {"Cache-Control": "private, max-age=3600"}
     if ctype in INLINE_TYPES:
         return web.Response(body=body, content_type=ctype, headers=cache)
@@ -1481,7 +1530,7 @@ async def inbox_translate(request: web.Request) -> web.Response:
     except KeyError:
         raise ApiError(404, "no such message") from None
     except TranslationError as e:
-        raise ApiError(502, f"Không dịch được: {e}") from None
+        raise ApiError(502, tr("Không dịch được: {0}", e)) from None
     return _json({"translation": text})
 
 
@@ -1498,10 +1547,10 @@ async def inbox_language(request: web.Request) -> web.Response:
     code = str(data.get("lang") or "")
     if country:
         if country not in lang.COUNTRIES:
-            raise ApiError(400, "Không có nước này trong danh sách")
+            raise ApiError(400, tr("Không có nước này trong danh sách"))
         code = code or lang.COUNTRIES[country][1]
     if code and code not in lang.LANGUAGES:
-        raise ApiError(400, "Không hỗ trợ ngôn ngữ này")
+        raise ApiError(400, tr("Không hỗ trợ ngôn ngữ này"))
     e.state.set_language(conv.contact_id, code or None, country or None)
     return await inbox_get(request)
 
@@ -1625,11 +1674,11 @@ async def simplex_connect(request: web.Request) -> web.Response:
     e = _employee(request)
     link = str((await _body(request)).get("link", "")).strip()
     if not link:
-        raise ApiError(400, "Thiếu link")
+        raise ApiError(400, tr("Thiếu link"))
     try:
         kind = await e.bot.api.api_connect_active_user(link)
     except Exception as err:  # noqa: BLE001 - invalid or already-used links
-        raise ApiError(400, f"Không kết nối được: {err}") from None
+        raise ApiError(400, tr("Không kết nối được: {0}", err)) from None
     return _json({"ok": True, "kind": kind})
 
 
@@ -1770,6 +1819,8 @@ def create_app(office: Office, password: str) -> web.Application:
     r.add_post("/api/login", login)
     r.add_post("/api/logout", logout)
     r.add_get("/api/me", me)
+    r.add_put("/api/me/lang", me_language)
+    r.add_get("/i18n/catalog.js", i18n_catalog)
     r.add_post("/api/me/password", me_password)
     r.add_get("/api/me/simplex", me_simplex)
     r.add_post("/api/me/simplex", me_simplex_code)

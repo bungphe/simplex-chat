@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from .db import Database, DocStore
+from .i18n import tr
 from .state import now_iso
 
 OWNER = "admin"
@@ -52,6 +53,7 @@ class User:
     name: str
     role: str
     channels: tuple[str, ...] = field(default_factory=tuple)  # empty: every channel
+    lang: str = ""  # interface language (i18n.LANGUAGES); empty: the browser's / the office's
 
     @property
     def is_admin(self) -> bool:
@@ -66,6 +68,7 @@ class User:
             "name": self.name,
             "role": self.role,
             "channels": list(self.channels),
+            "lang": self.lang,
         }
 
 
@@ -90,10 +93,29 @@ class Users:
 
     @staticmethod
     def _user(username: str, d: dict[str, Any]) -> User:
-        return User(username, d.get("name") or username, d["role"], tuple(d.get("channels") or ()))
+        return User(
+            username,
+            d.get("name") or username,
+            d["role"],
+            tuple(d.get("channels") or ()),
+            d.get("lang") or "",
+        )
 
     def owner(self) -> User:
-        return User(OWNER, "Chủ", "admin")
+        return User(OWNER, tr("Chủ"), "admin", lang=(self.docs.get("owner_prefs") or {}).get("lang") or "")
+
+    def set_language(self, username: str, lang: str) -> None:
+        """The staff member's interface language (admin UI, their linked SimpleX chat)."""
+        if username == OWNER:
+            self.docs.update("owner_prefs", lambda d: d.__setitem__("lang", lang), {})
+            return
+
+        def change(accounts: dict[str, Any]) -> None:
+            if username not in accounts:
+                raise KeyError(username)
+            accounts[username]["lang"] = lang
+
+        self.docs.update("users", change, {})
 
     def get(self, username: str) -> User | None:
         if username == OWNER:
@@ -129,20 +151,20 @@ class Users:
     @staticmethod
     def _check(role: str | None, channels: Any, password: str | None) -> None:
         if role is not None and role not in ROLES:
-            raise ValueError(f"vai trò phải là một trong {ROLES}")
+            raise ValueError(tr("vai trò phải là một trong {0}", ROLES))
         if channels is not None and (
             not isinstance(channels, list) or not all(isinstance(c, str) for c in channels)
         ):
-            raise ValueError("channels phải là danh sách id kênh")
+            raise ValueError(tr("channels phải là danh sách id kênh"))
         if password is not None and len(password) < MIN_PASSWORD:
-            raise ValueError(f"mật khẩu cần ít nhất {MIN_PASSWORD} ký tự")
+            raise ValueError(tr("mật khẩu cần ít nhất {0} ký tự", MIN_PASSWORD))
 
     def add(
         self, username: str, name: str, role: str, password: str, channels: list[str] | None = None
     ) -> User:
         username = username.strip().lower()
         if not _USERNAME.match(username) or username == OWNER:
-            raise ValueError("tên đăng nhập: 2-32 ký tự a-z, 0-9, . _ - (không dùng 'admin')")
+            raise ValueError(tr("tên đăng nhập: 2-32 ký tự a-z, 0-9, . _ - (không dùng 'admin')"))
         self._check(role, channels or [], password)
         salt = secrets.token_bytes(16)
         account = {
@@ -156,7 +178,7 @@ class Users:
 
         def change(d: dict[str, Any]) -> None:
             if username in d:
-                raise ValueError("tên đăng nhập đã có")
+                raise ValueError(tr("tên đăng nhập đã có"))
             d[username] = account
 
         self.docs.update("users", change, {})

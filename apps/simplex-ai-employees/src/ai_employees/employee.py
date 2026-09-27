@@ -22,6 +22,7 @@ from .actions import ActionDesk
 from .agent import Agent, RunResult
 from .config import EFFORT_LEVELS, AppConfig, ConfigError, EmployeeConfig, parse_models
 from .db import Database, DocStore, connect
+from .i18n import tr
 from .llm import LLM
 from .providers import ChatModel, ModelProfile, make_model
 from .routines import Routine
@@ -93,7 +94,7 @@ class Employee:
             profile=BotProfile(display_name=cfg.display_name, short_descr=cfg.short_descr),
             db=SqliteDb(file_prefix=cfg.db),
             welcome=cfg.welcome,
-            commands=[BotCommand(keyword="forget", label="Xoá lịch sử trò chuyện / Forget me")],
+            commands=[BotCommand(keyword="forget", label=tr("Xoá lịch sử trò chuyện / Forget me"))],
         )
         from .chat_menu import ChatMenu
 
@@ -270,18 +271,26 @@ class Employee:
     def describe_routines(self) -> str:
         s = self.settings
         if not s.routines:
-            return "Nhân viên này chưa có lịch làm việc."
+            return tr("Nhân viên này chưa có lịch làm việc.")
         local = self.local_now()
-        lines = ["*Lịch làm việc*"]
+        lines = [tr("*Lịch làm việc*")]
         for r in s.routines:
             st = self.state.routine(r.id)
             nxt = r.next_start(local, st.get("period"))
             state = (
-                "tạm dừng" if r.id in s.paused_routines else (f"lần tới {nxt:%d/%m %H:%M}" if nxt else "-")
+                tr("tạm dừng")
+                if r.id in s.paused_routines
+                else (tr("lần tới {0:%d/%m %H:%M}", nxt) if nxt else "-")
             )
             lines.append(
-                f"• {r.id}: {r.describe()} — {state}; lần chạy trước: {st.get('last_run', 'chưa')}"
-                f" ({st.get('last_status', '-')})"
+                tr(
+                    "• {0}: {1} — {2}; lần chạy trước: {3} ({4})",
+                    r.id,
+                    r.describe(),
+                    state,
+                    st.get("last_run", tr("chưa")),
+                    st.get("last_status", "-"),
+                )
             )
         return "\n".join(lines)
 
@@ -292,21 +301,21 @@ class Employee:
     async def command(self, cid: int, word: str, args: str, by: str = "") -> str:
         if word == "forget":
             self.state.forget(cid)
-            return "Đã xoá lịch sử trò chuyện của bạn. / Your conversation history was deleted."
+            return tr("Đã xoá lịch sử trò chuyện của bạn. / Your conversation history was deleted.")
         if word == "admin":
             token = self.base.admin_token
             if not token:
-                return "Chức năng quản trị chưa được bật (thiếu admin_token)."
+                return tr("Chức năng quản trị chưa được bật (thiếu admin_token).")
             if not hmac.compare_digest(args.encode(), token.encode()):
                 log.warning("%s: wrong admin token from contact %s", self.id, cid)
-                return "Mã quản trị không đúng."
+                return tr("Mã quản trị không đúng.")
             self.state.add_admin(cid)
             if by:
                 self.state.remember_contact(cid, by)
             self._spawn(self.staff.sync_menu(cid))
-            return f"Bạn đã là quản trị viên của {self.base.display_name}.\n\n{ADMIN_HELP}"
+            return tr("Bạn đã là quản trị viên của {0}.\n\n{1}", self.base.display_name, tr(ADMIN_HELP))
         if not self.state.is_admin(cid):
-            return "Lệnh này chỉ dành cho quản trị viên. Gửi /admin <mã> để đăng nhập."
+            return tr("Lệnh này chỉ dành cho quản trị viên. Gửi /admin <mã> để đăng nhập.")
         return await self._admin(args, by=by or f"contact #{cid}")
 
     async def _admin(self, args: str, by: str) -> str:
@@ -315,7 +324,7 @@ class Employee:
         s = self.settings
         st = self.state
         if sub in ("", "help"):
-            return ADMIN_HELP
+            return tr(ADMIN_HELP)
         if sub == "report":
             return self.menu.report()
         if sub == "orders":
@@ -325,56 +334,65 @@ class Employee:
         if sub == "lowstock":
             return self.menu.low_stock()
         if sub == "show":
-            return (
-                f"*{s.display_name}* ({s.id})\n"
-                f"Trạng thái: {'tạm dừng' if s.paused else 'đang hoạt động'}\n"
-                f"Model: {s.model} ({self.chat_model().profile.describe()}), "
-                f"effort: {s.effort or 'mặc định'}\n"
-                f"Skills: {', '.join(s.skills) or '(không có)'}\n"
-                f"Được tự làm: {', '.join(s.releases) or '(không, mọi hành động chờ duyệt)'}\n"
-                f"Lịch làm việc: {', '.join(r.id for r in s.routines) or '(không có)'}\n"
-                f"Thay đổi so với file cấu hình: {', '.join(st.overrides) or '(không có)'}\n\n"
-                f"*Prompt:*\n{s.system_prompt}"
+            return tr(
+                "*{0}* ({1})\nTrạng thái: {2}\nModel: {3} ({4}), effort: {5}\nSkills: {6}\nĐược tự làm: {7}\nLịch làm việc: {8}\nThay đổi so với file cấu hình: {9}\n\n*Prompt:*\n{10}",
+                s.display_name,
+                s.id,
+                tr("tạm dừng") if s.paused else tr("đang hoạt động"),
+                s.model,
+                self.chat_model().profile.describe(),
+                s.effort or tr("mặc định"),
+                ", ".join(s.skills) or tr("(không có)"),
+                ", ".join(s.releases) or tr("(không, mọi hành động chờ duyệt)"),
+                ", ".join(r.id for r in s.routines) or tr("(không có)"),
+                ", ".join(st.overrides) or tr("(không có)"),
+                s.system_prompt,
             )
         if sub == "prompt":
             if not rest:
-                return "Cú pháp: /ai prompt <nội dung>"
+                return tr("Cú pháp: /ai prompt <nội dung>")
             st.set_override("system_prompt", rest)
-            return "Đã cập nhật vai trò (system prompt)."
+            return tr("Đã cập nhật vai trò (system prompt).")
         if sub == "correct":
             if not rest:
-                return "Cú pháp: /ai correct <quy tắc>"
+                return tr("Cú pháp: /ai correct <quy tắc>")
             self.add_correction(rest)
-            return f"Đã thêm quy tắc #{len(self.settings.corrections)}. Có hiệu lực từ tin nhắn tiếp theo."
+            return tr(
+                "Đã thêm quy tắc #{0}. Có hiệu lực từ tin nhắn tiếp theo.", len(self.settings.corrections)
+            )
         if sub == "corrections":
-            return "*Quy tắc sửa sai*\n" + (
+            return tr("*Quy tắc sửa sai*\n") + (
                 "\n".join(f"{i}. ({c['date']}) {c['text']}" for i, c in enumerate(s.corrections, 1))
-                or "(chưa có)"
+                or tr("(chưa có)")
             )
         if sub == "uncorrect":
             try:
                 self.remove_correction(int(rest))
             except (ValueError, IndexError):
-                return "Cú pháp: /ai uncorrect <số>, xem số bằng /ai corrections"
-            return f"Đã xoá quy tắc #{rest}."
+                return tr("Cú pháp: /ai uncorrect <số>, xem số bằng /ai corrections")
+            return tr("Đã xoá quy tắc #{0}.", rest)
         if sub == "models":
-            return "*Model AI đã khai báo*\n" + self.office.describe_models(current=s.model)
+            return tr("*Model AI đã khai báo*\n") + self.office.describe_models(current=s.model)
         if sub == "model":
             profile = self.office.model_profile(rest) if rest else None
             if profile is None:
-                return "Cú pháp: /ai model <tên>. Các model đã khai báo:\n" + self.office.describe_models(
+                return tr("Cú pháp: /ai model <tên>. Các model đã khai báo:\n") + self.office.describe_models(
                     s.model
                 )
             st.set_override("model", rest)
-            return f"Đã gán model {rest} ({profile.describe()})."
+            return tr("Đã gán model {0} ({1}).", rest, profile.describe())
         if sub == "effort":
             level = None if rest == "off" else rest
             if level is not None and level not in EFFORT_LEVELS:
-                return f"Mức hợp lệ: {', '.join(EFFORT_LEVELS)}, off"
+                return tr("Mức hợp lệ: {0}, off", ", ".join(EFFORT_LEVELS))
             st.set_override("effort", level)
-            return f"Đã đặt effort: {rest}."
+            return tr("Đã đặt effort: {0}.", rest)
         if sub == "skills":
-            return f"Đang bật: {', '.join(s.skills) or '(không có)'}\nCó sẵn: {', '.join(sk.available())}"
+            return tr(
+                "Đang bật: {0}\nCó sẵn: {1}",
+                ", ".join(s.skills) or tr("(không có)"),
+                ", ".join(sk.available()),
+            )
         if sub == "skill":
             action, _, name = rest.partition(" ")
             try:
@@ -384,27 +402,27 @@ class Employee:
             except KeyError as e:
                 return str(e.args[0])
             if enabled is None:
-                return "Cú pháp: /ai skill add|remove <tên>"
-            return f"Skills: {', '.join(enabled) or '(không có)'}"
+                return tr("Cú pháp: /ai skill add|remove <tên>")
+            return f"Skills: {', '.join(enabled) or tr('(không có)')}"
         if sub == "routines":
             return self.describe_routines()
         if sub == "run":
             r = s.routine(rest)
             if r is None:
-                return f"Không có lịch '{rest}'. " + self.describe_routines()
+                return tr("Không có lịch '{0}'. ", rest) + self.describe_routines()
             self._spawn(self.run_routine(r, self.local_now(), manual=True))
-            return f"Đang chạy {r.id}; kết quả sẽ được gửi khi xong."
+            return tr("Đang chạy {0}; kết quả sẽ được gửi khi xong.", r.id)
         if sub == "routine":
             action, _, rid = rest.partition(" ")
             if action not in ("pause", "resume") or s.routine(rid.strip()) is None:
-                return "Cú pháp: /ai routine pause|resume <id>"
+                return tr("Cú pháp: /ai routine pause|resume <id>")
             self.set_routine_paused(rid.strip(), action == "pause")
-            return f"Đã {'tạm dừng' if action == 'pause' else 'bật lại'} lịch {rid.strip()}."
+            return tr("Đã {0} lịch {1}.", tr("tạm dừng") if action == "pause" else tr("bật lại"), rid.strip())
         if sub == "pending":
             pending = self.actions.pending()
             if not pending:
-                return "Không có yêu cầu nào chờ duyệt."
-            return "*Chờ duyệt*\n" + "\n".join(
+                return tr("Không có yêu cầu nào chờ duyệt.")
+            return tr("*Chờ duyệt*\n") + "\n".join(
                 f"#{a['id']} {a['action']} — {a.get('contact_name', '')}: "
                 + ", ".join(f"{k}={v}" for k, v in a["args"].items())
                 for a in pending
@@ -412,15 +430,16 @@ class Employee:
         if sub in ("approve", "reject"):
             num, _, reason = rest.partition(" ")
             if not num.lstrip("#").isdigit():
-                return f"Cú pháp: /ai {sub} <số>" + (" [lý do]" if sub == "reject" else "")
+                return tr("Cú pháp: /ai {0} <số>", sub) + (tr(" [lý do]") if sub == "reject" else "")
             if sub == "approve":
                 return await self.actions.approve(int(num.lstrip("#")), by=by)
             return await self.actions.reject(int(num.lstrip("#")), by=by, reason=reason.strip())
         if sub == "releases":
             names = list(self.office.config.actions)
-            return (
-                f"Được tự làm (không cần duyệt): {', '.join(s.releases) or '(không có)'}\n"
-                f"Hành động đã khai báo: {', '.join(names) or '(không có)'}"
+            return tr(
+                "Được tự làm (không cần duyệt): {0}\nHành động đã khai báo: {1}",
+                ", ".join(s.releases) or tr("(không có)"),
+                ", ".join(names) or tr("(không có)"),
             )
         if sub in ("release", "hold"):
             try:
@@ -428,20 +447,20 @@ class Employee:
             except KeyError as e:
                 return str(e.args[0])
             return (
-                f"{rest} sẽ được thực hiện ngay, không cần duyệt."
+                tr("{0} sẽ được thực hiện ngay, không cần duyệt.", rest)
                 if sub == "release"
-                else f"{rest} sẽ chờ duyệt trước khi thực hiện."
+                else tr("{0} sẽ chờ duyệt trước khi thực hiện.", rest)
             )
         if sub in ("pause", "resume"):
             st.set_override("paused", sub == "pause")
-            return "Đã tạm dừng mọi việc." if sub == "pause" else "Đã bật lại."
+            return tr("Đã tạm dừng mọi việc.") if sub == "pause" else tr("Đã bật lại.")
         if sub == "forget" and rest == "all":
             st.forget()
-            return "Đã xoá toàn bộ trí nhớ hội thoại."
+            return tr("Đã xoá toàn bộ trí nhớ hội thoại.")
         if sub == "reset":
             st.clear_overrides()
-            return "Đã quay về cấu hình trong file."
-        return "Lệnh không hợp lệ.\n\n" + ADMIN_HELP
+            return tr("Đã quay về cấu hình trong file.")
+        return tr("Lệnh không hợp lệ.\n\n") + tr(ADMIN_HELP)
 
     # Settings changes shared by chat commands and the admin web UI.
 
@@ -463,12 +482,12 @@ class Employee:
         skills = list(self.settings.skills)
         if enabled:
             if name not in sk.available():
-                raise KeyError(f"Không có skill '{name}'. Có sẵn: {', '.join(sk.available())}")
+                raise KeyError(tr("Không có skill '{0}'. Có sẵn: {1}", name, ", ".join(sk.available())))
             if name not in skills:
                 skills.append(name)
         else:
             if name not in skills:
-                raise KeyError(f"Skill '{name}' đang không bật.")
+                raise KeyError(tr("Skill '{0}' đang không bật.", name))
             skills.remove(name)
         self.state.set_override("skills", skills)
         return skills
@@ -476,7 +495,11 @@ class Employee:
     def set_release(self, action: str, released: bool) -> None:
         if action not in self.office.config.actions:
             raise KeyError(
-                f"Không có hành động '{action}'. Đã khai báo: {', '.join(self.office.config.actions)}"
+                tr(
+                    "Không có hành động '{0}'. Đã khai báo: {1}",
+                    action,
+                    ", ".join(self.office.config.actions),
+                )
             )
         releases = [a for a in self.settings.releases if a != action] + ([action] if released else [])
         self.state.set_override("releases", releases)
@@ -539,8 +562,10 @@ class Office:
         self.employees: dict[str, Employee] = {
             e.id: Employee(e, self, config.state_dir) for e in config.employees
         }
+        from . import i18n
         from .hub import ChannelHub
 
+        i18n.set_default(config.staff_language)  # texts made outside a request (routines, notices)
         self.hub = ChannelHub(self)
         from .cluster import Cluster
 
@@ -638,8 +663,10 @@ class Office:
             p = self.model_profile(n)
             if p is not None:
                 users = [e.id for e in self.employees.values() if e.settings.model == n]
-                lines.append(f"- {n}: {p.describe()}" + (f" — dùng bởi {', '.join(users)}" if users else ""))
-        return "\n".join(lines) or "(chưa khai báo model nào)"
+                lines.append(
+                    f"- {n}: {p.describe()}" + (tr(" — dùng bởi {0}", ", ".join(users)) if users else "")
+                )
+        return "\n".join(lines) or tr("(chưa khai báo model nào)")
 
     def roster(self, exclude: str, allowed: list[str] | None = None) -> str:
         lines = []

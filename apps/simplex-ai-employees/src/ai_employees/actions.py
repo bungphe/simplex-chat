@@ -41,6 +41,7 @@ import httpx2
 
 from . import lang
 from . import skills as sk
+from .i18n import tr
 from .state import now_iso
 
 if TYPE_CHECKING:
@@ -179,9 +180,9 @@ class ActionDesk:
             return f"Done: {detail}" if ok else f"Error: the action failed: {detail}"
         self.employee.log("action", "queued", action=action.name, request=rec["id"], contact=ctx.contact_id)
         await self.employee.notify_admins(
-            f"🔔 *Cần duyệt #{rec['id']}* — {action.name} (từ {ctx.contact_name})\n"
+            tr("🔔 *Cần duyệt #{0}* — {1} (từ {2})\n", rec["id"], action.name, ctx.contact_name)
             + "\n".join(f"• {k}: {v}" for k, v in args.items())
-            + f"\n\n/ai approve {rec['id']}  ·  /ai reject {rec['id']} <lý do>"
+            + tr("\n\n/ai approve {0}  ·  /ai reject {1} <lý do>", rec["id"], rec["id"])
         )
         return (
             f"Queued as request #{rec['id']}: a manager must approve it before it happens. "
@@ -191,24 +192,28 @@ class ActionDesk:
     async def approve(self, action_id: int, by: str) -> str:
         rec = self.state.action(action_id)
         if rec is None:
-            return f"Không có yêu cầu #{action_id}."
+            return tr("Không có yêu cầu #{0}.", action_id)
         if rec["status"] != "pending":
-            return f"Yêu cầu #{action_id} đang ở trạng thái '{rec['status']}', không thể duyệt."
+            return tr("Yêu cầu #{0} đang ở trạng thái '{1}', không thể duyệt.", action_id, rec["status"])
         ok, detail = await self._execute(action_id, decided_by=by)
-        return f"Đã thực hiện #{action_id}: {detail}" if ok else f"#{action_id} thất bại: {detail}"
+        return (
+            tr("Đã thực hiện #{0}: {1}", action_id, detail)
+            if ok
+            else tr("#{0} thất bại: {1}", action_id, detail)
+        )
 
     async def reject(self, action_id: int, by: str, reason: str) -> str:
         rec = self.state.action(action_id)
         if rec is None:
-            return f"Không có yêu cầu #{action_id}."
+            return tr("Không có yêu cầu #{0}.", action_id)
         if rec["status"] != "pending":
-            return f"Yêu cầu #{action_id} đang ở trạng thái '{rec['status']}', không thể từ chối."
+            return tr("Yêu cầu #{0} đang ở trạng thái '{1}', không thể từ chối.", action_id, rec["status"])
         self.state.update_action(
             action_id, status="rejected", decided_by=by, decided=now_iso(), reason=reason
         )
         self.employee.log("action", "rejected", action=rec["action"], request=action_id)
         await self._tell_contact(rec, "request_rejected", reason=reason)
-        return f"Đã từ chối #{action_id}."
+        return tr("Đã từ chối #{0}.", action_id)
 
     async def _execute(self, action_id: int, decided_by: str) -> tuple[bool, str]:
         rec = self.state.update_action(

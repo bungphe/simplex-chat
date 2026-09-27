@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from .i18n import tr
 from .state import now_iso
 
 if TYPE_CHECKING:
@@ -67,7 +68,7 @@ class Loyalty:
             if points:
                 self.db.execute(
                     "INSERT INTO crm_points (contact_id, order_id, delta, reason, ts) VALUES (?, ?, ?, ?, ?)",
-                    (contact_id, order["id"], points, f"Mua hàng {order['code']}", now_iso()),
+                    (contact_id, order["id"], points, tr("Mua hàng {0}", order["code"]), now_iso()),
                 )
             contact = self.db.row("SELECT * FROM crm_contacts WHERE id=?", (contact_id,))
             upgraded = bool(
@@ -101,7 +102,7 @@ class Loyalty:
             if points:
                 self.db.execute(
                     "INSERT INTO crm_points (contact_id, order_id, delta, reason, ts) VALUES (?, ?, ?, ?, ?)",
-                    (order["contact_id"], order["id"], -points, f"Trả hàng {order['code']}", now_iso()),
+                    (order["contact_id"], order["id"], -points, tr("Trả hàng {0}", order["code"]), now_iso()),
                 )
 
     def history(self, contact_id: int) -> list[dict[str, Any]]:
@@ -120,18 +121,21 @@ class Loyalty:
             )
             self.db.execute(
                 "INSERT INTO crm_points (contact_id, delta, reason, ts) VALUES (?, ?, ?, ?)",
-                (contact_id, delta, reason[:150] or "Điều chỉnh", now_iso()),
+                (contact_id, delta, reason[:150] or tr("Điều chỉnh"), now_iso()),
             )
 
     async def _celebrate(self, contact_id: int, order: dict[str, Any]) -> None:
         crm, hub = self.office.hub.crm, self.office.hub
         contact = crm.contact(contact_id) or {}
-        shop = self.office.inventory.settings()["shop_name"] or "cửa hàng"
-        text = CONGRATS.format(name=contact.get("name") or "quý khách", shop=shop, card=vip_card(contact_id))
+        shop = self.office.inventory.settings()["shop_name"] or tr("cửa hàng")
+        text = tr(CONGRATS).format(
+            name=contact.get("name") or tr("quý khách"), shop=shop, card=vip_card(contact_id)
+        )
         web = getattr(self.office, "storefront", None)
         if web is not None and web.public_url:
-            text += (
-                f" Quý khách có thể đăng nhập {web.public_url}/login để mua với giá VIP và xem điểm, hoá đơn."
+            text += tr(
+                " Quý khách có thể đăng nhập {0}/login để mua với giá VIP và xem điểm, hoá đơn.",
+                web.public_url,
             )
         convs = crm.conversations(contact_id)
         target = order.get("conversation_id") or (convs[-1] if convs else None)
@@ -140,7 +144,12 @@ class Loyalty:
         employee = hub.employee_for(conv) if conv else next(iter(self.office.employees.values()), None)
         if employee is not None:
             await employee.notify_admins(
-                f"⭐ Khách {contact.get('name') or contact_id} ({contact.get('phone') or '-'}) vừa lên VIP "
-                f"({contact.get('points')} điểm, đã mua {self.office.inventory.major(contact.get('total_spent') or 0):,}). "
-                + ("Đã gửi lời chúc mừng." if sent else "Chưa gửi được lời chúc mừng: liên hệ khách.")
+                tr(
+                    "⭐ Khách {0} ({1}) vừa lên VIP ({2} điểm, đã mua {3:,}). ",
+                    contact.get("name") or contact_id,
+                    contact.get("phone") or "-",
+                    contact.get("points"),
+                    self.office.inventory.major(contact.get("total_spent") or 0),
+                )
+                + (tr("Đã gửi lời chúc mừng.") if sent else tr("Chưa gửi được lời chúc mừng: liên hệ khách."))
             )

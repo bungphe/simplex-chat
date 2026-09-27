@@ -26,6 +26,7 @@ import os
 from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from .i18n import tr
 from .inventory import InventoryError, _int, order_code
 from .state import now_iso
 
@@ -139,13 +140,13 @@ class Delivery:
 
     def save_settings(self, data: dict[str, Any]) -> dict[str, Any]:
         clean: dict[str, Any] = {}
-        for key, what in (("floor_fee", "Phí vác lầu / tầng"), ("assembly_fee", "Phí lắp ráp")):
+        for key, what in (("floor_fee", tr("Phí vác lầu / tầng")), ("assembly_fee", tr("Phí lắp ráp"))):
             if key in data:
                 clean[key] = self.inv.minor(data[key], what)
         for key, what in (
-            ("stop_minutes", "Phút mỗi điểm"),
-            ("assembly_minutes", "Phút lắp ráp"),
-            ("speed_kmh", "Tốc độ"),
+            ("stop_minutes", tr("Phút mỗi điểm")),
+            ("assembly_minutes", tr("Phút lắp ráp")),
+            ("speed_kmh", tr("Tốc độ")),
         ):
             if key in data:
                 clean[key] = _int(data[key], what, 1)
@@ -165,14 +166,17 @@ class Delivery:
         if "code" in fields:
             fields["code"] = fields["code"].upper()
         if cid is None and not (fields.get("code") and fields.get("name")):
-            raise InventoryError("Mã và tên đơn vị vận chuyển là bắt buộc")
-        for key, what in (("rate_per_trip", "Giá mỗi chuyến"), ("rate_per_stop", "Giá mỗi điểm giao")):
+            raise InventoryError(tr("Mã và tên đơn vị vận chuyển là bắt buộc"))
+        for key, what in (
+            ("rate_per_trip", tr("Giá mỗi chuyến")),
+            ("rate_per_stop", tr("Giá mỗi điểm giao")),
+        ):
             if key in data:
                 fields[key] = self.inv.minor(data[key] or 0, what)
         for key in ("internal", "active"):
             if key in data:
                 fields[key] = 1 if data[key] else 0
-        return self._carrier_json(self.inv._save("dl_carriers", cid, fields, "đơn vị vận chuyển"))
+        return self._carrier_json(self.inv._save("dl_carriers", cid, fields, tr("đơn vị vận chuyển")))
 
     def _carrier_json(self, c: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -190,17 +194,17 @@ class Delivery:
     def save_driver(self, did: int | None, data: dict[str, Any]) -> dict[str, Any]:
         fields: dict[str, Any] = {}
         if "carrier_id" in data or did is None:
-            fields["carrier_id"] = _int(data.get("carrier_id"), "Đơn vị vận chuyển", 1)
+            fields["carrier_id"] = _int(data.get("carrier_id"), tr("Đơn vị vận chuyển"), 1)
             if not self.db.row("SELECT 1 AS x FROM dl_carriers WHERE id=?", (fields["carrier_id"],)):
-                raise InventoryError("Không có đơn vị vận chuyển này")
+                raise InventoryError(tr("Không có đơn vị vận chuyển này"))
         for key, limit in (("name", 100), ("phone", 40), ("vehicle", 60), ("license", 40), ("username", 40)):
             if key in data or (did is None and key == "name"):
                 fields[key] = str(data.get(key) or "").strip()[:limit]
         if "name" in fields and not fields["name"]:
-            raise InventoryError("Tên tài xế là bắt buộc")
+            raise InventoryError(tr("Tên tài xế là bắt buộc"))
         if "active" in data:
             fields["active"] = 1 if data["active"] else 0
-        return self.inv._save("dl_drivers", did, fields, "tài xế")
+        return self.inv._save("dl_drivers", did, fields, tr("tài xế"))
 
     def drivers(self) -> list[dict[str, Any]]:
         return self.db.rows(
@@ -227,28 +231,28 @@ class Delivery:
         )
 
     def book(self, data: dict[str, Any], actor: str = "") -> dict[str, Any]:
-        oid = _int(data.get("order_id"), "Đơn hàng", 1)
+        oid = _int(data.get("order_id"), tr("Đơn hàng"), 1)
         order = self.inv._order_row(oid)
         if order["status"] != "confirmed":
-            raise InventoryError("Chỉ đặt lịch giao cho đơn đã xác nhận, chưa giao")
+            raise InventoryError(tr("Chỉ đặt lịch giao cho đơn đã xác nhận, chưa giao"))
         if self.db.row(
             "SELECT 1 AS x FROM dl_bookings WHERE order_id=? AND status IN ('booked','assigned','shipping')",
             (oid,),
         ):
-            raise InventoryError("Đơn này đã có lịch giao")
+            raise InventoryError(tr("Đơn này đã có lịch giao"))
         day = str(data.get("delivery_date") or "")[:10]
         try:
             date.fromisoformat(day)
         except ValueError:
-            raise InventoryError("Ngày giao: dạng YYYY-MM-DD") from None
+            raise InventoryError(tr("Ngày giao: dạng YYYY-MM-DD")) from None
         slot = str(data.get("slot") or "flexible")
         if slot not in SLOTS:
-            raise InventoryError(f"Khung giờ: {', '.join(SLOTS)}")
+            raise InventoryError(tr("Khung giờ: {0}", ", ".join(SLOTS)))
         address = str(data.get("address") or order["address"] or "").strip()[:300]
         if not address:
-            raise InventoryError("Cần địa chỉ giao hàng")
+            raise InventoryError(tr("Cần địa chỉ giao hàng"))
         s = self._raw()
-        floors = _int(data.get("floors") or 0, "Số tầng")
+        floors = _int(data.get("floors") or 0, tr("Số tầng"))
         assembling = bool(data.get("assembling"))
         surcharge = floors * int(s["floor_fee"]) + (int(s["assembly_fee"]) if assembling else 0)
         lat, lng = self._coords(data)
@@ -301,7 +305,7 @@ class Delivery:
         """Coordinates of an address (Google Geocoding; needs GOOGLE_MAPS_API_KEY)."""
         if not self.maps_key:
             raise InventoryError(
-                "Chưa có GOOGLE_MAPS_API_KEY: nhập toạ độ tay, hoặc để hệ thống giữ thứ tự bạn xếp"
+                tr("Chưa có GOOGLE_MAPS_API_KEY: nhập toạ độ tay, hoặc để hệ thống giữ thứ tự bạn xếp")
             )
         r = await self.office.http_client.get(
             f"{MAPS}/geocode/json",
@@ -310,7 +314,7 @@ class Delivery:
         )
         data = r.json()
         if data.get("status") != "OK":
-            raise InventoryError(f"Không tìm được địa chỉ: {data.get('status')}")
+            raise InventoryError(tr("Không tìm được địa chỉ: {0}", data.get("status")))
         loc = data["results"][0]["geometry"]["location"]
         return float(loc["lat"]), float(loc["lng"])
 
@@ -339,9 +343,9 @@ class Delivery:
             try:
                 la, lo = float(lat), float(lng)
             except ValueError:
-                raise InventoryError("Toạ độ không hợp lệ") from None
+                raise InventoryError(tr("Toạ độ không hợp lệ")) from None
             if not (-90 <= la <= 90 and -180 <= lo <= 180):
-                raise InventoryError("Toạ độ không hợp lệ")
+                raise InventoryError(tr("Toạ độ không hợp lệ"))
         return lat, lng
 
     async def geocode(self, bid: int) -> dict[str, Any]:
@@ -358,15 +362,15 @@ class Delivery:
     def update_booking(self, bid: int, data: dict[str, Any]) -> dict[str, Any]:
         b = self._row(bid)
         if b["status"] not in ("booked", "assigned"):
-            raise InventoryError("Chỉ sửa được lịch chưa giao")
+            raise InventoryError(tr("Chỉ sửa được lịch chưa giao"))
         fields: dict[str, Any] = {}
         if "delivery_date" in data:
             try:
                 fields["delivery_date"] = date.fromisoformat(str(data["delivery_date"])[:10]).isoformat()
             except ValueError:
-                raise InventoryError("Ngày giao: dạng YYYY-MM-DD") from None
+                raise InventoryError(tr("Ngày giao: dạng YYYY-MM-DD")) from None
             if fields["delivery_date"] != b["delivery_date"] and b["status"] == "assigned":
-                raise InventoryError("Lịch đã xếp chuyến: bỏ khỏi chuyến trước khi đổi ngày")
+                raise InventoryError(tr("Lịch đã xếp chuyến: bỏ khỏi chuyến trước khi đổi ngày"))
         if "window" in data:
             data = {**data, "time_window": data["window"]}
         for key, limit in (
@@ -380,13 +384,13 @@ class Delivery:
                 fields[key] = str(data[key] or "")[:limit]
         if "slot" in data:
             if data["slot"] not in SLOTS:
-                raise InventoryError(f"Khung giờ: {', '.join(SLOTS)}")
+                raise InventoryError(tr("Khung giờ: {0}", ", ".join(SLOTS)))
             fields["slot"] = data["slot"]
         if "lat" in data or "lng" in data:
             fields["lat"], fields["lng"] = self._coords(data)
         if "floors" in data or "assembling" in data:
             s = self._raw()
-            floors = _int(data.get("floors", b["floors"]) or 0, "Số tầng")
+            floors = _int(data.get("floors", b["floors"]) or 0, tr("Số tầng"))
             assembling = bool(data.get("assembling", b["assembling"]))
             surcharge = floors * int(s["floor_fee"]) + (int(s["assembly_fee"]) if assembling else 0)
             fields.update(floors=floors, assembling=1 if assembling else 0, surcharge=surcharge)
@@ -404,7 +408,7 @@ class Delivery:
     def cancel_booking(self, bid: int) -> dict[str, Any]:
         b = self._row(bid)
         if b["status"] not in ("booked", "assigned"):
-            raise InventoryError("Chỉ huỷ được lịch chưa giao")
+            raise InventoryError(tr("Chỉ huỷ được lịch chưa giao"))
         with self.db.transaction():
             self.db.execute("DELETE FROM dl_stops WHERE booking_id=? AND status='pending'", (bid,))
             self.db.execute(
@@ -416,7 +420,7 @@ class Delivery:
     def _row(self, bid: int) -> dict[str, Any]:
         b = self.db.row("SELECT * FROM dl_bookings WHERE id=?", (bid,))
         if b is None:
-            raise InventoryError("Không có lịch giao này")
+            raise InventoryError(tr("Không có lịch giao này"))
         return b
 
     def booking(self, bid: int) -> dict[str, Any]:
@@ -425,7 +429,7 @@ class Delivery:
         return {
             **b,
             "surcharge": self.inv.major(b["surcharge"]),
-            "slot_name": SLOTS.get(b["slot"], b["slot"]),
+            "slot_name": tr(SLOTS.get(b["slot"], b["slot"])),
             "order_code": order_code(int(b["order_id"])),
             "order_total": order["total"],
             "due": order["due"],
@@ -468,15 +472,15 @@ class Delivery:
 
     def create_route(self, data: dict[str, Any], actor: str = "") -> dict[str, Any]:
         day = str(data.get("delivery_date") or "")[:10]
-        carrier = _int(data.get("carrier_id"), "Đơn vị vận chuyển", 1)
+        carrier = _int(data.get("carrier_id"), tr("Đơn vị vận chuyển"), 1)
         if not self.db.row("SELECT 1 AS x FROM dl_carriers WHERE id=? AND active=1", (carrier,)):
-            raise InventoryError("Không có đơn vị vận chuyển này")
+            raise InventoryError(tr("Không có đơn vị vận chuyển này"))
         driver = int(data["driver_id"]) if data.get("driver_id") else None
-        origin = _int(data.get("origin_wh"), "Kho xuất phát", 1)
+        origin = _int(data.get("origin_wh"), tr("Kho xuất phát"), 1)
         self.inv.warehouse(origin)
         ids = [int(x) for x in data.get("booking_ids") or []]
         if not ids:
-            raise InventoryError("Chọn các lịch giao cho chuyến")
+            raise InventoryError(tr("Chọn các lịch giao cho chuyến"))
         with self.db.transaction():
             rid = self.db.execute(
                 "INSERT INTO dl_routes (delivery_date, carrier_id, driver_id, origin_wh, start_time, created_by, created) "
@@ -486,7 +490,9 @@ class Delivery:
             for seq, bid in enumerate(ids, 1):
                 b = self._row(bid)
                 if b["status"] != "booked" or b["delivery_date"] != day:
-                    raise InventoryError(f"Lịch #{bid} không phải lịch chờ xếp chuyến của ngày {day}")
+                    raise InventoryError(
+                        tr("Lịch #{0} không phải lịch chờ xếp chuyến của ngày {1}", bid, day)
+                    )
                 self.db.execute(
                     "INSERT INTO dl_stops (route_id, booking_id, seq) VALUES (?, ?, ?)", (rid, bid, seq)
                 )
@@ -514,15 +520,17 @@ class Delivery:
         """Reorder the stops for the shortest trip that comes back to the warehouse."""
         route = self._route_row(rid)
         if route["status"] != "planned":
-            raise InventoryError("Chỉ sắp xếp được chuyến chưa chạy")
+            raise InventoryError(tr("Chỉ sắp xếp được chuyến chưa chạy"))
         stops = self._stops(rid)
         wh = self.inv.warehouse(int(route["origin_wh"]))
         points = [(wh.get("lat"), wh.get("lng"))] + [
             (self._row(int(s["booking_id"]))["lat"], self._row(int(s["booking_id"]))["lng"]) for s in stops
         ]
         if not all(la and lo for la, lo in points):
-            missing = "kho xuất phát" if not (points[0][0] and points[0][1]) else "một số địa chỉ"
-            raise InventoryError(f"Thiếu toạ độ của {missing}: bấm Tìm toạ độ (Google Maps) hoặc nhập tay")
+            missing = tr("kho xuất phát") if not (points[0][0] and points[0][1]) else tr("một số địa chỉ")
+            raise InventoryError(
+                tr("Thiếu toạ độ của {0}: bấm Tìm toạ độ (Google Maps) hoặc nhập tay", missing)
+            )
         coords = [(float(a), float(b)) for a, b in points]
         matrix, by = await self._matrix(coords)
         index = {int(st["id"]): k + 1 for k, st in enumerate(stops)}  # stop -> its point in the matrix
@@ -601,10 +609,10 @@ class Delivery:
         """Staff drag stops into their own order (an urgent customer first)."""
         route = self._route_row(rid)
         if route["status"] != "planned":
-            raise InventoryError("Chỉ sắp xếp được chuyến chưa chạy")
+            raise InventoryError(tr("Chỉ sắp xếp được chuyến chưa chạy"))
         stops = {int(s["booking_id"]): s for s in self._stops(rid)}
         if sorted(stops) != sorted(int(b) for b in booking_ids):
-            raise InventoryError("Danh sách điểm giao không khớp với chuyến")
+            raise InventoryError(tr("Danh sách điểm giao không khớp với chuyến"))
         with self.db.transaction():
             for seq, bid in enumerate(booking_ids, 1):
                 self.db.execute("UPDATE dl_stops SET seq=? WHERE id=?", (seq + 1000, stops[int(bid)]["id"]))
@@ -616,7 +624,7 @@ class Delivery:
     def remove_stop(self, rid: int, bid: int) -> dict[str, Any]:
         route = self._route_row(rid)
         if route["status"] != "planned":
-            raise InventoryError("Chuyến đã chạy")
+            raise InventoryError(tr("Chuyến đã chạy"))
         with self.db.transaction():
             self.db.execute("DELETE FROM dl_stops WHERE route_id=? AND booking_id=?", (rid, bid))
             self.db.execute(
@@ -631,7 +639,7 @@ class Delivery:
         """The truck leaves: bookings go out for delivery and customers are told."""
         route = self._route_row(rid)
         if route["status"] != "planned":
-            raise InventoryError("Chuyến này đã chạy hoặc đã huỷ")
+            raise InventoryError(tr("Chuyến này đã chạy hoặc đã huỷ"))
         with self.db.transaction():
             self.db.execute(
                 "UPDATE dl_routes SET status='in_progress', started=? WHERE id=?", (now_iso(), rid)
@@ -651,8 +659,12 @@ class Delivery:
             order = self.inv._order_row(int(b["order_id"]))
             if order["conversation_id"]:
                 text = (
-                    f"🚚 Đơn {order_code(int(order['id']))} đang được giao hôm nay, dự kiến khoảng {st['eta'] or 'trong ngày'}"
-                    + (f". Tài xế {driver['name']}, {driver['phone']}" if driver else "")
+                    tr(
+                        "🚚 Đơn {0} đang được giao hôm nay, dự kiến khoảng {1}",
+                        order_code(int(order["id"])),
+                        st["eta"] or tr("trong ngày"),
+                    )
+                    + (tr(". Tài xế {0}, {1}", driver["name"], driver["phone"]) if driver else "")
                     + "."
                 )
                 self.office.hub.spawn(self.office.hub.notify_customer(int(order["conversation_id"]), text))
@@ -662,12 +674,12 @@ class Delivery:
         """done: delivered (the sale is completed); comeback: brought back, goods stay reserved."""
         route = self._route_row(rid)
         if route["status"] != "in_progress":
-            raise InventoryError("Chuyến chưa chạy")
+            raise InventoryError(tr("Chuyến chưa chạy"))
         stop = self.db.row("SELECT * FROM dl_stops WHERE route_id=? AND booking_id=?", (rid, bid))
         if stop is None or stop["status"] != "pending":
-            raise InventoryError("Điểm giao này đã có kết quả")
+            raise InventoryError(tr("Điểm giao này đã có kết quả"))
         if result not in ("done", "comeback"):
-            raise InventoryError("Kết quả: done (đã giao) hoặc comeback (quay về)")
+            raise InventoryError(tr("Kết quả: done (đã giao) hoặc comeback (quay về)"))
         b = self._row(bid)
         if result == "done":
             order = self.inv._order_row(int(b["order_id"]))
@@ -690,7 +702,7 @@ class Delivery:
     def cancel_route(self, rid: int) -> dict[str, Any]:
         route = self._route_row(rid)
         if route["status"] != "planned":
-            raise InventoryError("Chỉ huỷ được chuyến chưa chạy")
+            raise InventoryError(tr("Chỉ huỷ được chuyến chưa chạy"))
         with self.db.transaction():
             for st in self._stops(rid):
                 self.db.execute(
@@ -704,7 +716,7 @@ class Delivery:
     def _route_row(self, rid: int) -> dict[str, Any]:
         r = self.db.row("SELECT * FROM dl_routes WHERE id=?", (rid,))
         if r is None:
-            raise InventoryError("Không có chuyến này")
+            raise InventoryError(tr("Không có chuyến này"))
         return r
 
     def route(self, rid: int) -> dict[str, Any]:
@@ -754,11 +766,11 @@ class Delivery:
         w.writerow(
             [
                 "No",
-                "Khách hàng",
-                *[f"Từ kho {whs.get(x, x)}" for x in used],
-                "Số kiện",
-                "Khách ký nhận",
-                "Ghi chú",
+                tr("Khách hàng"),
+                *[tr("Từ kho {0}", whs.get(x, x)) for x in used],
+                tr("Số kiện"),
+                tr("Khách ký nhận"),
+                tr("Ghi chú"),
             ]
         )
         for st in route["stops"]:
@@ -767,9 +779,9 @@ class Delivery:
             notes = ", ".join(
                 x
                 for x in (
-                    b["window"] and f"Giờ: {b['window']}",
-                    b["assembling"] and "Lắp ráp",
-                    b["floors"] and f"Vác {b['floors']} tầng",
+                    b["window"] and tr("Giờ: {0}", b["window"]),
+                    b["assembling"] and tr("Lắp ráp"),
+                    b["floors"] and tr("Vác {0} tầng", b["floors"]),
                     b["notes"],
                     b["due"] and f"Thu {b['due']:,}",
                 )

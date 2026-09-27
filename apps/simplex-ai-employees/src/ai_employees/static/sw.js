@@ -1,7 +1,7 @@
 // Installed app (PWA): the page's own files come from the cache when the network is
 // slow or gone; the shop's data (/api) never goes into the cache, it is always live.
-const CACHE = "shop-admin-v1";
-const SHELL = ["/", "/static/admin.css", "/static/admin.js", "/static/inventory.js", "/static/business.js",
+const CACHE = "shop-admin-v2";
+const SHELL = ["/", "/static/admin.css", "/static/admin.js", "/static/inventory.js", "/static/business.js", "/static/i18n.js",
   "/static/icon.svg", "/static/icon-192.png", "/manifest.webmanifest"];
 
 self.addEventListener("install", (e) => {

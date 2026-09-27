@@ -24,6 +24,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from .delivery import haversine_km
+from .i18n import tr
 from .inventory import InventoryError, _dec
 from .state import now_iso
 
@@ -69,13 +70,13 @@ def _date(value: Any, what: str) -> str:
     try:
         return date.fromisoformat(str(value or "")[:10]).isoformat()
     except ValueError:
-        raise InventoryError(f"{what}: dạng YYYY-MM-DD") from None
+        raise InventoryError(tr("{0}: dạng YYYY-MM-DD", what)) from None
 
 
 def _pct(value: Any, what: str) -> Decimal:
     d = _dec(value, what)
     if not 0 <= d <= 100:
-        raise InventoryError(f"{what}: từ 0 đến 100")
+        raise InventoryError(tr("{0}: từ 0 đến 100", what))
     return d
 
 
@@ -102,11 +103,11 @@ class Sales:
     def save_settings(self, data: dict[str, Any]) -> dict[str, Any]:
         clean: dict[str, Any] = {}
         if "target_per_hour" in data:
-            clean["target_per_hour"] = self.inv.minor(data["target_per_hour"], "Định mức doanh số / giờ")
+            clean["target_per_hour"] = self.inv.minor(data["target_per_hour"], tr("Định mức doanh số / giờ"))
         for key, what in (
-            ("rate_pct", "% hoa hồng"),
-            ("contribution_pct", "% đóng góp của chủ"),
-            ("payroll_contribution_pct", "% bảo hiểm trên lương"),
+            ("rate_pct", tr("% hoa hồng")),
+            ("contribution_pct", tr("% đóng góp của chủ")),
+            ("payroll_contribution_pct", tr("% bảo hiểm trên lương")),
         ):
             if key in data:
                 clean[key] = float(_pct(data[key], what))
@@ -125,18 +126,18 @@ class Sales:
         note: str = "",
         actor: str = "",
     ) -> dict[str, Any]:
-        h = _dec(hours, "Số giờ")
+        h = _dec(hours, tr("Số giờ"))
         if not 0 < h <= 24:
-            raise InventoryError("Số giờ trong một ca: từ 0 đến 24")
+            raise InventoryError(tr("Số giờ trong một ca: từ 0 đến 24"))
         if not username:
-            raise InventoryError("Chọn nhân viên")
+            raise InventoryError(tr("Chọn nhân viên"))
         sid = self.db.execute(
             "INSERT INTO sales_shifts (username, warehouse_id, work_date, hours, note, created_by, created) "
             "VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id",
             (
                 username,
                 int(warehouse_id) if warehouse_id else None,
-                _date(work_date, "Ngày làm"),
+                _date(work_date, tr("Ngày làm")),
                 str(h),
                 note[:300],
                 actor,
@@ -179,18 +180,19 @@ class Sales:
         contribution_pct: Any = None,
     ) -> list[dict[str, Any]]:
         """Commission for everyone who sold or worked in the period (nothing is saved)."""
-        start, end = _date(start, "Từ ngày"), _date(end, "Đến ngày")
+        start, end = _date(start, tr("Từ ngày")), _date(end, tr("Đến ngày"))
         if end < start:
-            raise InventoryError("Đến ngày phải sau từ ngày")
+            raise InventoryError(tr("Đến ngày phải sau từ ngày"))
         s = {**DEFAULTS, **(self.office.docs.get(SETTINGS_KEY) or {})}
         per_hour = (
-            self.inv.minor(target_per_hour, "Định mức")
+            self.inv.minor(target_per_hour, tr("Định mức"))
             if target_per_hour not in (None, "")
             else int(s["target_per_hour"])
         )
-        rate = _pct(rate_pct if rate_pct not in (None, "") else s["rate_pct"], "% hoa hồng")
+        rate = _pct(rate_pct if rate_pct not in (None, "") else s["rate_pct"], tr("% hoa hồng"))
         contrib = _pct(
-            contribution_pct if contribution_pct not in (None, "") else s["contribution_pct"], "% đóng góp"
+            contribution_pct if contribution_pct not in (None, "") else s["contribution_pct"],
+            tr("% đóng góp"),
         )
         sold = self.sales_by_person(start, end)
         hours: dict[str, Decimal] = {}
@@ -277,9 +279,9 @@ class Sales:
         flow = {"draft": ("finalized",), "finalized": ("paid", "draft")}
         row = self.db.row("SELECT * FROM sales_commissions WHERE id=?", (cid,))
         if row is None:
-            raise InventoryError("Không có bảng hoa hồng này")
+            raise InventoryError(tr("Không có bảng hoa hồng này"))
         if status not in flow.get(row["status"], ()):
-            raise InventoryError(f"Không chuyển được từ '{row['status']}' sang '{status}'")
+            raise InventoryError(tr("Không chuyển được từ '{0}' sang '{1}'", row["status"], status))
         self.db.execute(
             "UPDATE sales_commissions SET status=?, decided=? WHERE id=?", (status, now_iso(), cid)
         )
@@ -291,20 +293,20 @@ class Sales:
     def add_ad_spend(self, data: dict[str, Any]) -> dict[str, Any]:
         platform = str(data.get("platform") or "").lower()
         if platform not in PLATFORMS:
-            raise InventoryError(f"Nền tảng: {', '.join(PLATFORMS)}")
-        start, end = _date(data.get("start_date"), "Từ ngày"), _date(data.get("end_date"), "Đến ngày")
+            raise InventoryError(tr("Nền tảng: {0}", ", ".join(PLATFORMS)))
+        start, end = _date(data.get("start_date"), tr("Từ ngày")), _date(data.get("end_date"), tr("Đến ngày"))
         if end < start:
-            raise InventoryError("Đến ngày phải sau từ ngày")
+            raise InventoryError(tr("Đến ngày phải sau từ ngày"))
         campaign = str(data.get("campaign") or "").strip()[:200]
         if not campaign:
-            raise InventoryError("Tên chiến dịch là bắt buộc")
+            raise InventoryError(tr("Tên chiến dịch là bắt buộc"))
         aid = self.db.execute(
             "INSERT INTO mk_ad_spend (campaign, platform, amount, start_date, end_date, note, created) "
             "VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id",
             (
                 campaign,
                 platform,
-                self.inv.minor(data.get("amount"), "Chi phí"),
+                self.inv.minor(data.get("amount"), tr("Chi phí")),
                 start,
                 end,
                 str(data.get("note") or "")[:300],
@@ -329,13 +331,13 @@ class Sales:
     def add_expense(self, data: dict[str, Any]) -> dict[str, Any]:
         category = str(data.get("category") or "other")
         if category not in EXPENSE_CATEGORIES:
-            raise InventoryError(f"Loại chi phí: {', '.join(EXPENSE_CATEGORIES)}")
+            raise InventoryError(tr("Loại chi phí: {0}", ", ".join(EXPENSE_CATEGORIES)))
         kind = str(data.get("kind") or "fixed")
         if kind not in ("fixed", "variable"):
-            raise InventoryError("Chi phí cố định (fixed) hoặc lưu động (variable)")
+            raise InventoryError(tr("Chi phí cố định (fixed) hoặc lưu động (variable)"))
         name = str(data.get("name") or "").strip()[:200]
         if not name:
-            raise InventoryError("Tên khoản chi là bắt buộc")
+            raise InventoryError(tr("Tên khoản chi là bắt buộc"))
         eid = self.db.execute(
             "INSERT INTO fin_expenses (name, category, kind, amount, expense_date, taxable, note, created) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
@@ -343,8 +345,8 @@ class Sales:
                 name,
                 category,
                 kind,
-                self.inv.minor(data.get("amount"), "Số tiền"),
-                _date(data.get("date"), "Ngày"),
+                self.inv.minor(data.get("amount"), tr("Số tiền")),
+                _date(data.get("date"), tr("Ngày")),
                 1 if data.get("taxable", True) else 0,
                 str(data.get("note") or "")[:300],
                 now_iso(),
@@ -369,7 +371,7 @@ class Sales:
         """Profit and loss for whole days: revenue and FIFO cost of the goods delivered in the
         period, minus advertising (shared by days of each campaign in the period), expenses,
         commissions of the period and delivery costs."""
-        start, end = _date(start, "Từ ngày"), _date(end, "Đến ngày")
+        start, end = _date(start, tr("Từ ngày")), _date(end, tr("Đến ngày"))
         lo, hi = _day_bounds(start, end)
         sales = (
             self.db.row(
@@ -523,7 +525,7 @@ class Sales:
         if near_wh:
             wh = self.inv.warehouse(int(near_wh))
             if not wh.get("lat") or not wh.get("lng"):
-                raise InventoryError(f"Kho {wh['code']} chưa có toạ độ (Giao hàng → Kho: đặt toạ độ)")
+                raise InventoryError(tr("Kho {0} chưa có toạ độ (Giao hàng → Kho: đặt toạ độ)", wh["code"]))
             origin = (float(wh["lat"]), float(wh["lng"]))
             sql += " AND c.lat IS NOT NULL AND c.lng IS NOT NULL"
         sql += " ORDER BY c.total_spent DESC, c.id"
@@ -584,7 +586,7 @@ class Sales:
 
     def add_notice(self, title: str, body: str, actor: str) -> dict[str, Any]:
         if not title.strip() or not body.strip():
-            raise InventoryError("Cần tiêu đề và nội dung")
+            raise InventoryError(tr("Cần tiêu đề và nội dung"))
         nid = self.db.execute(
             "INSERT INTO staff_notices (title, body, created_by, created) VALUES (?, ?, ?, ?) RETURNING id",
             (title.strip()[:150], body.strip()[:4000], actor, now_iso()),
@@ -610,7 +612,7 @@ class Sales:
     def ack_notice(self, nid: int, username: str, action: str) -> None:
         """'done' (handled: never shown again) or 'skip' (shown again tomorrow)."""
         if action not in ("done", "skip"):
-            raise InventoryError("action: done hoặc skip")
+            raise InventoryError(tr("action: done hoặc skip"))
         self.db.execute(
             "INSERT INTO staff_notice_acks (notice_id, username, action, ts) VALUES (?, ?, ?, ?) "
             "ON CONFLICT (notice_id, username) DO UPDATE SET action=excluded.action, ts=excluded.ts",

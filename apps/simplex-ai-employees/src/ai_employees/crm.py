@@ -18,6 +18,7 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from .db import Database
+from .i18n import tr
 from .state import now_iso
 
 if TYPE_CHECKING:
@@ -172,7 +173,7 @@ class CRM:
     def create_contact(self, name: str, phone: str = "", email: str = "") -> dict[str, Any]:
         """A customer met at the counter (no chat yet); their chats can be merged in later."""
         if not (name.strip() or phone.strip()):
-            raise ValueError("Cần tên hoặc số điện thoại")
+            raise ValueError(tr("Cần tên hoặc số điện thoại"))
         now = now_iso()
         cid = self.db.execute(
             "INSERT INTO crm_contacts (name, phone, phone_key, email, created, updated) VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
@@ -356,7 +357,7 @@ class CRM:
             clean["domain"] = clean["domain"].lower().removeprefix("@").removeprefix("www.")
         if company_id is None:
             if not clean.get("name"):
-                raise ValueError("Tên công ty là bắt buộc")
+                raise ValueError(tr("Tên công ty là bắt buộc"))
             company_id = self.db.execute(
                 "INSERT INTO crm_companies (name, domain, phone, address, notes, created) "
                 "VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
@@ -364,7 +365,7 @@ class CRM:
             )
         elif clean:
             if "name" in clean and not clean["name"]:
-                raise ValueError("Tên công ty là bắt buộc")
+                raise ValueError(tr("Tên công ty là bắt buộc"))
             sets = ", ".join(f"{k}=?" for k in clean)
             self.db.execute(f"UPDATE crm_companies SET {sets} WHERE id=?", (*clean.values(), company_id))
         company = self.company(int(company_id or 0))

@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from .db import Database, IntegrityError
+from .i18n import tr
 from .state import now_iso
 
 EXTERNAL_BASE = 1_000_000_000
@@ -43,7 +44,7 @@ def describe(text: str, attachments: list[dict[str, Any]] | None) -> str:
     """Text plus a short label per attachment ("[ảnh]", "[tệp: báo giá.pdf]")."""
     labels = []
     for a in attachments or []:
-        label = ATTACHMENT_KINDS.get(a.get("kind", ""), "tệp")
+        label = tr(ATTACHMENT_KINDS.get(a.get("kind", ""), "tệp"))
         labels.append(f"[{label}: {a['name']}]" if a.get("name") else f"[{label}]")
     return " ".join(x for x in [text.strip(), *labels] if x)
 

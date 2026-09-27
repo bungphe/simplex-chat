@@ -18,6 +18,7 @@ import logging
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from .i18n import has_catalog, tr, use_language
 from .inventory import InventoryError, order_code
 from .loyalty import vip_card
 from .menu_i18n import MENU_TEXT
@@ -85,8 +86,23 @@ STATUS = {
 }
 
 
+def _localized(entry: dict[str, Any]) -> dict[str, Any]:
+    """A menu entry with its label and parameter hint in the current language."""
+    out = {**entry, "label": tr(entry["label"])}
+    if "params" in entry:
+        out["params"] = tr(entry["params"])
+    if "commands" in entry:
+        out["commands"] = [_localized(c) for c in entry["commands"]]
+    return out
+
+
+def admin_menu_entry() -> dict[str, Any]:
+    """The admins' management menu, in the current language."""
+    return _localized(ADMIN_MENU)
+
+
 def admin_menu() -> list[dict[str, Any]]:
-    return [*CUSTOMER_MENU, ADMIN_MENU]
+    return [*customer_menu(), admin_menu_entry()]
 
 
 def tap(command: str) -> str:
@@ -102,9 +118,9 @@ class ChatMenu:
     def _money(self, v: Any) -> str:
         cur = self.office.inventory.settings()["currency"]
         return (
-            (f"{v:,}".replace(",", ".") + (" đ" if cur == "VND" else f" {cur}"))
+            (f"{v:,}".replace(",", ".") + (tr(" đ") if cur == "VND" else f" {cur}"))
             if v is not None
-            else "liên hệ"
+            else tr("liên hệ")
         )
 
     def _contact(self, cid: int, name: str) -> tuple[Any, dict[str, Any]]:
@@ -114,24 +130,33 @@ class ChatMenu:
 
     async def handle(self, cid: int, word: str, args: str, name: str) -> str:
         conv, contact = self._contact(cid, name)
-        try:
-            reply = await getattr(self, f"cmd_{word}")(conv, contact, args.strip())
-        except InventoryError as e:
-            reply = str(e)
-        if word == "shop":
-            return reply  # translated there: the login link never goes to a model
-        # in the customer's language (prices, codes, links and tappable commands kept as they are)
+        native = self._native(cid)
+        # in the customer's language: from the catalogs when there is one, else translated
+        # (prices, codes, links and tappable commands kept as they are)
+        with use_language(self.employee.agent.contact_language(cid) if native else None):
+            try:
+                reply = await getattr(self, f"cmd_{word}")(conv, contact, args.strip())
+            except InventoryError as e:
+                reply = str(e)
+        if word == "shop" or native:
+            return reply  # /shop: translated there, the login link never goes to a model
         return await self.employee.agent.for_contact(cid, reply)
 
+    def _native(self, cid: int) -> bool:
+        """Whether the customer's language has its own catalog (no model translation needed)."""
+        code = self.employee.agent.contact_language(cid)
+        return code is None or has_catalog(code)
+
     async def cmd_help(self, conv: Any, contact: dict[str, Any], args: str) -> str:
-        return (
-            "Quý khách có thể nhắn tự nhiên, hoặc chạm vào lệnh:\n"
-            f"{tap('products')} – tìm sản phẩm, ví dụ {tap('products sofa')}\n"
-            f"{tap('combos')} – combo tiết kiệm\n"
-            f"{tap('orders')} – đơn hàng của tôi\n"
-            f"{tap('points')} – điểm tích luỹ và thẻ VIP\n"
-            f"{tap('shop')} – đăng nhập website\n"
-            f"{tap('staff')} – gặp nhân viên"
+        return tr(
+            "Quý khách có thể nhắn tự nhiên, hoặc chạm vào lệnh:\n{0} – tìm sản phẩm, ví dụ {1}\n{2} – combo tiết kiệm\n{3} – đơn hàng của tôi\n{4} – điểm tích luỹ và thẻ VIP\n{5} – đăng nhập website\n{6} – gặp nhân viên",
+            tap("products"),
+            tap("products sofa"),
+            tap("combos"),
+            tap("orders"),
+            tap("points"),
+            tap("shop"),
+            tap("staff"),
         )
 
     cmd_start = cmd_help
@@ -139,20 +164,20 @@ class ChatMenu:
     async def cmd_products(self, conv: Any, contact: dict[str, Any], args: str) -> str:
         inv = self.office.inventory
         if not args:
-            return f"Gõ tên hoặc mã sản phẩm, ví dụ: {tap('products sofa')}"
+            return tr("Gõ tên hoặc mã sản phẩm, ví dụ: {0}", tap("products sofa"))
         found = inv.lookup(args, bool(contact["vip"]), limit=6)
         if not found:
-            return f"Chưa tìm thấy sản phẩm “{args}”. Quý khách mô tả thêm để nhân viên tư vấn nhé."
+            return tr("Chưa tìm thấy sản phẩm “{0}”. Quý khách mô tả thêm để nhân viên tư vấn nhé.", args)
         shop = self.office.storefront
         lines = []
         for p in found:
             if p["available"]:
-                stock = f"còn {p['available']}"
+                stock = tr("còn {0}", p["available"])
             elif p["incoming"]:
-                stock = "đặt trước" + (f", về khoảng {p['next_eta']}" if p["next_eta"] else "")
+                stock = tr("đặt trước") + (tr(", về khoảng {0}", p["next_eta"]) if p["next_eta"] else "")
             else:
-                stock = "tạm hết"
-            line = f"*{p['name']}* ({p['sku']}) – {self._money(p['price'])}{' (giá VIP)' if p['vip_price'] else ''} · {stock}"
+                stock = tr("tạm hết")
+            line = f"*{p['name']}* ({p['sku']}) – {self._money(p['price'])}{tr(' (giá VIP)') if p['vip_price'] else ''} · {stock}"
             if shop and shop.public_url:
                 line += f"\n{shop.public_url}/p/{p['sku']}"
             lines.append(line)
@@ -161,28 +186,33 @@ class ChatMenu:
     async def cmd_combos(self, conv: Any, contact: dict[str, Any], args: str) -> str:
         combos = [c for c in self.office.inventory.combos(bool(contact["vip"])) if c["live"]]
         if not combos:
-            return "Hiện chưa có combo nào."
+            return tr("Hiện chưa có combo nào.")
         return "\n\n".join(
-            f"🎁 *{c['name']}* – {self._money(c['price'])} (tiết kiệm {self._money(c['saving'])})\n"
+            tr(
+                "🎁 *{0}* – {1} (tiết kiệm {2})\n",
+                c["name"],
+                self._money(c["price"]),
+                self._money(c["saving"]),
+            )
             + "\n".join(f"  • {i['name']} × {i['qty']}" for i in c["items"])
-            + ("" if c["available"] else "\n  (tạm hết hàng)")
+            + ("" if c["available"] else tr("\n  (tạm hết hàng)"))
             for c in combos[:6]
         )
 
     async def cmd_orders(self, conv: Any, contact: dict[str, Any], args: str) -> str:
         orders = self.office.inventory.orders(contact_id=int(contact["id"]), limit=5)
         if not orders:
-            return "Quý khách chưa có đơn hàng nào."
+            return tr("Quý khách chưa có đơn hàng nào.")
         lines = []
         for o in orders:
             due = self.office.inventory.major(
                 max(0, self.office.inventory.minor(o["total"]) - self.office.inventory.minor(o["paid"]))
             )
             lines.append(
-                f"*{o['code']}* · {o['created'][:10]} · {STATUS.get(o['status'], o['status'])}"
-                f"{' · đặt trước' if o['kind'] == 'preorder' else ''} · {self._money(o['total'])}"
-                + (f" · còn {self._money(due)}" if due and o["status"] == "confirmed" else "")
-                + f"\n  hoá đơn: {tap('invoice ' + o['code'])}"
+                f"*{o['code']}* · {o['created'][:10]} · {tr(STATUS.get(o['status'], o['status']))}"
+                f"{tr(' · đặt trước') if o['kind'] == 'preorder' else ''} · {self._money(o['total'])}"
+                + (tr(" · còn {0}", self._money(due)) if due and o["status"] == "confirmed" else "")
+                + tr("\n  hoá đơn: {0}", tap("invoice " + o["code"]))
             )
         return "\n".join(lines)
 
@@ -193,12 +223,14 @@ class ChatMenu:
         except (ValueError, InventoryError):
             order = None
         if order is None or order["contact_id"] != contact["id"]:
-            raise InventoryError(f"Không tìm thấy đơn {code} của quý khách. Xem các đơn: {tap('orders')}")
+            raise InventoryError(
+                tr("Không tìm thấy đơn {0} của quý khách. Xem các đơn: {1}", code, tap("orders"))
+            )
         return order
 
     async def cmd_invoice(self, conv: Any, contact: dict[str, Any], args: str) -> str:
         if not args:
-            return f"Gõ mã đơn, ví dụ {tap('invoice DH00012')}, hoặc xem các đơn: {tap('orders')}"
+            return tr("Gõ mã đơn, ví dụ {0}, hoặc xem các đơn: {1}", tap("invoice DH00012"), tap("orders"))
         order = self._own_order(contact, args)
         text = self.office.inventory.receipt_text(int(order["id"]))
         address = order.get("email") or contact.get("email")
@@ -207,7 +239,7 @@ class ChatMenu:
 
             try:
                 await email_invoice(self.office, int(order["id"]))
-                text += f"\n\n📧 Hoá đơn cũng đã được gửi tới {_mask(address)}."
+                text += tr("\n\n📧 Hoá đơn cũng đã được gửi tới {0}.", _mask(address))
             except InventoryError as e:
                 log.info("chat: invoice %s not emailed: %s", order["code"], e)
         return text
@@ -215,49 +247,64 @@ class ChatMenu:
     async def cmd_points(self, conv: Any, contact: dict[str, Any], args: str) -> str:
         s = self.office.inventory.settings()
         cid = int(contact["id"])
-        text = f"⭐ Điểm tích luỹ: *{contact['points']}* · Đã mua: {self._money(self.office.inventory.major(contact['total_spent']))}"
+        text = tr(
+            "⭐ Điểm tích luỹ: *{0}* · Đã mua: {1}",
+            contact["points"],
+            self._money(self.office.inventory.major(contact["total_spent"])),
+        )
         if contact["vip"]:
-            text += f"\nQuý khách là khách VIP · thẻ số *{vip_card(cid)}*: giá VIP áp dụng cho mọi đơn."
+            text += tr("\nQuý khách là khách VIP · thẻ số *{0}*: giá VIP áp dụng cho mọi đơn.", vip_card(cid))
         elif int(s["vip_points"]):
             need = max(0, int(s["vip_points"]) - int(contact["points"]))
-            text += f"\nCòn {need} điểm nữa để lên VIP."
+            text += tr("\nCòn {0} điểm nữa để lên VIP.", need)
         return text
 
     async def cmd_shop(self, conv: Any, contact: dict[str, Any], args: str) -> str:
         shop = self.office.storefront
         agent = self.employee.agent
+        native = self._native(conv.contact_id)
         if shop is None or not shop.public_url:
-            return await agent.for_contact(
-                conv.contact_id, "Cửa hàng chưa mở website. Quý khách cứ nhắn tại đây để đặt hàng nhé."
-            )
+            text = tr("Cửa hàng chưa mở website. Quý khách cứ nhắn tại đây để đặt hàng nhé.")
+            return text if native else await agent.for_contact(conv.contact_id, text)
         link = shop.magic_link(int(contact["id"]))
-        intro = await agent.for_contact(
-            conv.contact_id,
-            f"🌐 Đăng nhập website {shop.public_url} bằng đường dẫn riêng dưới đây (dùng 1 lần, trong 10 phút). "
-            "Đừng chuyển đường dẫn này cho người khác.",
+        intro = tr(
+            "🌐 Đăng nhập website {0} bằng đường dẫn riêng dưới đây (dùng 1 lần, trong 10 phút). Đừng chuyển đường dẫn này cho người khác.",
+            shop.public_url,
         )
+        if not native:
+            intro = await agent.for_contact(conv.contact_id, intro)
         return f"{intro}\n{link}"
 
     async def cmd_staff(self, conv: Any, contact: dict[str, Any], args: str) -> str:
         hub = self.office.hub
         hub.inbox.set_mode(conv.id, "human")
         hub.inbox.set_status(conv.id, "open")
-        hub.inbox.add_labels(conv.id, ["cần nhân viên"])
-        hub.add_note(
-            conv.id,
-            "Khách bấm “Gặp nhân viên” trong ứng dụng SimpleX" + (f": {args}" if args else ""),
-            "system",
-        )
-        await self.employee.notify_admins(
-            f"🙋 {contact['name'] or conv.customer_name or 'Khách'} ({contact['phone'] or 'SimpleX'}) muốn gặp nhân viên"
-            f"{': ' + args if args else ''}. Trả lời trong Hộp thư của trang quản trị."
-        )
+        with use_language(None):  # for the shop's staff: the office's language
+            hub.inbox.add_labels(conv.id, [tr("cần nhân viên")])
+            hub.add_note(
+                conv.id,
+                tr("Khách bấm “Gặp nhân viên” trong ứng dụng SimpleX") + (f": {args}" if args else ""),
+                "system",
+            )
+            await self.employee.notify_admins(
+                tr(
+                    "🙋 {0} ({1}) muốn gặp nhân viên{2}. Trả lời trong Hộp thư của trang quản trị.",
+                    contact["name"] or conv.customer_name or tr("Khách"),
+                    contact["phone"] or "SimpleX",
+                    ": " + args if args else "",
+                )
+            )
         await self.office.staff_links.notify(
             "inbox",
-            f"🙋 #{conv.id} {contact['name'] or conv.customer_name or 'Khách'} muốn gặp nhân viên"
-            f"{': ' + args if args else ''}. Xem: /'open {conv.id}'",
+            lambda: tr(
+                "🙋 #{0} {1} muốn gặp nhân viên{2}. Xem: /'open {3}'",
+                conv.id,
+                contact["name"] or conv.customer_name or tr("Khách"),
+                ": " + args if args else "",
+                conv.id,
+            ),
         )
-        return "Đã báo nhân viên, quý khách vui lòng chờ trong giây lát. 🙏"
+        return tr("Đã báo nhân viên, quý khách vui lòng chờ trong giây lát. 🙏")
 
     # ------------------------------------------------------------------ #
     # admins
@@ -268,34 +315,46 @@ class ChatMenu:
         p = self.office.sales.pnl(today, today)
         new = inv.orders(since=today, limit=1000)
         web = [o for o in new if o.get("channel") == "web"]
-        return (
-            f"*Hôm nay {today}*\n"
-            f"Đơn mới: {len(new)} (website {len(web)}) · giá trị {self._money(sum(o['total'] for o in new if o['status'] != 'cancelled'))}\n"
-            f"Đã giao: {p['orders']} đơn · doanh thu {self._money(p['revenue'])} · lãi gộp {self._money(p['gross_profit'])}"
-            f" ({p['gross_margin_pct']}%)"
+        return tr(
+            "*Hôm nay {0}*\nĐơn mới: {1} (website {2}) · giá trị {3}\nĐã giao: {4} đơn · doanh thu {5} · lãi gộp {6} ({7}%)",
+            today,
+            len(new),
+            len(web),
+            self._money(sum(o["total"] for o in new if o["status"] != "cancelled")),
+            p["orders"],
+            self._money(p["revenue"]),
+            self._money(p["gross_profit"]),
+            p["gross_margin_pct"],
         )
 
     def open_orders(self) -> str:
         orders = self.office.inventory.orders(status="confirmed", limit=15)
         if not orders:
-            return "Không có đơn đang mở."
-        return "*Đơn đang mở*\n" + "\n".join(
+            return tr("Không có đơn đang mở.")
+        return tr("*Đơn đang mở*\n") + "\n".join(
             f"{o['code']} · {o['customer_name'] or '-'} · {o['channel'] or o['source'] or '-'}"
-            f"{' · đặt trước' if o['kind'] == 'preorder' else ''} · {self._money(o['total'])}"
+            f"{tr(' · đặt trước') if o['kind'] == 'preorder' else ''} · {self._money(o['total'])}"
             f"{' · giao ' + o['delivery_date'] if o['delivery_date'] else ''}"
             for o in orders
         )
 
     def stock(self, query: str) -> str:
         if not query:
-            return f"Cú pháp: {tap('ai stock <mã hoặc tên>')}"
+            return tr("Cú pháp: {0}", tap(tr("ai stock <mã hoặc tên>")))
         rows = self.office.inventory.products(query, limit=8)
         if not rows:
-            return f"Không có sản phẩm “{query}”."
+            return tr("Không có sản phẩm “{0}”.", query)
         return "\n".join(
-            f"*{p['sku']}* {p['name']}: có thể bán {p['available']} (tồn {p['on_hand']}, giữ {p['reserved']})"
+            tr(
+                "*{0}* {1}: có thể bán {2} (tồn {3}, giữ {4})",
+                p["sku"],
+                p["name"],
+                p["available"],
+                p["on_hand"],
+                p["reserved"],
+            )
             + (
-                f" · sắp về {p['incoming']}" + (f" ({p['next_eta']})" if p["next_eta"] else "")
+                tr(" · sắp về {0}", p["incoming"]) + (f" ({p['next_eta']})" if p["next_eta"] else "")
                 if p["incoming"]
                 else ""
             )
@@ -310,10 +369,10 @@ class ChatMenu:
     def low_stock(self) -> str:
         rows = [p for p in self.office.inventory.products(limit=500) if p["level"] in ("empty", "reorder")]
         if not rows:
-            return "Không có hàng nào sắp hết. 👍"
-        return "*Cần nhập thêm*\n" + "\n".join(
-            f"{p['sku']} {p['name']}: còn {p['available']}"
-            + (f", nên đặt {p['suggest_order']}" if p["suggest_order"] else "")
+            return tr("Không có hàng nào sắp hết. 👍")
+        return tr("*Cần nhập thêm*\n") + "\n".join(
+            tr("{0} {1}: còn {2}", p["sku"], p["name"], p["available"])
+            + (tr(", nên đặt {0}", p["suggest_order"]) if p["suggest_order"] else "")
             for p in rows[:20]
         )
 

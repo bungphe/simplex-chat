@@ -49,6 +49,7 @@ from typing import Any
 import httpx2
 
 from .channels import Channel, ChannelError, InboundMessage
+from .i18n import tr
 
 
 class _HideBotToken(logging.Filter):
@@ -377,7 +378,7 @@ class EmailChannel(Channel):
 
     def _message(self, to: str, text: str) -> EmailMessage:
         thread = self.hub.inbox.channel_state(f"{self.id}:{to}")
-        subject = thread.get("subject") or str(self.cfg.opt("default_subject", "Phản hồi từ cửa hàng"))
+        subject = thread.get("subject") or str(self.cfg.opt("default_subject", tr("Phản hồi từ cửa hàng")))
         sender = str(self.cfg.opt("smtp_from") or self.cfg.opt("smtp_user") or "")
         msg = EmailMessage()
         msg["From"] = sender

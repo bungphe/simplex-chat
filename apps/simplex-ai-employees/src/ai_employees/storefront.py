@@ -32,6 +32,7 @@ from urllib.parse import quote, urlencode
 from aiohttp import web
 
 from .crm import phone_key
+from .i18n import LANGUAGES, RTL, best_match, current, default, normalize, tr, use_language
 from .inventory import InventoryError, order_code
 from .invoices import RECEIPT_CSP, receipt_html
 from .loyalty import vip_card
@@ -58,7 +59,7 @@ CODE_ATTEMPTS = 5
 CODES_PER_CONTACT = 3  # per 15 minutes
 REQUESTS_PER_IP = 20  # login requests per 15 minutes
 CART_LINES = 30
-SESSION, CSRF, CART, LOGIN = "sf_session", "sf_csrf", "sf_cart", "sf_login"
+SESSION, CSRF, CART, LOGIN, LANG = "sf_session", "sf_csrf", "sf_cart", "sf_login", "sf_lang"
 CSP = (
     "default-src 'none'; style-src 'self'; img-src 'self' https:; form-action 'self'; "
     "base-uri 'none'; frame-ancestors 'none'"
@@ -161,24 +162,29 @@ class Storefront:
             log.info("storefront: too many login codes for contact %s", cid)
             return 0
         code = f"{secrets.randbelow(1_000_000):06d}"
-        shop = self.inv.settings()["shop_name"] or "Cửa hàng"
-        text = f"Mã đăng nhập website {shop}: {code} (hiệu lực {CODE_MINUTES} phút). Đừng đưa mã này cho ai."
+        shop = self.inv.settings()["shop_name"] or tr("Cửa hàng")
+        text = tr(
+            "Mã đăng nhập website {0}: {1} (hiệu lực {2} phút). Đừng đưa mã này cho ai.",
+            shop,
+            code,
+            CODE_MINUTES,
+        )
         via = ""
         by_email = "@" in who or not self.crm.conversations(cid)
         if contact["email"] and self.office.mailer.ready and by_email:
             try:
-                await self.office.mailer.send(contact["email"], f"{shop} – mã đăng nhập", text)
+                await self.office.mailer.send(contact["email"], tr("{0} – mã đăng nhập", shop), text)
                 via = "email"
             except InventoryError as e:
                 log.info("storefront: login code email failed: %s", e)
         if not via:
             for conv_id in reversed(self.crm.conversations(cid)):
-                if await self.office.hub.send_private(conv_id, text, "🔐 [đã gửi mã đăng nhập website]"):
+                if await self.office.hub.send_private(conv_id, text, tr("🔐 [đã gửi mã đăng nhập website]")):
                     via = "chat"
                     break
         if not via and contact["email"] and self.office.mailer.ready:
             try:
-                await self.office.mailer.send(contact["email"], f"{shop} – mã đăng nhập", text)
+                await self.office.mailer.send(contact["email"], tr("{0} – mã đăng nhập", shop), text)
                 via = "email"
             except InventoryError:
                 pass
@@ -359,13 +365,13 @@ class Storefront:
         name, phone = form.get("name", "").strip(), form.get("phone", "").strip()
         email = form.get("email", "").strip().lower()
         if not cart:
-            raise InventoryError("Giỏ hàng trống")
+            raise InventoryError(tr("Giỏ hàng trống"))
         if not name or not phone_key(phone):
-            raise InventoryError("Vui lòng nhập họ tên và số điện thoại")
+            raise InventoryError(tr("Vui lòng nhập họ tên và số điện thoại"))
         if email and not valid_email(email):
-            raise InventoryError("Email không hợp lệ")
+            raise InventoryError(tr("Email không hợp lệ"))
         if not form.get("address", "").strip():
-            raise InventoryError("Vui lòng nhập địa chỉ giao hàng")
+            raise InventoryError(tr("Vui lòng nhập địa chỉ giao hàng"))
         vip = bool(logged_in and logged_in["vip"])
         wh = int(self.inv.default_warehouse()["id"])
         now_items: list[dict[str, Any]] = []
@@ -376,7 +382,7 @@ class Storefront:
                 continue
             row = self.inv.by_sku(str(it["sku"]))
             if row is None or not row["active"] or not row["on_web"]:
-                raise InventoryError(f"Sản phẩm {it['sku']} không còn bán")
+                raise InventoryError(tr("Sản phẩm {0} không còn bán", it["sku"]))
             free = max(0, self.inv._available(wh, int(row["id"])))
             take = min(int(it["qty"]), free)
             if take:
@@ -415,32 +421,51 @@ class Storefront:
 
     async def after_checkout(self, orders: list[dict[str, Any]]) -> None:
         """Confirm to the customer by email, and tell the shop."""
-        shop = self.inv.settings()["shop_name"] or "Cửa hàng"
+        shop = self.inv.settings()["shop_name"] or tr("Cửa hàng")
         first = orders[0]
-        lines = []
-        for o in orders:
-            kind = "Đặt trước (giao khi hàng về)" if o["kind"] == "preorder" else "Có sẵn"
-            lines.append(f"{o['code']} – {kind}: {o['total']:,}")
-            lines += [f"  • {i['name']} × {i['qty']}" for i in o["items"]]
-        summary = "\n".join(lines)
+
+        def summarize() -> str:  # in the current language: the customer's, then each staff member's
+            lines = []
+            for o in orders:
+                kind = tr("Đặt trước (giao khi hàng về)") if o["kind"] == "preorder" else tr("Có sẵn")
+                lines.append(f"{o['code']} – {kind}: {o['total']:,}")
+                lines += [f"  • {i['name']} × {i['qty']}" for i in o["items"]]
+            return "\n".join(lines)
+
+        summary = summarize()
         if first.get("email") and self.office.mailer.ready:
             try:
                 await self.office.mailer.send(
                     first["email"],
-                    f"{shop} – đã nhận đơn {', '.join(o['code'] for o in orders)}",
-                    f"Cảm ơn {first['customer_name']}! {shop} đã nhận đơn hàng của quý khách:\n\n{summary}\n\n"
-                    + "".join(f"Theo dõi {o['code']}: {self.order_link(o)}\n" for o in orders)
-                    + "\nNhân viên sẽ liên hệ để hẹn giao hàng.",
+                    tr("{0} – đã nhận đơn {1}", shop, ", ".join(o["code"] for o in orders)),
+                    tr(
+                        "Cảm ơn {0}! {1} đã nhận đơn hàng của quý khách:\n\n{2}\n\n",
+                        first["customer_name"],
+                        shop,
+                        summary,
+                    )
+                    + "".join(tr("Theo dõi {0}: {1}\n", o["code"], self.order_link(o)) for o in orders)
+                    + tr("\nNhân viên sẽ liên hệ để hẹn giao hàng."),
                 )
             except InventoryError as e:
                 log.info("storefront: confirmation email not sent: %s", e)
         employee = next(iter(self.office.employees.values()), None)
         if employee is not None:
-            await employee.notify_admins(
-                f"🛒 Đơn web mới từ {first['customer_name']} ({first['phone']}):\n{summary}\nĐịa chỉ: {first['address']}"
-            )
+            with use_language(None):  # the office's language, not the visitor's
+                await employee.notify_admins(
+                    tr(
+                        "🛒 Đơn web mới từ {0} ({1}):\n{2}\nĐịa chỉ: {3}",
+                        first["customer_name"],
+                        first["phone"],
+                        summarize(),
+                        first["address"],
+                    )
+                )
         await self.office.staff_links.notify(
-            "pos", f"🛒 Đơn web mới từ {first['customer_name']} ({first['phone']}):\n{summary}"
+            "pos",
+            lambda: tr(
+                "🛒 Đơn web mới từ {0} ({1}):\n{2}", first["customer_name"], first["phone"], summarize()
+            ),
         )
 
 
@@ -450,11 +475,11 @@ class Storefront:
 
 def _money(office: Office) -> Any:
     cur = office.inventory.settings()["currency"]
-    unit = "đ" if cur == "VND" else cur
+    unit = tr("đ") if cur == "VND" else cur
 
     def fmt(v: Any) -> str:
         if v is None:
-            return "Liên hệ"
+            return tr("Liên hệ")
         return f"{v:,}".replace(",", ".") + f" {unit}"
 
     return fmt
@@ -520,7 +545,7 @@ async def _form(request: web.Request) -> dict[str, str]:
     data = await request.post()
     token = request.cookies.get(CSRF, "")
     if not token or not hmac.compare_digest(token, str(data.get("csrf", ""))):
-        raise web.HTTPForbidden(text="Phiên làm việc đã hết hạn, vui lòng tải lại trang.")
+        raise web.HTTPForbidden(text=tr("Phiên làm việc đã hết hạn, vui lòng tải lại trang."))
     return {k: str(v)[:500] for k, v in data.items()}
 
 
@@ -528,7 +553,17 @@ async def _form(request: web.Request) -> dict[str, str]:
 async def _headers(request: web.Request, handler: Any) -> web.StreamResponse:
     if not request.cookies.get(CSRF):
         request[NEW_CSRF] = secrets.token_urlsafe(24)
-    resp = await handler(request)
+    chosen = normalize(request.query.get("lang"))
+    lang = (
+        chosen
+        or normalize(request.cookies.get(LANG))
+        or best_match(request.headers.get("Accept-Language"))
+        or default()
+    )
+    with use_language(lang):  # the pages, and the emails and chat messages they send
+        resp = await handler(request)
+    if chosen:
+        _cookie(request, resp, LANG, chosen, days=365)
     for k, v in HEADERS.items():
         resp.headers.setdefault(k, v)
     resp.headers.setdefault("Content-Security-Policy", CSP)
@@ -545,17 +580,25 @@ def _page(request: web.Request, title: str, body: str, status: int = 200) -> web
     who = request.get(CUSTOMER)
     count = sum(int(x["qty"]) for x in _cart(request))
     account = (
-        f'<a href="/account">{e(who["name"] or "Tài khoản")}{" ⭐VIP" if who["vip"] else ""}</a>'
+        f'<a href="/account">{e(who["name"] or tr("Tài khoản"))}{" ⭐VIP" if who["vip"] else ""}</a>'
         if who
-        else '<a href="/login">Đăng nhập</a>'
+        else f'<a href="/login">{e(tr("Đăng nhập"))}</a>'
     )
-    doc = f"""<!doctype html><html lang="vi"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1"><title>{e(title)} – {e(s["shop_name"] or "Cửa hàng")}</title>
-<link rel="stylesheet" href="/static/shop.css"></head><body>
-<header><a class="brand" href="/">{e(s["shop_name"] or "Cửa hàng")}</a>
-<nav><a href="/">Sản phẩm</a><a href="/combos">Combo</a><a href="/cart">Giỏ hàng ({count})</a>{account}</nav></header>
-<main>{body}</main>
-<footer>{e(s["shop_address"])}{" · " + e(s["shop_phone"]) if s["shop_phone"] else ""}</footer></body></html>"""
+    name = e(s["shop_name"] or tr("Cửa hàng"))
+    lang = current()
+    langs = "".join(
+        f'<a href="?lang={code}"{" class=on" if code == lang else ""} lang="{code}">{e(label)}</a>'
+        for code, label in LANGUAGES.items()
+    )
+    contact = e(s["shop_address"]) + (" · " + e(s["shop_phone"]) if s["shop_phone"] else "")
+    doc = (
+        f'<!doctype html><html lang="{lang}"{" dir=rtl" if lang in RTL else ""}><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        f'<title>{e(title)} – {name}</title><link rel="stylesheet" href="/static/shop.css"></head><body>'
+        f'<header><a class="brand" href="/">{name}</a><nav><a href="/">{e(tr("Sản phẩm"))}</a>'
+        f'<a href="/combos">{e(tr("Combo"))}</a><a href="/cart">{e(tr("Giỏ hàng ({0})", count))}</a>{account}</nav></header>'
+        f'<main>{body}</main><footer>{contact}<div class="langs">{langs}</div></footer></body></html>'
+    )
     return web.Response(text=doc, content_type="text/html", status=status)
 
 
@@ -572,27 +615,26 @@ def _price_html(request: web.Request, p: dict[str, Any]) -> str:
     if p.get("promo"):
         out += f' <span class="badge">{e(p["promo"])}</span>'
     if p.get("vip_price"):
-        out += ' <span class="badge vip">Giá VIP</span>'
+        out += tr(' <span class="badge vip">Giá VIP</span>')
     return out
 
 
 def _stock_html(p: dict[str, Any]) -> str:
     if p["available"] > 0:
-        return '<span class="ok">Còn hàng</span>'
+        return tr('<span class="ok">Còn hàng</span>')
     if p["can_preorder"] > 0:
-        eta = f" – về khoảng {html.escape(p['next_eta'])}" if p.get("next_eta") else ""
-        return f'<span class="warn">Đặt trước{eta}</span>'
-    return '<span class="bad">Tạm hết hàng</span>'
+        eta = tr(" – về khoảng {0}", html.escape(p["next_eta"])) if p.get("next_eta") else ""
+        return tr('<span class="warn">Đặt trước{0}</span>', eta)
+    return tr('<span class="bad">Tạm hết hàng</span>')
 
 
 def _buy_form(request: web.Request, key: str, can_buy: bool) -> str:
     if not can_buy:
         return ""
-    return (
-        f'<form method="post" action="/cart/add" class="buy">{_hidden(request)}'
-        f'<input type="hidden" name="item" value="{html.escape(key)}">'
-        '<input type="number" name="qty" value="1" min="1" max="99" aria-label="Số lượng">'
-        "<button>Thêm vào giỏ</button></form>"
+    return tr(
+        '<form method="post" action="/cart/add" class="buy">{0}<input type="hidden" name="item" value="{1}"><input type="number" name="qty" value="1" min="1" max="99" aria-label="Số lượng"><button>Thêm vào giỏ</button></form>',
+        _hidden(request),
+        html.escape(key),
     )
 
 
@@ -614,17 +656,26 @@ async def catalog(request: web.Request) -> web.Response:
         for p in items
     )
     body = (
-        f'<form class="search" method="get" action="/"><input name="q" value="{e(q)}" placeholder="Tìm sản phẩm…">'
+        tr(
+            '<form class="search" method="get" action="/"><input name="q" value="{0}" placeholder="Tìm sản phẩm…">',
+            e(q),
+        )
         + (f'<input type="hidden" name="c" value="{e(cat)}">' if cat else "")
-        + "<button>Tìm</button></form>"
-        f'<div class="chips"><a class="chip{"" if cat else " on"}" href="/">Tất cả</a>{cats}</div>'
-        + (f'<div class="grid">{cards}</div>' if cards else "<p>Không tìm thấy sản phẩm.</p>")
+        + tr(
+            '<button>Tìm</button></form><div class="chips"><a class="chip{0}" href="/">Tất cả</a>{1}</div>',
+            "" if cat else " on",
+            cats,
+        )
+        + (f'<div class="grid">{cards}</div>' if cards else tr("<p>Không tìm thấy sản phẩm.</p>"))
     )
     if who and who["vip"]:
-        body = '<p class="note">⭐ Quý khách đang xem giá VIP.</p>' + body
+        body = tr('<p class="note">⭐ Quý khách đang xem giá VIP.</p>') + body
     elif not who:
-        body = '<p class="note">Khách VIP: <a href="/login">đăng nhập</a> để xem giá ưu đãi riêng.</p>' + body
-    return _page(request, "Sản phẩm", body)
+        body = (
+            tr('<p class="note">Khách VIP: <a href="/login">đăng nhập</a> để xem giá ưu đãi riêng.</p>')
+            + body
+        )
+    return _page(request, tr("Sản phẩm"), body)
 
 
 async def product_page(request: web.Request) -> web.Response:
@@ -632,7 +683,9 @@ async def product_page(request: web.Request) -> web.Response:
     who = request[CUSTOMER]
     p = shop.product(request.match_info["sku"], bool(who and who["vip"]))
     if p is None:
-        return _page(request, "Không tìm thấy", "<p>Sản phẩm không tồn tại hoặc đã ngừng bán.</p>", 404)
+        return _page(
+            request, tr("Không tìm thấy"), tr("<p>Sản phẩm không tồn tại hoặc đã ngừng bán.</p>"), 404
+        )
     attrs = "".join(f"<tr><th>{e(k)}</th><td>{e(v)}</td></tr>" for k, v in p["attributes"].items())
     body = (
         '<article class="detail">'
@@ -657,17 +710,22 @@ async def combos_page(request: web.Request) -> web.Response:
             continue
         parts = "".join(f"<li>{e(i['name'])} × {i['qty']}</li>" for i in c["items"])
         cards += (
-            f'<article class="card"><h3>{e(c["name"])}</h3><ul>{parts}</ul>'
-            f'<div><span class="price">{e(m(c["price"]))}</span> <s>{e(m(c["separate_price"]))}</s> '
-            f'<span class="badge">Tiết kiệm {e(m(c["saving"]))}</span></div>'
-            f"{_buy_form(request, 'combo:' + c['code'], c['available'] > 0)}"
-            + ("" if c["available"] > 0 else '<span class="bad">Tạm hết hàng</span>')
+            tr(
+                '<article class="card"><h3>{0}</h3><ul>{1}</ul><div><span class="price">{2}</span> <s>{3}</s> <span class="badge">Tiết kiệm {4}</span></div>{5}',
+                e(c["name"]),
+                parts,
+                e(m(c["price"])),
+                e(m(c["separate_price"])),
+                e(m(c["saving"])),
+                _buy_form(request, "combo:" + c["code"], c["available"] > 0),
+            )
+            + ("" if c["available"] > 0 else tr('<span class="bad">Tạm hết hàng</span>'))
             + "</article>"
         )
     return _page(
         request,
         "Combo",
-        f'<h1>Combo tiết kiệm</h1><div class="grid">{cards or "<p>Chưa có combo.</p>"}</div>',
+        tr('<h1>Combo tiết kiệm</h1><div class="grid">{0}</div>', cards or tr("<p>Chưa có combo.</p>")),
     )
 
 
@@ -721,23 +779,27 @@ def _cart_body(request: web.Request, error: str = "", values: dict[str, str] | N
     who = request[CUSTOMER]
     lines, total = shop.cart_lines(_cart(request), bool(who and who["vip"]))
     if not lines:
-        return '<h1>Giỏ hàng</h1><p>Giỏ hàng trống. <a href="/">Xem sản phẩm</a></p>'
+        return tr('<h1>Giỏ hàng</h1><p>Giỏ hàng trống. <a href="/">Xem sản phẩm</a></p>')
     rows = ""
     for ln in lines:
         note = ""
         if "available" in ln and ln["qty"] > ln["available"]:
-            eta = f" (về khoảng {e(ln['next_eta'])})" if ln.get("next_eta") else ""
+            eta = tr(" (về khoảng {0})", e(ln["next_eta"])) if ln.get("next_eta") else ""
             note = (
-                f'<div class="warn">Có sẵn {ln["available"]}, phần còn lại đặt trước{eta}</div>'
+                tr('<div class="warn">Có sẵn {0}, phần còn lại đặt trước{1}</div>', ln["available"], eta)
                 if ln["qty"] - ln["available"] <= ln["can_preorder"]
-                else f'<div class="bad">Chỉ còn {ln["available"] + ln["can_preorder"]}</div>'
+                else tr('<div class="bad">Chỉ còn {0}</div>', ln["available"] + ln["can_preorder"])
             )
-        rows += (
-            f"<tr><td>{e(ln['name'])}<div class='muted'>{e(ln['sku'])}</div>{note}</td>"
-            f"<td>{e(m(ln['price']))}</td>"
-            f'<td><input type="number" name="qty:{e(ln["key"])}" value="{ln["qty"]}" min="0" max="99" aria-label="Số lượng"></td>'
-            f"<td>{e(m(ln['total']))}</td>"
-            f'<td><button name="remove" value="{e(ln["key"])}" class="link">Xoá</button></td></tr>'
+        rows += tr(
+            '<tr><td>{0}<div class=\'muted\'>{1}</div>{2}</td><td>{3}</td><td><input type="number" name="qty:{4}" value="{5}" min="0" max="99" aria-label="Số lượng"></td><td>{6}</td><td><button name="remove" value="{7}" class="link">Xoá</button></td></tr>',
+            e(ln["name"]),
+            e(ln["sku"]),
+            note,
+            e(m(ln["price"])),
+            e(ln["key"]),
+            ln["qty"],
+            e(m(ln["total"])),
+            e(ln["key"]),
         )
     v = values or {}
     if who and not values:
@@ -746,27 +808,32 @@ def _cart_body(request: web.Request, error: str = "", values: dict[str, str] | N
         f'<label>{label}<input type="{t}" name="{n}" value="{e(v.get(n, ""))}"{" required" if req else ""}></label>'
     )
     return (
-        f'<h1>Giỏ hàng</h1><form method="post" action="/cart/update">{_hidden(request)}'
-        f"<table class='cart'><tr><th>Sản phẩm</th><th>Đơn giá</th><th>SL</th><th>Thành tiền</th><th></th></tr>{rows}</table>"
-        f'<p class="total">Tạm tính: {e(m(total))} <button>Cập nhật</button></p></form>'
+        tr(
+            '<h1>Giỏ hàng</h1><form method="post" action="/cart/update">{0}<table class=\'cart\'><tr><th>Sản phẩm</th><th>Đơn giá</th><th>SL</th><th>Thành tiền</th><th></th></tr>{1}</table><p class="total">Tạm tính: {2} <button>Cập nhật</button></p></form>',
+            _hidden(request),
+            rows,
+            e(m(total)),
+        )
         + (f'<p class="error">{e(error)}</p>' if error else "")
-        + f'<h2>Đặt hàng</h2><form method="post" action="/checkout" class="checkout">{_hidden(request)}'
-        + field("name", "Họ tên")
-        + field("phone", "Số điện thoại", "tel")
-        + field("email", "Email (nhận xác nhận và hoá đơn)", "email", False)
-        + field("address", "Địa chỉ giao hàng")
-        + f'<label>Ghi chú<textarea name="note">{e(v.get("note", ""))}</textarea></label>'
-        + "<button>Đặt hàng</button></form>"
+        + tr('<h2>Đặt hàng</h2><form method="post" action="/checkout" class="checkout">{0}', _hidden(request))
+        + field("name", tr("Họ tên"))
+        + field("phone", tr("Số điện thoại"), "tel")
+        + field("email", tr("Email (nhận xác nhận và hoá đơn)"), "email", False)
+        + field("address", tr("Địa chỉ giao hàng"))
+        + tr('<label>Ghi chú<textarea name="note">{0}</textarea></label>', e(v.get("note", "")))
+        + tr("<button>Đặt hàng</button></form>")
         + (
             ""
             if who
-            else '<p class="muted">Đã là khách của cửa hàng? <a href="/login">Đăng nhập</a> để tích điểm và xem giá VIP.</p>'
+            else tr(
+                '<p class="muted">Đã là khách của cửa hàng? <a href="/login">Đăng nhập</a> để tích điểm và xem giá VIP.</p>'
+            )
         )
     )
 
 
 async def cart_page(request: web.Request) -> web.Response:
-    return _page(request, "Giỏ hàng", _cart_body(request))
+    return _page(request, tr("Giỏ hàng"), _cart_body(request))
 
 
 async def checkout(request: web.Request) -> web.Response:
@@ -775,18 +842,20 @@ async def checkout(request: web.Request) -> web.Response:
     try:
         orders = shop.checkout(_cart(request), form, request[CUSTOMER])
     except (InventoryError, ValueError) as e:
-        return _page(request, "Giỏ hàng", _cart_body(request, str(e), form), 400)
+        return _page(request, tr("Giỏ hàng"), _cart_body(request, str(e), form), 400)
     request.app[OFFICE].hub.spawn(shop.after_checkout(orders))
     links = "".join(
         f'<li><a href="{html.escape(shop.order_link(o).removeprefix(shop.public_url))}">{o["code"]}</a> – '
-        f"{'đặt trước, giao khi hàng về' if o['kind'] == 'preorder' else 'hàng có sẵn'}</li>"
+        f"{tr('đặt trước, giao khi hàng về') if o['kind'] == 'preorder' else tr('hàng có sẵn')}</li>"
         for o in orders
     )
     resp = _page(
         request,
-        "Đã đặt hàng",
-        f"<h1>Cảm ơn quý khách!</h1><p>Cửa hàng đã nhận đơn và sẽ liên hệ để hẹn giao hàng.</p><ul>{links}</ul>"
-        "<p class='muted'>Lưu lại đường dẫn trên để theo dõi đơn hàng.</p>",
+        tr("Đã đặt hàng"),
+        tr(
+            "<h1>Cảm ơn quý khách!</h1><p>Cửa hàng đã nhận đơn và sẽ liên hệ để hẹn giao hàng.</p><ul>{0}</ul><p class='muted'>Lưu lại đường dẫn trên để theo dõi đơn hàng.</p>",
+            links,
+        ),
     )
     _set_cart(request, resp, [])
     return resp
@@ -798,7 +867,7 @@ def _order_body(request: web.Request, oid: int) -> str:
     o = office.inventory.order(oid)
     items = "".join(
         f"<tr><td>{e(i['name'])}</td><td>{i['qty']}</td><td>{e(m(i['line_total']))}</td>"
-        f"<td>{'chờ hàng về' + (' (' + e(i['eta']) + ')' if i.get('eta') else '') if i['status'] == 'awaiting' else ''}</td></tr>"
+        f"<td>{tr('chờ hàng về') + (' (' + e(i['eta']) + ')' if i.get('eta') else '') if i['status'] == 'awaiting' else ''}</td></tr>"
         for i in o["items"]
     )
     booking = office.hub.crm.db.row(
@@ -806,15 +875,25 @@ def _order_body(request: web.Request, oid: int) -> str:
         (oid,),
     )
     delivery = (
-        f"<p>Giao hàng: {e(booking['delivery_date'])} {e(booking['time_window'])} ({e(booking['status'])})</p>"
+        tr(
+            "<p>Giao hàng: {0} {1} ({2})</p>",
+            e(booking["delivery_date"]),
+            e(booking["time_window"]),
+            e(booking["status"]),
+        )
         if booking
         else ""
     )
-    return (
-        f"<h1>Đơn {e(o['code'])}</h1><p>{e(STATUS.get(o['status'], o['status']))} · {e(o['created'][:10])}"
-        f"{' · đặt trước' if o['kind'] == 'preorder' else ''}</p>"
-        f"<table class='cart'>{items}</table><p class='total'>Tổng: {e(m(o['total']))} · Đã trả: {e(m(o['paid']))}</p>"
-        f"{delivery}"
+    return tr(
+        "<h1>Đơn {0}</h1><p>{1} · {2}{3}</p><table class='cart'>{4}</table><p class='total'>Tổng: {5} · Đã trả: {6}</p>{7}",
+        e(o["code"]),
+        e(tr(STATUS.get(o["status"], o["status"]))),
+        e(o["created"][:10]),
+        tr(" · đặt trước") if o["kind"] == "preorder" else "",
+        items,
+        e(m(o["total"])),
+        e(m(o["paid"])),
+        delivery,
     )
 
 
@@ -826,30 +905,29 @@ async def order_page(request: web.Request) -> web.Response:
         oid = int(code.removeprefix("DH"))
         order = request.app[OFFICE].inventory.order(oid)
     except (ValueError, InventoryError):
-        return _page(request, "Không tìm thấy", "<p>Không tìm thấy đơn hàng.</p>", 404)
+        return _page(request, tr("Không tìm thấy"), tr("<p>Không tìm thấy đơn hàng.</p>"), 404)
     mine = who is not None and order["contact_id"] == who["id"]
     if not (mine or shop.check("order", order["code"], request.query.get("t", ""))):
-        return _page(request, "Không tìm thấy", "<p>Không tìm thấy đơn hàng.</p>", 404)
-    extra = f'<p><a href="/account/invoice/{order["code"]}">Xem hoá đơn</a></p>' if mine else ""
+        return _page(request, tr("Không tìm thấy"), tr("<p>Không tìm thấy đơn hàng.</p>"), 404)
+    extra = tr('<p><a href="/account/invoice/{0}">Xem hoá đơn</a></p>', order["code"]) if mine else ""
     return _page(request, order["code"], _order_body(request, oid) + extra)
 
 
 async def login_page(request: web.Request) -> web.Response:
-    body = (
-        "<h1>Đăng nhập</h1><p>Nhập email hoặc số điện thoại quý khách đã dùng với cửa hàng. "
-        "Cửa hàng gửi mã đăng nhập qua email hoặc qua kênh chat quý khách thường dùng.</p>"
-        f'<form method="post" action="/login" class="checkout">{_hidden(request)}'
-        '<label>Email hoặc số điện thoại<input name="who" required autocomplete="username"></label>'
-        "<button>Gửi mã</button></form>"
+    body = tr(
+        '<h1>Đăng nhập</h1><p>Nhập email hoặc số điện thoại quý khách đã dùng với cửa hàng. Cửa hàng gửi mã đăng nhập qua email hoặc qua kênh chat quý khách thường dùng.</p><form method="post" action="/login" class="checkout">{0}<label>Email hoặc số điện thoại<input name="who" required autocomplete="username"></label><button>Gửi mã</button></form>',
+        _hidden(request),
     )
-    return _page(request, "Đăng nhập", body)
+    return _page(request, tr("Đăng nhập"), body)
 
 
 async def login(request: web.Request) -> web.Response:
     form = await _form(request)
     shop = request.app[SHOP]
     if not shop.allow_ip(_client_ip(request)):
-        return _page(request, "Đăng nhập", "<p>Quá nhiều yêu cầu, vui lòng thử lại sau ít phút.</p>", 429)
+        return _page(
+            request, tr("Đăng nhập"), tr("<p>Quá nhiều yêu cầu, vui lòng thử lại sau ít phút.</p>"), 429
+        )
     code_id = await shop.request_code(form.get("who", "")[:200])
     resp = web.HTTPSeeOther("/verify")
     ref = str(code_id or secrets.randbelow(10**9) + 10**9)  # the same page either way
@@ -859,16 +937,17 @@ async def login(request: web.Request) -> web.Response:
 
 def _verify_body(request: web.Request, error: str = "") -> str:
     return (
-        f"<h1>Nhập mã</h1><p>{html.escape(SENT.format(m=CODE_MINUTES))}</p>"
+        tr("<h1>Nhập mã</h1><p>{0}</p>", html.escape(tr(SENT).format(m=CODE_MINUTES)))
         + (f'<p class="error">{html.escape(error)}</p>' if error else "")
-        + f'<form method="post" action="/verify" class="checkout">{_hidden(request)}'
-        '<label>Mã 6 số<input name="code" inputmode="numeric" pattern="[0-9]{6}" required autocomplete="one-time-code"></label>'
-        '<button>Đăng nhập</button></form><p><a href="/login">Gửi lại mã</a></p>'
+        + tr(
+            '<form method="post" action="/verify" class="checkout">{0}<label>Mã 6 số<input name="code" inputmode="numeric" pattern="[0-9]{{6}}" required autocomplete="one-time-code"></label><button>Đăng nhập</button></form><p><a href="/login">Gửi lại mã</a></p>',
+            _hidden(request),
+        )
     )
 
 
 async def verify_page(request: web.Request) -> web.Response:
-    return _page(request, "Nhập mã", _verify_body(request))
+    return _page(request, tr("Nhập mã"), _verify_body(request))
 
 
 async def verify(request: web.Request) -> web.Response:
@@ -881,7 +960,7 @@ async def verify(request: web.Request) -> web.Response:
         else None
     )
     if contact_id is None:
-        return _page(request, "Nhập mã", _verify_body(request, "Mã không đúng hoặc đã hết hạn."), 400)
+        return _page(request, tr("Nhập mã"), _verify_body(request, tr("Mã không đúng hoặc đã hết hạn.")), 400)
     resp = web.HTTPSeeOther("/account")
     _cookie(request, resp, SESSION, shop.start_session(contact_id), days=SESSION_DAYS)
     resp.del_cookie(LOGIN, path="/")
@@ -892,14 +971,13 @@ async def link_page(request: web.Request) -> web.Response:
     """A login link from the chat: confirmed with a button, so that link previews and
     prefetching never use it up."""
     e = html.escape
-    body = (
-        "<h1>Đăng nhập</h1><p>Bấm nút dưới đây để đăng nhập vào tài khoản của quý khách.</p>"
-        f'<form method="post" action="/l" class="checkout">{_hidden(request)}'
-        f'<input type="hidden" name="id" value="{e(request.match_info["id"])}">'
-        f'<input type="hidden" name="token" value="{e(request.match_info["token"])}">'
-        "<button>Đăng nhập</button></form>"
+    body = tr(
+        '<h1>Đăng nhập</h1><p>Bấm nút dưới đây để đăng nhập vào tài khoản của quý khách.</p><form method="post" action="/l" class="checkout">{0}<input type="hidden" name="id" value="{1}"><input type="hidden" name="token" value="{2}"><button>Đăng nhập</button></form>',
+        _hidden(request),
+        e(request.match_info["id"]),
+        e(request.match_info["token"]),
     )
-    return _page(request, "Đăng nhập", body)
+    return _page(request, tr("Đăng nhập"), body)
 
 
 async def link_login(request: web.Request) -> web.Response:
@@ -910,8 +988,10 @@ async def link_login(request: web.Request) -> web.Response:
     if contact_id is None:
         return _page(
             request,
-            "Đăng nhập",
-            '<p class="error">Đường dẫn đã hết hạn hoặc đã được dùng.</p><p><a href="/login">Đăng nhập bằng mã</a></p>',
+            tr("Đăng nhập"),
+            tr(
+                '<p class="error">Đường dẫn đã hết hạn hoặc đã được dùng.</p><p><a href="/login">Đăng nhập bằng mã</a></p>'
+            ),
             400,
         )
     resp = web.HTTPSeeOther("/account")
@@ -936,15 +1016,21 @@ async def account(request: web.Request) -> web.Response:
     s = office.inventory.settings()
     cid = int(who["id"])
     if who["vip"]:
-        status = f'<p class="vipcard">⭐ Khách hàng VIP · Thẻ số <b>{vip_card(cid)}</b></p>'
+        status = tr('<p class="vipcard">⭐ Khách hàng VIP · Thẻ số <b>{0}</b></p>', vip_card(cid))
     elif int(s["vip_points"]):
-        status = f"<p>Còn {max(0, int(s['vip_points']) - int(who['points']))} điểm nữa để lên VIP.</p>"
+        status = tr("<p>Còn {0} điểm nữa để lên VIP.</p>", max(0, int(s["vip_points"]) - int(who["points"])))
     else:
         status = ""
     orders = "".join(
-        f'<tr><td><a href="/order/{o["code"]}">{o["code"]}</a></td><td>{e(o["created"][:10])}</td>'
-        f"<td>{e(STATUS.get(o['status'], o['status']))}</td><td>{e(m(o['total']))}</td>"
-        f'<td><a href="/account/invoice/{o["code"]}">Hoá đơn</a></td></tr>'
+        tr(
+            '<tr><td><a href="/order/{0}">{1}</a></td><td>{2}</td><td>{3}</td><td>{4}</td><td><a href="/account/invoice/{5}">Hoá đơn</a></td></tr>',
+            o["code"],
+            o["code"],
+            e(o["created"][:10]),
+            e(tr(STATUS.get(o["status"], o["status"]))),
+            e(m(o["total"])),
+            o["code"],
+        )
         for o in office.inventory.orders(contact_id=cid, limit=50)
     )
     points = "".join(
@@ -952,19 +1038,26 @@ async def account(request: web.Request) -> web.Response:
         for p in office.loyalty.history(cid)[:20]
     )
     body = (
-        f"<h1>Xin chào {e(who['name'] or 'quý khách')}</h1>{status}"
-        f"<p>Điểm tích luỹ: <b>{who['points']}</b> · Đã mua: {e(m(office.inventory.major(who['total_spent'])))}</p>"
-        f"<h2>Đơn hàng</h2>"
-        + (f"<table class='cart'>{orders}</table>" if orders else "<p>Chưa có đơn hàng.</p>")
-        + (f"<h2>Lịch sử điểm</h2><table class='cart'>{points}</table>" if points else "")
-        + f'<h2>Thông tin</h2><form method="post" action="/account" class="checkout">{_hidden(request)}'
-        f'<label>Họ tên<input name="name" value="{e(who["name"])}"></label>'
-        f'<label>Địa chỉ giao hàng<input name="address" value="{e(who["address"])}"></label>'
-        f"<p class='muted'>Điện thoại: {e(who['phone'] or '-')} · Email: {e(who['email'] or '-')}</p>"
-        "<button>Lưu</button></form>"
-        f'<form method="post" action="/logout">{_hidden(request)}<button class="link">Đăng xuất</button></form>'
+        tr(
+            "<h1>Xin chào {0}</h1>{1}<p>Điểm tích luỹ: <b>{2}</b> · Đã mua: {3}</p><h2>Đơn hàng</h2>",
+            e(who["name"] or tr("quý khách")),
+            status,
+            who["points"],
+            e(m(office.inventory.major(who["total_spent"]))),
+        )
+        + (f"<table class='cart'>{orders}</table>" if orders else tr("<p>Chưa có đơn hàng.</p>"))
+        + (tr("<h2>Lịch sử điểm</h2><table class='cart'>{0}</table>", points) if points else "")
+        + tr(
+            '<h2>Thông tin</h2><form method="post" action="/account" class="checkout">{0}<label>Họ tên<input name="name" value="{1}"></label><label>Địa chỉ giao hàng<input name="address" value="{2}"></label><p class=\'muted\'>Điện thoại: {3} · Email: {4}</p><button>Lưu</button></form><form method="post" action="/logout">{5}<button class="link">Đăng xuất</button></form>',
+            _hidden(request),
+            e(who["name"]),
+            e(who["address"]),
+            e(who["phone"] or "-"),
+            e(who["email"] or "-"),
+            _hidden(request),
+        )
     )
-    return _page(request, "Tài khoản", body)
+    return _page(request, tr("Tài khoản"), body)
 
 
 async def account_save(request: web.Request) -> web.Response:
@@ -992,8 +1085,8 @@ async def invoice(request: web.Request) -> web.Response:
     except (ValueError, InventoryError):
         order = None
     if who is None or order is None or order["contact_id"] != who["id"]:
-        return _page(request, "Không tìm thấy", "<p>Không tìm thấy hoá đơn.</p>", 404)
-    resp = web.Response(text=receipt_html(office, oid), content_type="text/html")
+        return _page(request, tr("Không tìm thấy"), tr("<p>Không tìm thấy hoá đơn.</p>"), 404)
+    resp = web.Response(text=receipt_html(office, oid, lang=current()), content_type="text/html")
     resp.headers["Content-Security-Policy"] = RECEIPT_CSP
     return resp
 

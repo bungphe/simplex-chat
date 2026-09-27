@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx2
 
+from .i18n import tr
 from .inventory import InventoryError
 from .state import now_iso
 
@@ -80,15 +81,15 @@ class Marketplaces:
         for c in self.configs():
             if c["id"] == mid:
                 return c
-        raise InventoryError("Không có sàn này")
+        raise InventoryError(tr("Không có sàn này"))
 
     def save(self, data: dict[str, Any]) -> list[dict[str, Any]]:
         mid = str(data.get("id") or "").strip().lower()
         if not mid or not mid.replace("-", "").replace("_", "").isalnum() or len(mid) > 40:
-            raise InventoryError("Mã sàn: chữ thường, số, '-'")
+            raise InventoryError(tr("Mã sàn: chữ thường, số, '-'"))
         kind = data.get("type")
         if kind not in TYPES:
-            raise InventoryError(f"Loại sàn: {', '.join(TYPES)}")
+            raise InventoryError(tr("Loại sàn: {0}", ", ".join(TYPES)))
         c: dict[str, Any] = {
             "id": mid,
             "type": kind,
@@ -100,14 +101,14 @@ class Marketplaces:
             for key in ("seller_id", "marketplace_id"):
                 c[key] = str(data.get(key) or "").strip()[:40]
                 if not c[key]:
-                    raise InventoryError(f"{key} là bắt buộc")
+                    raise InventoryError(tr("{0} là bắt buộc", key))
             c["region"] = data.get("region") or "fe"
             if c["region"] not in AMAZON_HOSTS:
-                raise InventoryError("region: na, eu hoặc fe")
+                raise InventoryError(tr("region: na, eu hoặc fe"))
             c["currency"] = str(data.get("currency") or "USD").upper()[:3]
             c["price_rate"] = str(Decimal(str(data.get("price_rate") or "1")))
             if Decimal(c["price_rate"]) <= 0:
-                raise InventoryError("Tỷ giá quy đổi phải lớn hơn 0")
+                raise InventoryError(tr("Tỷ giá quy đổi phải lớn hơn 0"))
             c["product_type"] = str(data.get("product_type") or "PRODUCT")[:60]
             for key, default in (
                 ("client_id_env", "AMAZON_LWA_CLIENT_ID"),
@@ -122,7 +123,7 @@ class Marketplaces:
         else:
             url = str(data.get("url") or "")
             if not url.startswith(("https://", "http://")):
-                raise InventoryError("URL webhook phải là http(s)")
+                raise InventoryError(tr("URL webhook phải là http(s)"))
             c["url"] = url[:500]
             c["secret_env"] = env("secret_env")
         others = [x for x in self.configs() if x["id"] != mid]
@@ -265,7 +266,7 @@ class Marketplaces:
         }
         if not all(values.values()):
             missing = [c[f"{k}_env"] for k, v in values.items() if not v]
-            raise MarketplaceError(f"thiếu biến môi trường {', '.join(missing)}")
+            raise MarketplaceError(tr("thiếu biến môi trường {0}", ", ".join(missing)))
         r = await self.office.http_client.post(
             c.get("token_url") or LWA_TOKEN,
             data={"grant_type": "refresh_token", **values},
@@ -295,7 +296,7 @@ class Marketplaces:
             **kw,
         )
         if r.status_code == 429:
-            raise MarketplaceError("Amazon: quá nhiều yêu cầu, thử lại sau")
+            raise MarketplaceError(tr("Amazon: quá nhiều yêu cầu, thử lại sau"))
         return r
 
     def _amazon_price(self, c: dict[str, Any], price: float) -> float:
@@ -346,7 +347,7 @@ class Marketplaces:
         price = (
             f"{self._amazon_price(c, offer['price'])} {c['currency']}" if offer["price"] is not None else "-"
         )
-        return f"giá {price}, còn {offer['available']}"
+        return tr("giá {0}, còn {1}", price, offer["available"])
 
     async def pull_amazon_orders(self, c: dict[str, Any]) -> dict[str, int]:
         """New Amazon orders become orders here (goods reserved); shipped ones are completed,
@@ -382,7 +383,7 @@ class Marketplaces:
                     self.inv.cancel_order(int(ours["id"]), "Amazon")
                     stats["cancelled"] += 1
             except InventoryError as e:
-                self._log(c["id"], None, amazon_id or "", False, f"đơn Amazon {amazon_id}: {e}")
+                self._log(c["id"], None, amazon_id or "", False, tr("đơn Amazon {0}: {1}", amazon_id, e))
         self.office.docs.update(state_key, lambda d: d.update(after=latest), {})
         return stats
 
@@ -398,7 +399,7 @@ class Marketplaces:
                 continue
             product = self._by_external_sku(c["id"], seller_sku)
             if product is None:
-                raise InventoryError(f"SKU Amazon {seller_sku} không khớp sản phẩm nào")
+                raise InventoryError(tr("SKU Amazon {0} không khớp sản phẩm nào", seller_sku))
             line = {"product_id": product["id"], "qty": qty}
             amount = (it.get("ItemPrice") or {}).get("Amount")
             if amount:
@@ -453,7 +454,7 @@ class Marketplaces:
                             try:
                                 await self.pull_amazon_orders(c)
                             except (MarketplaceError, httpx2.HTTPError, ValueError) as e:
-                                self._log(c["id"], None, "", False, f"lấy đơn: {e}")
+                                self._log(c["id"], None, "", False, tr("lấy đơn: {0}", e))
             except Exception:
                 log.exception("marketplace: sync round failed")
             try:

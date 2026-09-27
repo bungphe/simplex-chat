@@ -40,6 +40,7 @@ from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 
 from .db import Database, DocStore, IntegrityError
+from .i18n import tr
 from .state import now_iso
 
 SETTINGS_KEY = "inventory_settings"
@@ -219,9 +220,9 @@ def _dec(value: Any, what: str) -> Decimal:
     try:
         d = Decimal(str(value).strip().replace(",", "")) if value not in (None, "") else Decimal(0)
     except InvalidOperation:
-        raise InventoryError(f"{what}: không phải là số") from None
+        raise InventoryError(tr("{0}: không phải là số", what)) from None
     if not d.is_finite():
-        raise InventoryError(f"{what}: không phải là số")
+        raise InventoryError(tr("{0}: không phải là số", what))
     return d
 
 
@@ -229,9 +230,9 @@ def _int(value: Any, what: str, minimum: int | None = 0) -> int:
     try:
         n = int(str(value).strip())
     except (TypeError, ValueError):
-        raise InventoryError(f"{what}: phải là số nguyên") from None
+        raise InventoryError(tr("{0}: phải là số nguyên", what)) from None
     if minimum is not None and n < minimum:
-        raise InventoryError(f"{what}: phải từ {minimum} trở lên")
+        raise InventoryError(tr("{0}: phải từ {1} trở lên", what, minimum))
     return n
 
 
@@ -321,11 +322,11 @@ class Inventory:
         if "currency" in changes:
             clean["currency"] = str(changes["currency"]).strip().upper()[:8] or "VND"
         if "decimals" in changes:
-            decimals = _int(changes["decimals"], "Số chữ số thập phân")
+            decimals = _int(changes["decimals"], tr("Số chữ số thập phân"))
             if decimals > 4:
-                raise InventoryError("Số chữ số thập phân tối đa là 4")
+                raise InventoryError(tr("Số chữ số thập phân tối đa là 4"))
             if decimals != current["decimals"] and self.db.row("SELECT 1 AS x FROM inv_lots LIMIT 1"):
-                raise InventoryError("Không đổi được số chữ số thập phân khi đã có hàng nhập")
+                raise InventoryError(tr("Không đổi được số chữ số thập phân khi đã có hàng nhập"))
             clean["decimals"] = decimals
         for key, limit in (
             ("shop_name", 120),
@@ -338,26 +339,26 @@ class Inventory:
             if key in changes:
                 clean[key] = str(changes[key] or "").strip()[:limit]
         for key, what, lo, hi in (
-            ("vat_pct", "Thuế VAT (%)", 0, 50),
-            ("undo_hours", "Số giờ được hoàn tác đơn", 0, 24 * 90),
-            ("points_per", "Số tiền cho 1 điểm", 1, None),
-            ("vip_points", "Số điểm lên VIP", 0, None),
-            ("set_eta_days", "Số ngày hàng về cho gợi ý bộ", 0, 365),
-            ("round_to", "Làm tròn giá", 0, None),
-            ("price_hour", "Giờ chạy định giá", 0, 23),
-            ("velocity_days", "Số ngày tính tốc độ bán", 1, 365),
-            ("safety_days", "Số ngày tồn an toàn", 0, 365),
-            ("cover_days", "Số ngày hàng cho mỗi lần đặt", 0, 730),
+            ("vat_pct", tr("Thuế VAT (%)"), 0, 50),
+            ("undo_hours", tr("Số giờ được hoàn tác đơn"), 0, 24 * 90),
+            ("points_per", tr("Số tiền cho 1 điểm"), 1, None),
+            ("vip_points", tr("Số điểm lên VIP"), 0, None),
+            ("set_eta_days", tr("Số ngày hàng về cho gợi ý bộ"), 0, 365),
+            ("round_to", tr("Làm tròn giá"), 0, None),
+            ("price_hour", tr("Giờ chạy định giá"), 0, 23),
+            ("velocity_days", tr("Số ngày tính tốc độ bán"), 1, 365),
+            ("safety_days", tr("Số ngày tồn an toàn"), 0, 365),
+            ("cover_days", tr("Số ngày hàng cho mỗi lần đặt"), 0, 730),
         ):
             if key in changes:
                 n = _int(changes[key], what, lo)
                 if hi is not None and n > hi:
-                    raise InventoryError(f"{what}: tối đa {hi}")
+                    raise InventoryError(tr("{0}: tối đa {1}", what, hi))
                 clean[key] = n
         if "default_margin_pct" in changes:
-            margin = float(_dec(changes["default_margin_pct"], "Lãi mục tiêu"))
+            margin = float(_dec(changes["default_margin_pct"], tr("Lãi mục tiêu")))
             if not 0 <= margin < 100:
-                raise InventoryError("Lãi mục tiêu phải từ 0 đến dưới 100%")
+                raise InventoryError(tr("Lãi mục tiêu phải từ 0 đến dưới 100%"))
             clean["default_margin_pct"] = margin
         if "stage_discounts" in changes:
             clean["stage_discounts"] = self._discounts(changes["stage_discounts"])
@@ -373,35 +374,35 @@ class Inventory:
     @staticmethod
     def _discounts(value: Any) -> list[float]:
         if not isinstance(value, list) or len(value) != 5:
-            raise InventoryError("Cần đúng 5 mức giảm giá (giai đoạn 1-5)")
-        out = [float(_dec(v, "Mức giảm")) for v in value]
+            raise InventoryError(tr("Cần đúng 5 mức giảm giá (giai đoạn 1-5)"))
+        out = [float(_dec(v, tr("Mức giảm"))) for v in value]
         if out[0] != 0 or any(not 0 <= v < 100 for v in out) or out != sorted(out):
-            raise InventoryError("Mức giảm: giai đoạn 1 là 0%, các giai đoạn sau tăng dần, dưới 100%")
+            raise InventoryError(tr("Mức giảm: giai đoạn 1 là 0%, các giai đoạn sau tăng dần, dưới 100%"))
         return out
 
     @staticmethod
     def _rules(value: Any, partial: bool) -> dict[str, dict[str, float]]:
         if not isinstance(value, dict):
-            raise InventoryError("Quy tắc chuyển giai đoạn không hợp lệ")
+            raise InventoryError(tr("Quy tắc chuyển giai đoạn không hợp lệ"))
         out = {}
         for stage, rule in value.items():
             if str(stage) not in DEFAULT_RULES or not isinstance(rule, dict):
-                raise InventoryError("Quy tắc chuyển giai đoạn: chỉ có giai đoạn 1 đến 4")
-            target = float(_dec(rule.get("target_pct"), "Ngưỡng tồn"))
-            lo = _int(rule.get("min_days"), "Số ngày tối thiểu")
-            hi = _int(rule.get("max_days"), "Số ngày tối đa")
+                raise InventoryError(tr("Quy tắc chuyển giai đoạn: chỉ có giai đoạn 1 đến 4"))
+            target = float(_dec(rule.get("target_pct"), tr("Ngưỡng tồn")))
+            lo = _int(rule.get("min_days"), tr("Số ngày tối thiểu"))
+            hi = _int(rule.get("max_days"), tr("Số ngày tối đa"))
             if not 0 <= target <= 100 or hi < lo:
-                raise InventoryError("Ngưỡng tồn 0-100%, số ngày tối đa không nhỏ hơn tối thiểu")
+                raise InventoryError(tr("Ngưỡng tồn 0-100%, số ngày tối đa không nhỏ hơn tối thiểu"))
             out[str(stage)] = {"target_pct": target, "min_days": lo, "max_days": hi}
         if not partial and set(out) != set(DEFAULT_RULES):
-            raise InventoryError("Cần quy tắc cho cả 4 lần chuyển giai đoạn")
+            raise InventoryError(tr("Cần quy tắc cho cả 4 lần chuyển giai đoạn"))
         return out
 
     def minor(self, amount: Any, what: str = "Số tiền") -> int:
         """An amount typed by staff (major units, e.g. 4500000 or 12.5) to minor units."""
         d = _dec(amount, what)
         if d < 0:
-            raise InventoryError(f"{what}: không được âm")
+            raise InventoryError(tr("{0}: không được âm", what))
         return int((d * (10 ** self.settings()["decimals"])).quantize(Decimal(1), ROUND_HALF_UP))
 
     def major(self, minor: int | None) -> float | int | None:
@@ -424,17 +425,17 @@ class Inventory:
     ) -> list[dict[str, int]]:
         """Per item: cost in the office currency, its share of freight and customs, landed cost.
         Freight and customs are shared by volume (CBM); by value when no volumes are known."""
-        rate = _dec(exchange_rate, "Tỷ giá")
+        rate = _dec(exchange_rate, tr("Tỷ giá"))
         if rate <= 0:
-            raise InventoryError("Tỷ giá phải lớn hơn 0")
+            raise InventoryError(tr("Tỷ giá phải lớn hơn 0"))
         scale = Decimal(10) ** self.settings()["decimals"]
         rows = []
         for it in items:
-            qty = Decimal(_int(it["qty"], "Số lượng", 1))
-            cost = (_dec(it.get("unit_cost_foreign"), "Giá mua") * rate * scale).quantize(
+            qty = Decimal(_int(it["qty"], tr("Số lượng"), 1))
+            cost = (_dec(it.get("unit_cost_foreign"), tr("Giá mua")) * rate * scale).quantize(
                 Decimal(1), ROUND_HALF_UP
             )
-            rows.append((qty, _dec(it.get("unit_cbm"), "Thể tích (CBM)"), cost))
+            rows.append((qty, _dec(it.get("unit_cbm"), tr("Thể tích (CBM)")), cost))
         total_cbm = sum((q * c for q, c, _ in rows), Decimal(0))
         total_value = sum((q * v for q, _, v in rows), Decimal(0))
         out = []
@@ -461,13 +462,13 @@ class Inventory:
         a stage-1 price; stages 2-5 from the stage discounts."""
         s = self.settings()
         if price1 not in (None, ""):
-            p1 = self.minor(price1, "Giá giai đoạn 1")
+            p1 = self.minor(price1, tr("Giá giai đoạn 1"))
         else:
             margin = _dec(
-                margin_pct if margin_pct not in (None, "") else s["default_margin_pct"], "Lãi mục tiêu"
+                margin_pct if margin_pct not in (None, "") else s["default_margin_pct"], tr("Lãi mục tiêu")
             )
             if not 0 <= margin < 100:
-                raise InventoryError("Lãi mục tiêu phải từ 0 đến dưới 100%")
+                raise InventoryError(tr("Lãi mục tiêu phải từ 0 đến dưới 100%"))
             p1 = self._round_price(Decimal(landed_cost) / (1 - margin / 100))
         prices = [p1] + [
             self._round_price(Decimal(p1) * (1 - Decimal(str(d)) / 100)) for d in s["stage_discounts"][1:]
@@ -495,13 +496,13 @@ class Inventory:
     def warehouse(self, wid: int) -> dict[str, Any]:
         row = self.db.row("SELECT * FROM inv_warehouses WHERE id=?", (wid,))
         if row is None:
-            raise InventoryError("Không có kho này")
+            raise InventoryError(tr("Không có kho này"))
         return row
 
     def default_warehouse(self) -> dict[str, Any]:
         row = self.db.row("SELECT * FROM inv_warehouses WHERE active=1 ORDER BY kind='store', id LIMIT 1")
         if row is None:
-            raise InventoryError("Chưa có kho nào: thêm kho trong trang Kho hàng")
+            raise InventoryError(tr("Chưa có kho nào: thêm kho trong trang Kho hàng"))
         return row
 
     def save_warehouse(self, wid: int | None, data: dict[str, Any]) -> dict[str, Any]:
@@ -509,14 +510,14 @@ class Inventory:
         if "code" in data or wid is None:
             fields["code"] = str(data.get("code") or "").strip().upper()[:20]
             if not fields["code"]:
-                raise InventoryError("Mã kho là bắt buộc")
+                raise InventoryError(tr("Mã kho là bắt buộc"))
         if "name" in data or wid is None:
             fields["name"] = str(data.get("name") or "").strip()[:120]
             if not fields["name"]:
-                raise InventoryError("Tên kho là bắt buộc")
+                raise InventoryError(tr("Tên kho là bắt buộc"))
         if "kind" in data:
             if data["kind"] not in ("warehouse", "store"):
-                raise InventoryError("Loại kho là warehouse (kho tổng) hoặc store (cửa hàng)")
+                raise InventoryError(tr("Loại kho là warehouse (kho tổng) hoặc store (cửa hàng)"))
             fields["kind"] = data["kind"]
         if "address" in data:
             fields["address"] = str(data["address"] or "").strip()[:300]
@@ -540,12 +541,12 @@ class Inventory:
             if key in data or (sid is None and key == "name"):
                 fields[key] = str(data.get(key) or "").strip()[:limit]
         if "name" in fields and not fields["name"]:
-            raise InventoryError("Tên nhà cung cấp là bắt buộc")
+            raise InventoryError(tr("Tên nhà cung cấp là bắt buộc"))
         if "lead_time_days" in data:
-            fields["lead_time_days"] = _int(data["lead_time_days"], "Thời gian giao hàng (ngày)")
+            fields["lead_time_days"] = _int(data["lead_time_days"], tr("Thời gian giao hàng (ngày)"))
         if "active" in data:
             fields["active"] = 1 if data["active"] else 0
-        return self._save("inv_suppliers", sid, fields, "nhà cung cấp")
+        return self._save("inv_suppliers", sid, fields, tr("nhà cung cấp"))
 
     def _save(self, table: str, rid: int | None, fields: dict[str, Any], what: str) -> dict[str, Any]:
         try:
@@ -560,10 +561,10 @@ class Inventory:
                 sets = ", ".join(f"{k}=?" for k in fields)
                 self.db.execute(f"UPDATE {table} SET {sets} WHERE id=?", [*fields.values(), rid])
         except IntegrityError:
-            raise InventoryError(f"Mã {what} đã tồn tại") from None
+            raise InventoryError(tr("Mã {0} đã tồn tại", what)) from None
         row = self.db.row(f"SELECT * FROM {table} WHERE id=?", (rid,))
         if row is None:
-            raise InventoryError(f"Không có {what} này")
+            raise InventoryError(tr("Không có {0} này", what))
         return row
 
     # ------------------------------------------------------------------ #
@@ -580,31 +581,33 @@ class Inventory:
         if "sku" in fields:
             fields["sku"] = fields["sku"].upper()
             if not fields["sku"]:
-                raise InventoryError("Mã SKU là bắt buộc")
+                raise InventoryError(tr("Mã SKU là bắt buộc"))
         if "name" in fields and not fields["name"]:
-            raise InventoryError("Tên sản phẩm là bắt buộc")
+            raise InventoryError(tr("Tên sản phẩm là bắt buộc"))
         if "attributes" in data:
             attrs = data["attributes"] or {}
             if not isinstance(attrs, dict):
-                raise InventoryError("Thuộc tính phải là danh sách tên: giá trị")
+                raise InventoryError(tr("Thuộc tính phải là danh sách tên: giá trị"))
             fields["attributes"] = json.dumps(
                 {str(k)[:40]: str(v)[:120] for k, v in attrs.items()}, ensure_ascii=False
             )
-        for key, what in (("cbm", "Thể tích (CBM)"), ("weight_kg", "Cân nặng")):
+        for key, what in (("cbm", tr("Thể tích (CBM)")), ("weight_kg", tr("Cân nặng"))):
             if key in data:
                 d = _dec(data[key], what)
                 if d < 0:
-                    raise InventoryError(f"{what}: không được âm")
+                    raise InventoryError(tr("{0}: không được âm", what))
                 fields[key] = str(d)
         if "supplier_id" in data:
             fields["supplier_id"] = int(data["supplier_id"]) if data["supplier_id"] else None
         if "safety_stock" in data:
             fields["safety_stock"] = (
-                -1 if data["safety_stock"] in (None, "", -1) else _int(data["safety_stock"], "Tồn an toàn")
+                -1
+                if data["safety_stock"] in (None, "", -1)
+                else _int(data["safety_stock"], tr("Tồn an toàn"))
             )
         if "vip_price" in data:
             fields["vip_price"] = (
-                self.minor(data["vip_price"], "Giá VIP") if data["vip_price"] not in (None, "") else None
+                self.minor(data["vip_price"], tr("Giá VIP")) if data["vip_price"] not in (None, "") else None
             )
         if "auto_pricing" in data:
             fields["auto_pricing"] = 1 if data["auto_pricing"] else 0
@@ -615,7 +618,7 @@ class Inventory:
         if "image_url" in data:
             url = str(data["image_url"] or "").strip()[:500]
             if url and not url.startswith("https://"):
-                raise InventoryError("Ảnh sản phẩm: địa chỉ https://…")
+                raise InventoryError(tr("Ảnh sản phẩm: địa chỉ https://…"))
             fields["image_url"] = url
         if "on_web" in data:
             fields["on_web"] = 1 if data["on_web"] else 0
@@ -625,7 +628,7 @@ class Inventory:
     def product_row(self, pid: int) -> dict[str, Any]:
         row = self.db.row("SELECT * FROM inv_products WHERE id=?", (pid,))
         if row is None:
-            raise InventoryError("Không có sản phẩm này")
+            raise InventoryError(tr("Không có sản phẩm này"))
         return row
 
     def by_sku(self, sku: str) -> dict[str, Any] | None:
@@ -936,7 +939,7 @@ class Inventory:
     def import_csv(self, text: str) -> dict[str, Any]:
         reader = csv.DictReader(io.StringIO(text.lstrip("﻿")))
         if not reader.fieldnames or "sku" not in [f.strip().lower() for f in reader.fieldnames]:
-            raise InventoryError("Tệp cần có cột sku (và name cho sản phẩm mới)")
+            raise InventoryError(tr("Tệp cần có cột sku (và name cho sản phẩm mới)"))
         created = updated = 0
         errors = []
         for n, raw in enumerate(reader, start=2):
@@ -952,9 +955,9 @@ class Inventory:
                     self.save_product(None, data)
                     created += 1
             except InventoryError as e:
-                errors.append(f"dòng {n}: {e}")
+                errors.append(tr("dòng {0}: {1}", n, e))
             if n > 20001:
-                errors.append("tối đa 20.000 dòng mỗi lần")
+                errors.append(tr("tối đa 20.000 dòng mỗi lần"))
                 break
         return {"created": created, "updated": updated, "errors": errors[:50]}
 
@@ -1072,7 +1075,7 @@ class Inventory:
                 prices[0],
                 "activate",
                 "",
-                reason="Lô đầu tiên: bán giá giai đoạn 1",
+                reason=tr("Lô đầu tiên: bán giá giai đoạn 1"),
             )
         return lot_id
 
@@ -1089,13 +1092,13 @@ class Inventory:
         """Stock already on the shelves before purchasing was tracked here: a lot of its own."""
         self.product_row(pid)
         self.warehouse(wh)
-        qty = _int(qty, "Số lượng", 1)
-        landed = self.minor(unit_cost, "Giá vốn")
+        qty = _int(qty, tr("Số lượng"), 1)
+        landed = self.minor(unit_cost, tr("Giá vốn"))
         plan = self.price_plan(landed, margin_pct, price1)
         with self.db.transaction():
             lot = self._new_lot(pid, wh, qty, landed, plan["prices"], None, None, "opening", _today())
             self._add_on_hand(wh, pid, qty)
-            self._move(wh, pid, "opening", qty, "lot", lot, lot, actor, "Tồn đầu kỳ")
+            self._move(wh, pid, "opening", qty, "lot", lot, lot, actor, tr("Tồn đầu kỳ"))
         return self.product(pid)
 
     def adjust(
@@ -1105,9 +1108,9 @@ class Inventory:
         extra goods become a lot at the given (or the latest) cost."""
         self.product_row(pid)
         self.warehouse(wh)
-        counted = _int(counted, "Số lượng kiểm đếm")
+        counted = _int(counted, tr("Số lượng kiểm đếm"))
         if not reason.strip():
-            raise InventoryError("Cần ghi lý do điều chỉnh")
+            raise InventoryError(tr("Cần ghi lý do điều chỉnh"))
         with self.db.transaction():
             row = self.db.row(
                 "SELECT on_hand, reserved FROM inv_stock WHERE warehouse_id=? AND product_id=?", (wh, pid)
@@ -1117,7 +1120,7 @@ class Inventory:
             if delta == 0:
                 return self.product(pid)
             if counted < reserved:
-                raise InventoryError(f"Đang giữ {reserved} cho đơn hàng: không đặt tồn thấp hơn số đó")
+                raise InventoryError(tr("Đang giữ {0} cho đơn hàng: không đặt tồn thấp hơn số đó", reserved))
             if delta < 0:
                 self._take_on_hand(wh, pid, -delta, from_reserved=False)
                 left = -delta
@@ -1135,7 +1138,7 @@ class Inventory:
             else:
                 lot = self.pricing_lot(pid)
                 landed = (
-                    self.minor(unit_cost, "Giá vốn")
+                    self.minor(unit_cost, tr("Giá vốn"))
                     if unit_cost not in (None, "")
                     else int(lot["landed_cost"])
                     if lot
@@ -1179,23 +1182,23 @@ class Inventory:
         or are given explicitly (`prices`: 5 numbers)."""
         existing = self.db.row("SELECT * FROM inv_purchase_orders WHERE id=?", (po_id,)) if po_id else None
         if po_id and existing is None:
-            raise InventoryError("Không có đơn nhập này")
+            raise InventoryError(tr("Không có đơn nhập này"))
         if existing and existing["status"] not in ("draft", "ordered"):
-            raise InventoryError("Chỉ sửa được đơn nhập chưa lên đường")
+            raise InventoryError(tr("Chỉ sửa được đơn nhập chưa lên đường"))
         head = existing or {}
-        supplier = _int(data.get("supplier_id", head.get("supplier_id")), "Nhà cung cấp", 1)
+        supplier = _int(data.get("supplier_id", head.get("supplier_id")), tr("Nhà cung cấp"), 1)
         if not self.db.row("SELECT 1 AS x FROM inv_suppliers WHERE id=?", (supplier,)):
-            raise InventoryError("Không có nhà cung cấp này")
-        wh = _int(data.get("warehouse_id", head.get("warehouse_id")), "Kho nhận", 1)
+            raise InventoryError(tr("Không có nhà cung cấp này"))
+        wh = _int(data.get("warehouse_id", head.get("warehouse_id")), tr("Kho nhận"), 1)
         self.warehouse(wh)
-        rate = str(_dec(data.get("exchange_rate", head.get("exchange_rate", "1")), "Tỷ giá"))
+        rate = str(_dec(data.get("exchange_rate", head.get("exchange_rate", "1")), tr("Tỷ giá")))
         freight = (
-            self.minor(data["freight"], "Cước container")
+            self.minor(data["freight"], tr("Cước container"))
             if "freight" in data
             else int(head.get("freight", 0))
         )
         customs = (
-            self.minor(data["customs"], "Thuế, phí hải quan")
+            self.minor(data["customs"], tr("Thuế, phí hải quan"))
             if "customs" in data
             else int(head.get("customs", 0))
         )
@@ -1204,7 +1207,7 @@ class Inventory:
             try:
                 date.fromisoformat(eta)
             except ValueError:
-                raise InventoryError("Ngày dự kiến về phải có dạng YYYY-MM-DD") from None
+                raise InventoryError(tr("Ngày dự kiến về phải có dạng YYYY-MM-DD")) from None
         header = {
             "po_number": str(data.get("po_number") or head.get("po_number") or "").strip()[:40],
             "supplier_id": supplier,
@@ -1233,34 +1236,36 @@ class Inventory:
                 for i in self._po_items(po_id)
             ]
         if not isinstance(items, list) or not items:
-            raise InventoryError("Đơn nhập cần ít nhất một sản phẩm")
+            raise InventoryError(tr("Đơn nhập cần ít nhất một sản phẩm"))
         clean = []
         for it in items:
-            pid = _int(it.get("product_id"), "Sản phẩm", 1) if it.get("product_id") else None
+            pid = _int(it.get("product_id"), tr("Sản phẩm"), 1) if it.get("product_id") else None
             if pid is None and it.get("sku"):
                 p = self.by_sku(str(it["sku"]))
                 if p is None:
-                    raise InventoryError(f"Không có SKU {it['sku']}")
+                    raise InventoryError(tr("Không có SKU {0}", it["sku"]))
                 pid = int(p["id"])
             if pid is None:
-                raise InventoryError("Mỗi dòng cần sản phẩm")
+                raise InventoryError(tr("Mỗi dòng cần sản phẩm"))
             product = self.product_row(pid)
             cbm = it.get("unit_cbm") if it.get("unit_cbm") not in (None, "") else product["cbm"]
             clean.append(
-                {**it, "product_id": pid, "qty": _int(it.get("qty"), "Số lượng", 1), "unit_cbm": cbm}
+                {**it, "product_id": pid, "qty": _int(it.get("qty"), tr("Số lượng"), 1), "unit_cbm": cbm}
             )
         costs = self.landed_costs(clean, rate, freight, customs)
         rows = []
         for it, c in zip(clean, costs, strict=True):
             if it.get("prices"):
                 if len(it["prices"]) != 5:
-                    raise InventoryError("Cần đủ 5 giá giai đoạn")
-                prices = [self.minor(p, "Giá giai đoạn") for p in it["prices"]]
+                    raise InventoryError(tr("Cần đủ 5 giá giai đoạn"))
+                prices = [self.minor(p, tr("Giá giai đoạn")) for p in it["prices"]]
                 margin = ""
             else:
                 plan = self.price_plan(c["landed_cost"], it.get("margin_pct"), it.get("price1"))
                 prices, margin = plan["prices"], str(plan["margin_pct"])
-            vip = self.minor(it["vip_price"], "Giá VIP") if it.get("vip_price") not in (None, "") else None
+            vip = (
+                self.minor(it["vip_price"], tr("Giá VIP")) if it.get("vip_price") not in (None, "") else None
+            )
             rows.append((it, c, prices, margin, vip))
         with self.db.transaction():
             if existing is None:
@@ -1275,7 +1280,7 @@ class Inventory:
                         list(header.values()),
                     )
                 except IntegrityError:
-                    raise InventoryError("Số đơn nhập đã tồn tại") from None
+                    raise InventoryError(tr("Số đơn nhập đã tồn tại")) from None
                 if numbered:
                     self.db.execute(
                         "UPDATE inv_purchase_orders SET po_number=? WHERE id=?", (f"PN{po_id:05d}", po_id)
@@ -1288,7 +1293,7 @@ class Inventory:
                 if self.db.row(
                     "SELECT 1 AS x FROM inv_po_items WHERE po_id=? AND qty_preordered>0", (po_id,)
                 ):
-                    raise InventoryError("Đơn nhập đã có khách đặt trước: không sửa danh sách hàng được")
+                    raise InventoryError(tr("Đơn nhập đã có khách đặt trước: không sửa danh sách hàng được"))
                 self.db.execute("DELETE FROM inv_po_items WHERE po_id=?", (po_id,))
             for it, c, prices, margin, vip in rows:
                 self.db.execute(
@@ -1299,7 +1304,7 @@ class Inventory:
                         po_id,
                         it["product_id"],
                         it["qty"],
-                        str(_dec(it.get("unit_cost_foreign"), "Giá mua")),
+                        str(_dec(it.get("unit_cost_foreign"), tr("Giá mua"))),
                         str(_dec(it["unit_cbm"], "CBM")),
                         c["unit_cost"],
                         c["unit_freight"],
@@ -1326,7 +1331,7 @@ class Inventory:
             (po_id,),
         )
         if head is None:
-            raise InventoryError("Không có đơn nhập này")
+            raise InventoryError(tr("Không có đơn nhập này"))
         items = []
         total_cbm = Decimal(0)
         for i in self._po_items(po_id):
@@ -1384,9 +1389,9 @@ class Inventory:
             "arrived": ("shipping",),
         }
         if status not in allowed.get(head["status"], ()):
-            raise InventoryError(f"Không chuyển được đơn nhập từ '{head['status']}' sang '{status}'")
+            raise InventoryError(tr("Không chuyển được đơn nhập từ '{0}' sang '{1}'", head["status"], status))
         if status in ("cancelled", "draft") and any(i["qty_preordered"] for i in head["items"]):
-            raise InventoryError("Đơn nhập đã có khách đặt trước: huỷ các đơn đặt trước trước")
+            raise InventoryError(tr("Đơn nhập đã có khách đặt trước: huỷ các đơn đặt trước trước"))
         self.db.execute(
             "UPDATE inv_purchase_orders SET status=?, updated=? WHERE id=?", (status, now_iso(), po_id)
         )
@@ -1400,23 +1405,28 @@ class Inventory:
         Pre-orders waiting for these goods are then served, oldest first."""
         head = self.po(po_id)
         if head["status"] not in ("ordered", "shipping", "arrived", "partial"):
-            raise InventoryError("Đơn nhập này chưa đặt hàng hoặc đã nhận đủ")
+            raise InventoryError(tr("Đơn nhập này chưa đặt hàng hoặc đã nhận đủ"))
         received = received or _today()
         by_id = {int(i["id"]): i for i in self._po_items(po_id)}
         if not items:
-            raise InventoryError("Nhập số lượng thực nhận")
+            raise InventoryError(tr("Nhập số lượng thực nhận"))
         served: list[int] = []
         with self.db.transaction():
             for r in items:
-                item = by_id.get(_int(r.get("item_id"), "Dòng hàng", 1))
+                item = by_id.get(_int(r.get("item_id"), tr("Dòng hàng"), 1))
                 if item is None:
-                    raise InventoryError("Dòng hàng không thuộc đơn nhập này")
-                good = _int(r.get("qty", 0), "Số lượng nhận")
-                damaged = _int(r.get("damaged", 0), "Số lượng hỏng")
+                    raise InventoryError(tr("Dòng hàng không thuộc đơn nhập này"))
+                good = _int(r.get("qty", 0), tr("Số lượng nhận"))
+                damaged = _int(r.get("damaged", 0), tr("Số lượng hỏng"))
                 outstanding = item["qty_ordered"] - item["qty_received"] - item["qty_damaged"]
                 if good + damaged > outstanding:
                     raise InventoryError(
-                        f"{item['sku']}: nhận {good + damaged} nhưng chỉ còn {outstanding} chưa về"
+                        tr(
+                            "{0}: nhận {1} nhưng chỉ còn {2} chưa về",
+                            item["sku"],
+                            good + damaged,
+                            outstanding,
+                        )
                     )
                 if good + damaged == 0:
                     continue
@@ -1440,7 +1450,15 @@ class Inventory:
                     )
                     self._add_on_hand(wh, pid, good)
                     self._move(
-                        wh, pid, "stock_in", good, "po", po_id, lot, actor, f"Nhập từ {head['po_number']}"
+                        wh,
+                        pid,
+                        "stock_in",
+                        good,
+                        "po",
+                        po_id,
+                        lot,
+                        actor,
+                        tr("Nhập từ {0}", head["po_number"]),
                     )
                     served += self._serve_preorders(int(item["id"]), lot, wh, pid, actor)
                 if damaged:
@@ -1453,7 +1471,7 @@ class Inventory:
                         po_id,
                         None,
                         actor,
-                        f"{damaged} hỏng khi nhận từ {head['po_number']}",
+                        tr("{0} hỏng khi nhận từ {1}", damaged, head["po_number"]),
                     )
             left = self.db.row(
                 "SELECT SUM(qty_ordered-qty_received-qty_damaged) AS n FROM inv_po_items WHERE po_id=?",
@@ -1504,7 +1522,7 @@ class Inventory:
                 int(line["order_id"]),
                 lot_id,
                 actor,
-                f"Giữ {qty} cho đơn đặt trước {order_code(int(line['order_id']))}",
+                tr("Giữ {0} cho đơn đặt trước {1}", qty, order_code(int(line["order_id"]))),
             )
             served.append(int(line["order_id"]))
         return served
@@ -1597,7 +1615,7 @@ class Inventory:
                             None,
                             trigger,
                             actor,
-                            reason="Lô đã bán hết, chưa có lô mới",
+                            reason=tr("Lô đã bán hết, chưa có lô mới"),
                         )
                         changes.append({"product_id": pid, "sku": product["sku"], "event": "sold_out"})
                         continue
@@ -1612,7 +1630,7 @@ class Inventory:
                         int(lot["price1"]),
                         "activate",
                         actor,
-                        reason="Lô cũ đã bán hết: kích hoạt lô mới, về giá giai đoạn 1 (hàng mới về)",
+                        reason=tr("Lô cũ đã bán hết: kích hoạt lô mới, về giá giai đoạn 1 (hàng mới về)"),
                     )
                     changes.append(
                         {
@@ -1636,7 +1654,7 @@ class Inventory:
                         int(lot["price1"]),
                         "activate",
                         actor,
-                        reason="Kích hoạt lô",
+                        reason=tr("Kích hoạt lô"),
                     )
                     continue
                 stage = int(lot["stage"])
@@ -1651,14 +1669,19 @@ class Inventory:
                 if not (stock_met or time_met):
                     continue
                 if stock_met:
-                    reason = (
-                        f"Còn {pct:g}% hàng (≤ {rule['target_pct']:g}%) sau {days} ngày giữ giá "
-                        f"(≥ {rule['min_days']} ngày tối thiểu)"
+                    reason = tr(
+                        "Còn {0:g}% hàng (≤ {1:g}%) sau {2} ngày giữ giá (≥ {3} ngày tối thiểu)",
+                        pct,
+                        rule["target_pct"],
+                        days,
+                        rule["min_days"],
                     )
                 else:
-                    reason = (
-                        f"Đã giữ giá {days} ngày (≥ {rule['max_days']} ngày tối đa), còn {pct:g}% hàng: "
-                        "giảm giá để đẩy hàng"
+                    reason = tr(
+                        "Đã giữ giá {0} ngày (≥ {1} ngày tối đa), còn {2:g}% hàng: giảm giá để đẩy hàng",
+                        days,
+                        rule["max_days"],
+                        pct,
                     )
                 old_price, new_price = int(lot[f"price{stage}"]), int(lot[f"price{stage + 1}"])
                 self.db.execute(
@@ -1693,10 +1716,10 @@ class Inventory:
     def set_stage(self, pid: int, stage: int, actor: str, reason: str = "") -> dict[str, Any]:
         """A manager sets the price stage of the product's current lot by hand."""
         if not 1 <= stage <= 5:
-            raise InventoryError("Giai đoạn giá từ 1 đến 5")
+            raise InventoryError(tr("Giai đoạn giá từ 1 đến 5"))
         lot = self.pricing_lot(pid)
         if lot is None:
-            raise InventoryError("Sản phẩm chưa có hàng nhập nên chưa có giá")
+            raise InventoryError(tr("Sản phẩm chưa có hàng nhập nên chưa có giá"))
         with self.db.transaction():
             now = now_iso()
             if lot["status"] == "queued":
@@ -1715,18 +1738,18 @@ class Inventory:
                 actor,
                 self._remaining_pct(lot),
                 None,
-                reason or "Quản lý đổi giá tay",
+                reason or tr("Quản lý đổi giá tay"),
             )
         return self.product(pid)
 
     def set_lot_prices(self, lot_id: int, prices: list[Any], vip_price: Any, actor: str) -> dict[str, Any]:
         lot = self.db.row("SELECT * FROM inv_lots WHERE id=?", (lot_id,))
         if lot is None:
-            raise InventoryError("Không có lô hàng này")
+            raise InventoryError(tr("Không có lô hàng này"))
         if not isinstance(prices, list) or len(prices) != 5:
-            raise InventoryError("Cần đủ 5 giá giai đoạn")
-        values = [self.minor(p, "Giá giai đoạn") for p in prices]
-        vip = self.minor(vip_price, "Giá VIP") if vip_price not in (None, "") else None
+            raise InventoryError(tr("Cần đủ 5 giá giai đoạn"))
+        values = [self.minor(p, tr("Giá giai đoạn")) for p in prices]
+        vip = self.minor(vip_price, tr("Giá VIP")) if vip_price not in (None, "") else None
         with self.db.transaction():
             self.db.execute(
                 "UPDATE inv_lots SET price1=?, price2=?, price3=?, price4=?, price5=?, vip_price=? WHERE id=?",
@@ -1742,7 +1765,7 @@ class Inventory:
                 values[stage - 1],
                 "manual",
                 actor,
-                reason="Sửa bảng giá của lô",
+                reason=tr("Sửa bảng giá của lô"),
             )
         return self.product(int(lot["product_id"]))
 
@@ -1802,23 +1825,23 @@ class Inventory:
         (a once-off special price) or `discount_pct`; `{"combo": code, "qty": n}` sells a
         package at its package price. A voucher code takes its discount off the total."""
         if kind not in ("now", "preorder"):
-            raise InventoryError("Loại đơn là now (có sẵn) hoặc preorder (đặt trước)")
+            raise InventoryError(tr("Loại đơn là now (có sẵn) hoặc preorder (đặt trước)"))
         if not items:
-            raise InventoryError("Đơn hàng cần ít nhất một sản phẩm")
+            raise InventoryError(tr("Đơn hàng cần ít nhất một sản phẩm"))
         wh = int(warehouse_id) if warehouse_id else int(self.default_warehouse()["id"])
         if not self.warehouse(wh)["active"]:
-            raise InventoryError("Kho này đang tạm dừng")
+            raise InventoryError(tr("Kho này đang tạm dừng"))
         items, combo_saving = self._expand_combos(items, vip)
         lines = []
         for it in items:
             p = (
-                self.product_row(_int(it["product_id"], "Sản phẩm", 1))
+                self.product_row(_int(it["product_id"], tr("Sản phẩm"), 1))
                 if it.get("product_id")
                 else self.by_sku(str(it.get("sku", "")))
             )
             if p is None:
-                raise InventoryError(f"Không có SKU {it.get('sku')}")
-            qty = _int(it.get("qty"), "Số lượng", 1)
+                raise InventoryError(tr("Không có SKU {0}", it.get("sku")))
+            qty = _int(it.get("qty"), tr("Số lượng"), 1)
             lines.append((p, qty, it))
         now = now_iso()
         with self.db.transaction():
@@ -1853,29 +1876,42 @@ class Inventory:
                 promo, combo = (price or {}).get("promo", ""), str(it.get("combo") or "")
                 list_price = (price or {}).get("list_price")
                 if it.get("unit_price") not in (None, ""):
-                    unit = self.minor(it["unit_price"], "Giá bán")
+                    unit = self.minor(it["unit_price"], tr("Giá bán"))
                     stage, is_vip, promo = (price or {}).get("stage"), False, ""
                 elif price is not None:
                     unit, stage, is_vip = price["price"], price["stage"], price["vip"]
                 else:
                     unit, stage, is_vip = 0, None, False
                 if it.get("discount_pct") not in (None, "", 0) and not combo:
-                    pct = _dec(it["discount_pct"], "Giảm %")
+                    pct = _dec(it["discount_pct"], tr("Giảm %"))
                     if not 0 <= pct <= 100:
-                        raise InventoryError("Giảm % phải từ 0 đến 100")
+                        raise InventoryError(tr("Giảm % phải từ 0 đến 100"))
                     unit = self._round_price(Decimal(unit) * (1 - pct / 100))
                     promo = f"-{pct.normalize():f}%"
                 if kind == "now":
                     if not self._reserve(wh, pid, qty):
                         raise InventoryError(
-                            f"{p['sku']}: kho chỉ còn {self._available(wh, pid)} có thể bán, cần {qty}"
+                            tr(
+                                "{0}: kho chỉ còn {1} có thể bán, cần {2}",
+                                p["sku"],
+                                self._available(wh, pid),
+                                qty,
+                            )
                         )
                     line_id = self._order_line(
                         oid, pid, qty, unit, stage, is_vip, None, "reserved", list_price, promo, combo
                     )
                     cost += self._allocate(line_id, pid, qty)
                     self._move(
-                        wh, pid, "reserve", 0, "order", oid, None, actor, f"Giữ {qty} cho {order_code(oid)}"
+                        wh,
+                        pid,
+                        "reserve",
+                        0,
+                        "order",
+                        oid,
+                        None,
+                        actor,
+                        tr("Giữ {0} cho {1}", qty, order_code(oid)),
                     )
                 else:
                     po_item = self._preorder_slot(pid, qty, it.get("po_id"))
@@ -1899,14 +1935,14 @@ class Inventory:
                         combo,
                     )
                 subtotal += unit * qty
-            disc = self.minor(discount, "Giảm giá") if discount not in (None, "", 0) else 0
+            disc = self.minor(discount, tr("Giảm giá")) if discount not in (None, "", 0) else 0
             disc += combo_saving
             code, vdisc = "", 0
             if voucher.strip():
                 code, vdisc = self._use_voucher(voucher, subtotal - disc)
             if disc + vdisc > subtotal:
-                raise InventoryError("Giảm giá lớn hơn tổng tiền")
-            ship = self.minor(shipping_fee, "Phí giao hàng") if shipping_fee not in (None, "", 0) else 0
+                raise InventoryError(tr("Giảm giá lớn hơn tổng tiền"))
+            ship = self.minor(shipping_fee, tr("Phí giao hàng")) if shipping_fee not in (None, "", 0) else 0
             self.db.execute(
                 "UPDATE inv_orders SET subtotal=?, discount=?, voucher=?, voucher_discount=?, shipping_fee=?, "
                 "total=?, cost=? WHERE id=?",
@@ -1992,23 +2028,23 @@ class Inventory:
                 continue
             if int(slot["qty"]) - int(slot["qty_preordered"]) >= qty:
                 return {**slot, "id": slot["po_item_id"]}
-        raise InventoryError("Không có lô hàng sắp về nào còn đủ số lượng để đặt trước")
+        raise InventoryError(tr("Không có lô hàng sắp về nào còn đủ số lượng để đặt trước"))
 
     def complete_order(self, oid: int, actor: str = "") -> dict[str, Any]:
         """Goods handed over: they leave stock and their lots; the profit is recorded."""
         order = self._order_row(oid)
         if order["status"] != "confirmed":
-            raise InventoryError(f"Đơn đang ở trạng thái '{order['status']}'")
+            raise InventoryError(tr("Đơn đang ở trạng thái '{0}'", order["status"]))
         lines = self.db.rows("SELECT * FROM inv_order_items WHERE order_id=?", (oid,))
         if any(x["status"] == "awaiting" for x in lines):
-            raise InventoryError("Đơn đặt trước còn chờ hàng về")
+            raise InventoryError(tr("Đơn đặt trước còn chờ hàng về"))
         wh = int(order["warehouse_id"])
         with self.db.transaction():
             cost = 0
             for line in lines:
                 pid, qty = int(line["product_id"]), int(line["qty"])
                 if not self._take_on_hand(wh, pid, qty, from_reserved=True):
-                    raise InventoryError("Tồn kho không khớp với số đã giữ; kiểm kho rồi thử lại")
+                    raise InventoryError(tr("Tồn kho không khớp với số đã giữ; kiểm kho rồi thử lại"))
                 for a in self.db.rows("SELECT * FROM inv_order_allocs WHERE order_item_id=?", (line["id"],)):
                     if a["lot_id"] is not None:
                         self.db.execute(
@@ -2032,7 +2068,7 @@ class Inventory:
     def cancel_order(self, oid: int, actor: str = "") -> dict[str, Any]:
         order = self._order_row(oid)
         if order["status"] != "confirmed":
-            raise InventoryError(f"Đơn đang ở trạng thái '{order['status']}'")
+            raise InventoryError(tr("Đơn đang ở trạng thái '{0}'", order["status"]))
         wh = int(order["warehouse_id"])
         with self.db.transaction():
             for line in self.db.rows("SELECT * FROM inv_order_items WHERE order_id=?", (oid,)):
@@ -2065,13 +2101,13 @@ class Inventory:
                         oid,
                         None,
                         actor,
-                        f"Huỷ {order_code(oid)}: trả {qty} về kho",
+                        tr("Huỷ {0}: trả {1} về kho", order_code(oid), qty),
                     )
                 self.db.execute("UPDATE inv_order_items SET status='released' WHERE id=?", (line["id"],))
             self.db.execute(
                 "UPDATE inv_orders SET status='cancelled', cancelled=? WHERE id=?", (now_iso(), oid)
             )
-            self._refund(oid, actor, "Huỷ đơn")
+            self._refund(oid, actor, tr("Huỷ đơn"))
             if order["voucher"]:
                 self.db.execute(
                     "UPDATE inv_vouchers SET used=used-1 WHERE code=? AND used>0", (order["voucher"],)
@@ -2084,7 +2120,7 @@ class Inventory:
     def _order_row(self, oid: int) -> dict[str, Any]:
         row = self.db.row("SELECT * FROM inv_orders WHERE id=?", (oid,))
         if row is None:
-            raise InventoryError("Không có đơn hàng này")
+            raise InventoryError(tr("Không có đơn hàng này"))
         return row
 
     def order(self, oid: int) -> dict[str, Any]:
@@ -2163,11 +2199,11 @@ class Inventory:
         self, from_wh: int, to_wh: int, items: list[dict[str, Any]], note: str = "", actor: str = ""
     ) -> dict[str, Any]:
         if from_wh == to_wh:
-            raise InventoryError("Kho đi và kho đến phải khác nhau")
+            raise InventoryError(tr("Kho đi và kho đến phải khác nhau"))
         self.warehouse(from_wh)
         self.warehouse(to_wh)
         if not items:
-            raise InventoryError("Phiếu chuyển cần ít nhất một sản phẩm")
+            raise InventoryError(tr("Phiếu chuyển cần ít nhất một sản phẩm"))
         with self.db.transaction():
             tid = self.db.execute(
                 "INSERT INTO inv_transfers (from_wh, to_wh, note, created_by, created) VALUES (?, ?, ?, ?, ?) RETURNING id",
@@ -2175,29 +2211,33 @@ class Inventory:
             )
             for it in items:
                 p = (
-                    self.product_row(_int(it["product_id"], "Sản phẩm", 1))
+                    self.product_row(_int(it["product_id"], tr("Sản phẩm"), 1))
                     if it.get("product_id")
                     else self.by_sku(str(it.get("sku", "")))
                 )
                 if p is None:
-                    raise InventoryError(f"Không có SKU {it.get('sku')}")
+                    raise InventoryError(tr("Không có SKU {0}", it.get("sku")))
                 self.db.execute(
                     "INSERT INTO inv_transfer_items (transfer_id, product_id, qty) VALUES (?, ?, ?)",
-                    (tid, p["id"], _int(it.get("qty"), "Số lượng", 1)),
+                    (tid, p["id"], _int(it.get("qty"), tr("Số lượng"), 1)),
                 )
         return self.transfer(int(tid or 0))
 
     def ship_transfer(self, tid: int, actor: str = "") -> dict[str, Any]:
         t = self.transfer(tid)
         if t["status"] != "requested":
-            raise InventoryError("Phiếu này đã xuất hoặc đã huỷ")
+            raise InventoryError(tr("Phiếu này đã xuất hoặc đã huỷ"))
         with self.db.transaction():
             for it in t["items"]:
                 if not self._take_on_hand(
                     int(t["from_wh"]), int(it["product_id"]), int(it["qty"]), from_reserved=False
                 ):
                     raise InventoryError(
-                        f"{it['sku']}: kho đi chỉ còn {self._available(int(t['from_wh']), int(it['product_id']))}"
+                        tr(
+                            "{0}: kho đi chỉ còn {1}",
+                            it["sku"],
+                            self._available(int(t["from_wh"]), int(it["product_id"])),
+                        )
                     )
                 self._move(
                     int(t["from_wh"]),
@@ -2220,17 +2260,17 @@ class Inventory:
         """The shop counts what arrived and signs for it; shortfalls are noted in the ledger."""
         t = self.transfer(tid)
         if t["status"] != "in_transit":
-            raise InventoryError("Phiếu này chưa xuất kho")
+            raise InventoryError(tr("Phiếu này chưa xuất kho"))
         with self.db.transaction():
             for it in t["items"]:
                 qty = int(it["qty"])
                 got = (
                     qty
                     if received is None or it["id"] not in received
-                    else _int(received[it["id"]], "Số lượng nhận")
+                    else _int(received[it["id"]], tr("Số lượng nhận"))
                 )
                 if got > qty:
-                    raise InventoryError(f"{it['sku']}: nhận nhiều hơn số đã xuất")
+                    raise InventoryError(tr("{0}: nhận nhiều hơn số đã xuất", it["sku"]))
                 self.db.execute("UPDATE inv_transfer_items SET qty_received=? WHERE id=?", (got, it["id"]))
                 if got:
                     self._add_on_hand(int(t["to_wh"]), int(it["product_id"]), got)
@@ -2253,7 +2293,7 @@ class Inventory:
                         "transfer",
                         tid,
                         actor=actor,
-                        note=f"{transfer_code(tid)}: thiếu {qty - got}",
+                        note=tr("{0}: thiếu {1}", transfer_code(tid), qty - got),
                     )
                     lost = qty - got
                     for lot in self._lots(int(it["product_id"])):  # the missing goods leave their lots too
@@ -2274,7 +2314,7 @@ class Inventory:
     def cancel_transfer(self, tid: int, actor: str = "") -> dict[str, Any]:
         t = self.transfer(tid)
         if t["status"] not in ("requested", "in_transit"):
-            raise InventoryError("Phiếu này đã hoàn tất hoặc đã huỷ")
+            raise InventoryError(tr("Phiếu này đã hoàn tất hoặc đã huỷ"))
         with self.db.transaction():
             if t["status"] == "in_transit":  # goods go back to where they came from
                 for it in t["items"]:
@@ -2287,7 +2327,7 @@ class Inventory:
                         "transfer",
                         tid,
                         actor=actor,
-                        note=f"Huỷ {transfer_code(tid)}",
+                        note=tr("Huỷ {0}", transfer_code(tid)),
                     )
             self.db.execute("UPDATE inv_transfers SET status='cancelled' WHERE id=?", (tid,))
         return self.transfer(tid)
@@ -2299,7 +2339,7 @@ class Inventory:
             (tid,),
         )
         if t is None:
-            raise InventoryError("Không có phiếu chuyển này")
+            raise InventoryError(tr("Không có phiếu chuyển này"))
         items = self.db.rows(
             "SELECT i.*, p.sku, p.name FROM inv_transfer_items i JOIN inv_products p ON p.id=i.product_id WHERE transfer_id=?",
             (tid,),
@@ -2399,31 +2439,31 @@ class Inventory:
         """Take a payment (a deposit or the rest). Cash: the change is worked out from what the
         customer handed over. The same idempotency key never records a payment twice."""
         if method not in PAYMENT_METHODS:
-            raise InventoryError(f"Hình thức thanh toán: {', '.join(PAYMENT_METHODS)}")
+            raise InventoryError(tr("Hình thức thanh toán: {0}", ", ".join(PAYMENT_METHODS)))
         order = self._order_row(oid)
         if order["status"] not in ("confirmed", "completed"):
-            raise InventoryError("Đơn đã huỷ hoặc đã trả hàng")
+            raise InventoryError(tr("Đơn đã huỷ hoặc đã trả hàng"))
         if idempotency_key and self.db.row(
             "SELECT 1 AS x FROM inv_payments WHERE idempotency_key=?", (idempotency_key,)
         ):
             return self.order(oid)
         due = int(order["total"]) - int(order["paid"])
         if due <= 0:
-            raise InventoryError("Đơn đã thanh toán đủ")
-        given = self.minor(tendered, "Tiền khách đưa") if tendered not in (None, "") else None
+            raise InventoryError(tr("Đơn đã thanh toán đủ"))
+        given = self.minor(tendered, tr("Tiền khách đưa")) if tendered not in (None, "") else None
         pay = (
-            self.minor(amount, "Số tiền")
+            self.minor(amount, tr("Số tiền"))
             if amount not in (None, "")
             else min(due, given if given is not None else due)
         )
         if pay <= 0:
-            raise InventoryError("Số tiền phải lớn hơn 0")
+            raise InventoryError(tr("Số tiền phải lớn hơn 0"))
         if pay > due:
-            raise InventoryError(f"Chỉ còn phải trả {self.major(due):,}")
+            raise InventoryError(tr("Chỉ còn phải trả {0:,}", self.major(due)))
         change = None
         if method == "cash" and given is not None:
             if given < pay:
-                raise InventoryError("Tiền khách đưa ít hơn số tiền thanh toán")
+                raise InventoryError(tr("Tiền khách đưa ít hơn số tiền thanh toán"))
             change = given - pay
         with self.db.transaction():
             self.db.execute(
@@ -2472,11 +2512,11 @@ class Inventory:
         refunded), within `undo_hours` of completion; admins can do it later too."""
         order = self._order_row(oid)
         if order["status"] != "completed":
-            raise InventoryError("Chỉ hoàn tác được đơn đã giao")
+            raise InventoryError(tr("Chỉ hoàn tác được đơn đã giao"))
         done = _parse_ts(order["completed"])
         hours = self.settings()["undo_hours"]
         if not admin and done and datetime.now().astimezone() - done > timedelta(hours=hours):
-            raise InventoryError(f"Quá {hours} giờ sau khi giao: cần quản lý hoàn tác")
+            raise InventoryError(tr("Quá {0} giờ sau khi giao: cần quản lý hoàn tác", hours))
         wh = int(order["warehouse_id"])
         pids = []
         with self.db.transaction():
@@ -2501,13 +2541,13 @@ class Inventory:
                         oid,
                         a["lot_id"],
                         actor,
-                        f"Trả hàng {order_code(oid)}: {reason}"[:300],
+                        tr("Trả hàng {0}: {1}", order_code(oid), reason)[:300],
                     )
                 self.db.execute("UPDATE inv_order_items SET status='returned' WHERE id=?", (line["id"],))
             self.db.execute(
                 "UPDATE inv_orders SET status='returned', returned=?, profit=0 WHERE id=?", (now_iso(), oid)
             )
-            self._refund(oid, actor, reason or "Trả hàng")
+            self._refund(oid, actor, reason or tr("Trả hàng"))
         out = self.order(oid)
         self._emit("order_returned", order=out)
         self._emit("stock", product_ids=pids)
@@ -2540,24 +2580,27 @@ class Inventory:
 
     def receipt_text(self, oid: int) -> str:
         r = self.receipt(oid)
-        cur = "đ" if r["shop"]["currency"] == "VND" else r["shop"]["currency"]
+        cur = tr("đ") if r["shop"]["currency"] == "VND" else r["shop"]["currency"]
         money = lambda v: f"{v:,}".replace(",", ".") + f" {cur}"
         lines = [
-            r["shop"]["shop_name"] or "Hoá đơn bán hàng",
+            r["shop"]["shop_name"] or tr("Hoá đơn bán hàng"),
             f"{r['code']} · {r['created'][:16].replace('T', ' ')}",
         ]
         for i in r["items"]:
             lines.append(f"{i['name']} x{i['qty']}: {money(i['line_total'])}")
         if r["discount"] or r["voucher_discount"]:
-            lines.append(f"Giảm giá: -{money(r['discount'] + r['voucher_discount'])}")
+            lines.append(tr("Giảm giá: -{0}", money(r["discount"] + r["voucher_discount"])))
         if r["shipping_fee"]:
-            lines.append(f"Phí giao hàng: {money(r['shipping_fee'])}")
+            lines.append(tr("Phí giao hàng: {0}", money(r["shipping_fee"])))
         lines.append(
-            f"Tổng: {money(r['total'])}" + (f" (đã gồm VAT {r['vat_pct']}%)" if r["vat_pct"] else "")
+            tr("Tổng: {0}", money(r["total"]))
+            + (tr(" (đã gồm VAT {0}%)", r["vat_pct"]) if r["vat_pct"] else "")
         )
-        lines.append(f"Đã trả: {money(r['paid'])}" + (f" · còn lại {money(r['due'])}" if r["due"] else ""))
+        lines.append(
+            tr("Đã trả: {0}", money(r["paid"])) + (tr(" · còn lại {0}", money(r["due"])) if r["due"] else "")
+        )
         if r["shop"]["bank_info"] and r["due"]:
-            lines.append(f"Chuyển khoản: {r['shop']['bank_info']}")
+            lines.append(tr("Chuyển khoản: {0}", r["shop"]["bank_info"]))
         if r["shop"]["receipt_footer"]:
             lines.append(r["shop"]["receipt_footer"])
         return "\n".join(lines)
@@ -2568,11 +2611,11 @@ class Inventory:
     def _when(self, value: Any, what: str, end: bool = False) -> str:
         v = str(value or "").strip()
         if not v:
-            raise InventoryError(f"{what} là bắt buộc")
+            raise InventoryError(tr("{0} là bắt buộc", what))
         try:
             d = datetime.fromisoformat(v)
         except ValueError:
-            raise InventoryError(f"{what}: dạng YYYY-MM-DD hoặc YYYY-MM-DDTHH:MM") from None
+            raise InventoryError(tr("{0}: dạng YYYY-MM-DD hoặc YYYY-MM-DDTHH:MM", what)) from None
         if len(v) == 10 and end:
             d = d.replace(hour=23, minute=59, second=59)
         return (d if d.tzinfo else d.astimezone()).isoformat(timespec="seconds")
@@ -2580,13 +2623,13 @@ class Inventory:
     def _discount(self, data: dict[str, Any]) -> tuple[str, int]:
         kind = data.get("discount_type")
         if kind == "pct":
-            value = _int(data.get("value"), "Mức giảm (%)", 1)
+            value = _int(data.get("value"), tr("Mức giảm (%)"), 1)
             if value > 100:
-                raise InventoryError("Mức giảm tối đa 100%")
+                raise InventoryError(tr("Mức giảm tối đa 100%"))
             return kind, value
         if kind == "amount":
-            return kind, self.minor(data.get("value"), "Số tiền giảm")
-        raise InventoryError("Kiểu giảm là pct (%) hoặc amount (số tiền)")
+            return kind, self.minor(data.get("value"), tr("Số tiền giảm"))
+        raise InventoryError(tr("Kiểu giảm là pct (%) hoặc amount (số tiền)"))
 
     def save_promotion(self, pid: int | None, data: dict[str, Any]) -> dict[str, Any]:
         """A sale: a % (follows the automatic stage price) or an amount off, for some products,
@@ -2597,21 +2640,21 @@ class Inventory:
             "badge": str(data.get("badge") or "").strip()[:40],
             "discount_type": kind,
             "value": value,
-            "starts": self._when(data.get("starts"), "Ngày bắt đầu"),
-            "ends": self._when(data.get("ends"), "Ngày kết thúc", end=True),
+            "starts": self._when(data.get("starts"), tr("Ngày bắt đầu")),
+            "ends": self._when(data.get("ends"), tr("Ngày kết thúc"), end=True),
             "all_products": 1 if data.get("all_products") else 0,
             "category": str(data.get("category") or "").strip()[:200],
             "active": 1 if data.get("active", True) else 0,
         }
         if not fields["name"]:
-            raise InventoryError("Tên chương trình là bắt buộc")
+            raise InventoryError(tr("Tên chương trình là bắt buộc"))
         if fields["ends"] < fields["starts"]:
-            raise InventoryError("Ngày kết thúc trước ngày bắt đầu")
+            raise InventoryError(tr("Ngày kết thúc trước ngày bắt đầu"))
         ids = [int(x) for x in data.get("product_ids") or []]
         if not (ids or fields["all_products"] or fields["category"]):
-            raise InventoryError("Chọn sản phẩm, danh mục, hoặc áp dụng cho mọi sản phẩm")
+            raise InventoryError(tr("Chọn sản phẩm, danh mục, hoặc áp dụng cho mọi sản phẩm"))
         with self.db.transaction():
-            row = self._save("inv_promotions", pid, fields, "chương trình")
+            row = self._save("inv_promotions", pid, fields, tr("chương trình"))
             self.db.execute("DELETE FROM inv_promo_products WHERE promotion_id=?", (row["id"],))
             for x in ids:
                 self.product_row(x)
@@ -2626,7 +2669,7 @@ class Inventory:
     def promotion(self, pid: int) -> dict[str, Any]:
         row = self.db.row("SELECT * FROM inv_promotions WHERE id=?", (pid,))
         if row is None:
-            raise InventoryError("Không có chương trình này")
+            raise InventoryError(tr("Không có chương trình này"))
         ids = [
             int(r["product_id"])
             for r in self.db.rows("SELECT product_id FROM inv_promo_products WHERE promotion_id=?", (pid,))
@@ -2654,16 +2697,16 @@ class Inventory:
         kind, value = self._discount(data)
         code = str(data.get("code") or "").strip().upper()[:40]
         if not code:
-            raise InventoryError("Mã voucher là bắt buộc")
+            raise InventoryError(tr("Mã voucher là bắt buộc"))
         fields = {
             "code": code,
             "discount_type": kind,
             "value": value,
-            "min_order": self.minor(data.get("min_order") or 0, "Đơn tối thiểu"),
-            "max_discount": self.minor(data.get("max_discount") or 0, "Giảm tối đa"),
-            "max_uses": _int(data.get("max_uses") or 0, "Số lượt dùng"),
-            "starts": self._when(data["starts"], "Ngày bắt đầu") if data.get("starts") else "",
-            "ends": self._when(data["ends"], "Ngày kết thúc", end=True) if data.get("ends") else "",
+            "min_order": self.minor(data.get("min_order") or 0, tr("Đơn tối thiểu")),
+            "max_discount": self.minor(data.get("max_discount") or 0, tr("Giảm tối đa")),
+            "max_uses": _int(data.get("max_uses") or 0, tr("Số lượt dùng")),
+            "starts": self._when(data["starts"], tr("Ngày bắt đầu")) if data.get("starts") else "",
+            "ends": self._when(data["ends"], tr("Ngày kết thúc"), end=True) if data.get("ends") else "",
             "active": 1 if data.get("active", True) else 0,
             "note": str(data.get("note") or "")[:300],
         }
@@ -2691,15 +2734,15 @@ class Inventory:
             or (v["starts"] and v["starts"] > now)
             or (v["ends"] and v["ends"] < now)
         ):
-            raise InventoryError(f"Voucher {code} không hợp lệ hoặc đã hết hạn")
+            raise InventoryError(tr("Voucher {0} không hợp lệ hoặc đã hết hạn", code))
         if amount < int(v["min_order"]):
-            raise InventoryError(f"Voucher {code} cần đơn từ {self.major(v['min_order']):,}")
+            raise InventoryError(tr("Voucher {0} cần đơn từ {1:,}", code, self.major(v["min_order"])))
         claimed = self.db.execute(
             "UPDATE inv_vouchers SET used=used+1 WHERE id=? AND (max_uses=0 OR used<max_uses) RETURNING id",
             (v["id"],),
         )
         if claimed is None:
-            raise InventoryError(f"Voucher {code} đã hết lượt dùng")
+            raise InventoryError(tr("Voucher {0} đã hết lượt dùng", code))
         cut = amount * int(v["value"]) // 100 if v["discount_type"] == "pct" else int(v["value"])
         if int(v["max_discount"]):
             cut = min(cut, int(v["max_discount"]))
@@ -2709,41 +2752,41 @@ class Inventory:
         """A package (bed + mattress + 2 bedside tables) sold together at one price."""
         items = data.get("items") or []
         if len(items) < 2 and cid is None:
-            raise InventoryError("Combo cần ít nhất 2 sản phẩm")
+            raise InventoryError(tr("Combo cần ít nhất 2 sản phẩm"))
         fields = {
             "code": str(data.get("code") or "").strip().upper()[:40],
             "name": str(data.get("name") or "").strip()[:150],
-            "price": self.minor(data.get("price"), "Giá combo"),
+            "price": self.minor(data.get("price"), tr("Giá combo")),
             "badge": str(data.get("badge") or "")[:40],
             "description": str(data.get("description") or "")[:2000],
-            "starts": self._when(data["starts"], "Ngày bắt đầu") if data.get("starts") else "",
-            "ends": self._when(data["ends"], "Ngày kết thúc", end=True) if data.get("ends") else "",
+            "starts": self._when(data["starts"], tr("Ngày bắt đầu")) if data.get("starts") else "",
+            "ends": self._when(data["ends"], tr("Ngày kết thúc"), end=True) if data.get("ends") else "",
             "active": 1 if data.get("active", True) else 0,
         }
         if not fields["code"] or not fields["name"]:
-            raise InventoryError("Mã và tên combo là bắt buộc")
+            raise InventoryError(tr("Mã và tên combo là bắt buộc"))
         with self.db.transaction():
             row = self._save("inv_combos", cid, fields, "combo")
             if items:
                 self.db.execute("DELETE FROM inv_combo_items WHERE combo_id=?", (row["id"],))
                 for it in items:
                     p = (
-                        self.product_row(_int(it["product_id"], "Sản phẩm", 1))
+                        self.product_row(_int(it["product_id"], tr("Sản phẩm"), 1))
                         if it.get("product_id")
                         else self.by_sku(str(it.get("sku", "")))
                     )
                     if p is None:
-                        raise InventoryError(f"Không có SKU {it.get('sku')}")
+                        raise InventoryError(tr("Không có SKU {0}", it.get("sku")))
                     self.db.execute(
                         "INSERT INTO inv_combo_items (combo_id, product_id, qty) VALUES (?, ?, ?)",
-                        (row["id"], p["id"], _int(it.get("qty") or 1, "Số lượng", 1)),
+                        (row["id"], p["id"], _int(it.get("qty") or 1, tr("Số lượng"), 1)),
                     )
         return self.combo(str(row["code"]))
 
     def combo(self, code: str, vip: bool = False) -> dict[str, Any]:
         row = self.db.row("SELECT * FROM inv_combos WHERE code=?", (code.strip().upper(),))
         if row is None:
-            raise InventoryError(f"Không có combo {code}")
+            raise InventoryError(tr("Không có combo {0}", code))
         items, separate, available = [], 0, None
         for it in self.db.rows(
             "SELECT c.qty, p.id, p.sku, p.name FROM inv_combo_items c JOIN inv_products p ON p.id=c.product_id WHERE c.combo_id=?",
@@ -2796,8 +2839,8 @@ class Inventory:
                 continue
             c = self.combo(str(it["combo"]), vip)
             if not c["live"]:
-                raise InventoryError(f"Combo {c['code']} không còn bán")
-            n = _int(it.get("qty") or 1, "Số lượng", 1)
+                raise InventoryError(tr("Combo {0} không còn bán", c["code"]))
+            n = _int(it.get("qty") or 1, tr("Số lượng"), 1)
             for x in c["items"]:
                 out.append({"product_id": x["product_id"], "qty": int(x["qty"]) * n, "combo": c["code"]})
             saving += max(0, self.minor(c["separate_price"]) - self.minor(c["price"])) * n
@@ -2811,20 +2854,20 @@ class Inventory:
 
     def save_set_templates(self, templates: Any) -> list[dict[str, Any]]:
         if not isinstance(templates, list) or not templates:
-            raise InventoryError("Cần ít nhất một bộ")
+            raise InventoryError(tr("Cần ít nhất một bộ"))
         clean = []
         for t in templates:
             slots = [
                 {
                     "label": str(x.get("label") or x.get("match"))[:60],
                     "match": str(x.get("match") or "").strip().lower()[:80],
-                    "qty": _int(x.get("qty") or 1, "Số lượng", 1),
+                    "qty": _int(x.get("qty") or 1, tr("Số lượng"), 1),
                 }
                 for x in t.get("slots") or []
                 if x.get("match")
             ]
             if not t.get("name") or not slots or len(slots) > 8:
-                raise InventoryError("Mỗi bộ cần tên và 1-8 món")
+                raise InventoryError(tr("Mỗi bộ cần tên và 1-8 món"))
             clean.append(
                 {
                     "id": str(t.get("id") or t["name"]).strip().lower().replace(" ", "-")[:40],
@@ -2844,9 +2887,9 @@ class Inventory:
         )
         if tmpl is None:
             raise InventoryError(
-                f"Không có bộ '{template}'. Có: {', '.join(t['name'] for t in self.set_templates())}"
+                tr("Không có bộ '{0}'. Có: {1}", template, ", ".join(t["name"] for t in self.set_templates()))
             )
-        cap = self.minor(budget, "Ngân sách")
+        cap = self.minor(budget, tr("Ngân sách"))
         horizon = (
             (datetime.now().astimezone() + timedelta(days=self.settings()["set_eta_days"])).date().isoformat()
         )

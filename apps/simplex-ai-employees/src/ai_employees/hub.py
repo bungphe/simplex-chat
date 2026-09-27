@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 from .channels import Channel, ChannelError, InboundMessage, make_channel
 from .crm import CRM
 from .desk import Desk
+from .i18n import tr
 from .inbox import EXTERNAL_BASE, Conversation, Inbox, describe
 from .lang import detect
 from .state import now_iso
@@ -38,7 +39,9 @@ def customer_text(messages: list[dict[str, Any]]) -> str:
     for m in messages:
         line = describe(m["text"], m.get("attachments"))
         if m.get("attachments"):
-            line += " (bạn không xem được tệp đính kèm; nếu cần, hỏi khách mô tả hoặc chuyển cho người thật)"
+            line += tr(
+                " (bạn không xem được tệp đính kèm; nếu cần, hỏi khách mô tả hoặc chuyển cho người thật)"
+            )
         lines.append(line)
     return "\n".join(lines)
 
@@ -169,7 +172,7 @@ class ChannelHub:
             if m.text in self.inbox.recent_outbound(conv.id, iso(m.ts - ECHO_WINDOW)):
                 continue
             if self.inbox.add(
-                conv.id, "human", m.text, f"trên {ch.type}", m.external_id, iso(m.ts), m.attachments
+                conv.id, "human", m.text, tr("trên {0}", ch.type), m.external_id, iso(m.ts), m.attachments
             ):
                 added += 1
                 if m.ts >= self.answer_from.get(ch.id, self.started):
@@ -344,11 +347,11 @@ class ChannelHub:
         if employee is None:
             raise KeyError(conv.employee)
         who = {
-            "customer": "Khách",
+            "customer": tr("Khách"),
             "ai": "AI",
-            "human": "Nhân viên",
-            "system": "Hệ thống",
-            "note": "Ghi chú nội bộ",
+            "human": tr("Nhân viên"),
+            "system": tr("Hệ thống"),
+            "note": tr("Ghi chú nội bộ"),
         }
         lines = [
             f"{who[m['sender']]}{' ' + m['author'] if m['author'] and m['sender'] != 'customer' else ''} "
@@ -398,7 +401,7 @@ class ChannelHub:
             if not pending:
                 return None
             text = customer_text(pending)
-            r = await employee.agent.respond_run(conv.contact_id, conv.customer_name or "khách", text)
+            r = await employee.agent.respond_run(conv.contact_id, conv.customer_name or tr("khách"), text)
             if r.status == "busy":
                 # No model reachable: don't send an apology on a business channel. The
                 # message stays unread and waiting, for staff or the customer's next message.
@@ -430,7 +433,7 @@ class ChannelHub:
             try:
                 external_id = await ch.send(conv.external_id, text)
             except ChannelError as e:
-                self.inbox.set_channel_state(ch.id, last_error=f"gửi tin: {e}"[:300])
+                self.inbox.set_channel_state(ch.id, last_error=tr("gửi tin: {0}", e)[:300])
                 raise
         if self.inbox.add(conv.id, sender, text, author, external_id, translation=original) is None:
             # The platform reused a message id: never lose the record of what was sent.
@@ -466,7 +469,7 @@ class ChannelHub:
             employee.state.append_turn(
                 conv.contact_id,
                 pending,
-                f"[nhân viên {author}] {text}",
+                tr("[nhân viên {0}] {1}", author, text),
                 keep=employee.settings.history_messages,
             )
 
@@ -497,7 +500,7 @@ class ChannelHub:
         pending = customer_text(self.inbox.pending_customer_text(conv_id))
         return await employee.agent.suggest(
             conv.contact_id,
-            conv.customer_name or "khách",
+            conv.customer_name or tr("khách"),
             pending,
             write_in=self.office.config.staff_language if in_staff_language else None,
         )

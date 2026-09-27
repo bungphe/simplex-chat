@@ -11,6 +11,7 @@ from typing import Any
 
 from aiohttp import web
 
+from .i18n import tr
 from .inventory import InventoryError
 
 
@@ -36,7 +37,7 @@ def _id(request: web.Request, key: str = "id") -> int:
     try:
         return int(request.match_info[key])
     except ValueError:
-        raise _w().ApiError(400, f"{key} phải là số") from None
+        raise _w().ApiError(400, tr("{0} phải là số", key)) from None
 
 
 def _period(request: web.Request, days: int = 30) -> tuple[str, str]:
@@ -63,7 +64,7 @@ def handler(fn: Any) -> Any:
         except (InventoryError, ValueError) as e:
             raise w.ApiError(400, str(e)) from None
         except KeyError as e:
-            raise w.ApiError(404, f"không tìm thấy {e}") from None
+            raise w.ApiError(404, tr("không tìm thấy {0}", e)) from None
         return result if isinstance(result, web.StreamResponse) else w._json(result)
 
     return run
@@ -213,7 +214,7 @@ def pos_step(request: web.Request, d: dict[str, Any]) -> Any:
     if step == "complete":  # handed over at the counter
         return inv.complete_order(oid, user.name)
     if not _manager(request):
-        raise _w().ApiError(403, "Chỉ quản lý cửa hàng huỷ hoặc hoàn tác đơn")
+        raise _w().ApiError(403, tr("Chỉ quản lý cửa hàng huỷ hoặc hoàn tác đơn"))
     if step == "cancel":
         return inv.cancel_order(oid, user.name)
     if step == "return":
@@ -255,8 +256,8 @@ def mail_settings(request: web.Request, d: dict[str, Any]) -> Any:
 async def mail_test(request: web.Request, d: dict[str, Any]) -> Any:
     office = _office(request)
     to = str(d.get("to") or "").strip()
-    shop = office.inventory.settings()["shop_name"] or "Cửa hàng"
-    await office.mailer.send(to, f"{shop} – thử gửi email", "Email của cửa hàng đã hoạt động.")
+    shop = office.inventory.settings()["shop_name"] or tr("Cửa hàng")
+    await office.mailer.send(to, tr("{0} – thử gửi email", shop), tr("Email của cửa hàng đã hoạt động."))
     return {"sent_to": to}
 
 
@@ -277,10 +278,10 @@ async def pos_send_receipt(request: web.Request, _d: dict[str, Any]) -> Any:
         convs = office.hub.crm.conversations(int(order["contact_id"]))
         conv = convs[-1] if convs else None
     if not conv:
-        raise InventoryError("Khách chưa có kênh chat nào để gửi hoá đơn")
+        raise InventoryError(tr("Khách chưa có kênh chat nào để gửi hoá đơn"))
     ok = await office.hub.notify_customer(int(conv), office.inventory.receipt_text(oid))
     if not ok:
-        raise InventoryError("Không gửi được hoá đơn")
+        raise InventoryError(tr("Không gửi được hoá đơn"))
     return {"ok": True}
 
 
@@ -308,7 +309,7 @@ def pos_voucher_check(request: web.Request, _d: dict[str, Any]) -> Any:
     code = request.query.get("code", "").strip().upper()
     v = inv.db.row("SELECT * FROM inv_vouchers WHERE code=?", (code,))
     if v is None or not v["active"]:
-        raise InventoryError(f"Voucher {code} không hợp lệ")
+        raise InventoryError(tr("Voucher {0} không hợp lệ", code))
     return inv._voucher_json(v)
 
 
@@ -441,7 +442,7 @@ def rp_commissions(request: web.Request, d: dict[str, Any]) -> Any:
 
 def rp_commission_status(request: web.Request, d: dict[str, Any]) -> Any:
     if not _user(request).is_admin and _user(request).role != "manager":
-        raise _w().ApiError(403, "Chỉ quản lý chốt hoa hồng")
+        raise _w().ApiError(403, tr("Chỉ quản lý chốt hoa hồng"))
     return _office(request).sales.set_commission_status(_id(request), str(d.get("status", "")))
 
 
@@ -497,7 +498,7 @@ def dl_overview(request: web.Request, _d: dict[str, Any]) -> Any:
         "month": month,
         "date": day,
         "warehouses": office.inventory.warehouses(),
-        "slots": _dl().SLOTS,
+        "slots": {k: tr(v) for k, v in _dl().SLOTS.items()},
         "open_orders": [
             o
             for o in office.inventory.orders("confirmed")
@@ -621,7 +622,7 @@ def notices(request: web.Request, d: dict[str, Any]) -> Any:
     user = _user(request)
     if request.method == "POST":
         if not user.is_admin and user.role != "manager":
-            raise _w().ApiError(403, "Chỉ quản lý đăng thông báo")
+            raise _w().ApiError(403, tr("Chỉ quản lý đăng thông báo"))
         return sales.add_notice(str(d.get("title", "")), str(d.get("body", "")), user.name)
     return {
         "pending": sales.pending_notices(user.username),

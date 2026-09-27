@@ -18,6 +18,7 @@ from email.message import EmailMessage
 from email.utils import make_msgid, parseaddr
 from typing import TYPE_CHECKING, Any
 
+from .i18n import tr
 from .inventory import InventoryError
 
 if TYPE_CHECKING:
@@ -58,12 +59,12 @@ class Mailer:
             clean["smtp_port"] = int(data["smtp_port"] or 587)
         if "smtp_tls" in data:
             if data["smtp_tls"] not in ("starttls", "ssl", "none"):
-                raise InventoryError("TLS: starttls, ssl hoặc none")
+                raise InventoryError(tr("TLS: starttls, ssl hoặc none"))
             clean["smtp_tls"] = data["smtp_tls"]
         if "auto_invoice" in data:
             clean["auto_invoice"] = bool(data["auto_invoice"])
         if clean.get("sender") and not valid_email(parseaddr(clean["sender"])[1]):
-            raise InventoryError("Địa chỉ gửi không hợp lệ")
+            raise InventoryError(tr("Địa chỉ gửi không hợp lệ"))
         self.office.docs.update(KEY, lambda d: d.update(clean), {})
         return self.public()
 
@@ -110,9 +111,9 @@ class Mailer:
         """Send one email; returns its Message-ID. Raises InventoryError when it cannot."""
         smtp = self._smtp()
         if smtp is None:
-            raise InventoryError("Chưa cài đặt email gửi đi (Kho hàng → Cửa hàng → Email)")
+            raise InventoryError(tr("Chưa cài đặt email gửi đi (Kho hàng → Cửa hàng → Email)"))
         if not valid_email(to):
-            raise InventoryError(f"Địa chỉ email không hợp lệ: {to}")
+            raise InventoryError(tr("Địa chỉ email không hợp lệ: {0}", to))
         msg = EmailMessage()
         msg["From"] = smtp["sender"]
         msg["To"] = to.strip()
@@ -126,5 +127,5 @@ class Mailer:
             await asyncio.to_thread(self._send_now, smtp, msg)
         except (OSError, smtplib.SMTPException) as e:
             log.warning("mail to %s failed: %s", to, e)
-            raise InventoryError(f"Không gửi được email: {type(e).__name__}") from None
+            raise InventoryError(tr("Không gửi được email: {0}", type(e).__name__)) from None
         return str(msg["Message-ID"])
