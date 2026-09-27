@@ -122,3 +122,79 @@ async def test_a_phone_number_cannot_pile_up_unpaid_web_orders(site):  # noqa: F
     await post(shop, "/cart/add", item="SOFA-01", qty="1")
     _r, body = await post(shop, "/checkout", status=400, name="Hoa", phone="0901555666", address="x")
     assert "đang chờ cửa hàng xác nhận" in body
+
+
+def claim_url(mails) -> str:
+    body = mails[-1][1].get_content()
+    return re.search(r"http://shop\.test(/claim\?\S+)", body).group(1)
+
+
+async def test_a_guest_makes_their_account_from_the_confirmation_email(site):  # noqa: F811
+    shop, office, mails, _p, _ids = site
+    await shop.get("/")
+    await post(shop, "/cart/add", item="SOFA-01", qty="1")
+    await post(
+        shop, "/checkout", status=200, name="Mai", phone="0933 000 111", email="mai@example.com", address="x"
+    )
+    await settle(office.hub)
+    link = claim_url(mails)
+    order = office.inventory.orders()[0]
+    # the page only shows a button (mail scanners opening the link use nothing up)
+    page = await (await shop.get(link)).text()
+    assert "mai@example.com" in page and office.hub.crm.contact(order["contact_id"])["email"] == ""
+    query = dict(x.split("=", 1) for x in link.split("?", 1)[1].split("&"))
+    from urllib.parse import unquote
+
+    fields = {k: unquote(v) for k, v in query.items()}
+    await post(
+        shop, "/claim", status=400, **{**fields, "e": "att@evil.test"}
+    )  # the signature binds the email
+    r, _ = await post(shop, "/claim", **fields)
+    assert r.headers["Location"] == "/account"
+    assert order["code"] in await (await shop.get("/account")).text()
+    assert office.hub.crm.contact(order["contact_id"])["email"] == "mai@example.com"
+
+
+async def test_a_claim_link_never_opens_a_counter_customer(site):  # noqa: F811
+    shop, office, mails, _p, _ids = site
+    crm = office.hub.crm
+    # a customer staff met at the counter (no email, no chat), with a purchase there
+    lan = crm.create_contact("Chị Lan", "0944 222 333")
+    office.inventory.create_order([{"sku": "SOFA-01", "qty": 1}], contact_id=lan["id"])
+    # someone orders on the website with her number and their own email
+    await shop.get("/")
+    await post(shop, "/cart/add", item="SOFA-01", qty="1")
+    await post(
+        shop, "/checkout", status=200, name="Lạ", phone="0944222333", email="att@evil.test", address="x"
+    )
+    await settle(office.hub)
+    assert office.inventory.orders()[0]["contact_id"] == lan["id"]
+    from urllib.parse import parse_qsl
+
+    fields = dict(parse_qsl(claim_url(mails).split("?", 1)[1]))
+    await post(shop, "/claim", status=400, **fields)
+    assert crm.contact(lan["id"])["email"] == ""
+
+
+async def test_unpaid_web_orders_nobody_took_up_go_back_on_sale(site):  # noqa: F811
+    shop, office, mails, _p, _ids = site
+    inv, sf = office.inventory, office.storefront
+    await shop.get("/")
+    await post(shop, "/cart/add", item="SOFA-01", qty="2")
+    await post(
+        shop, "/checkout", status=200, name="Hoa", phone="0901 234 567", email="hoa@example.com", address="x"
+    )
+    await post(shop, "/cart/add", item="SOFA-01", qty="1")  # more than in stock: a preorder, paid below
+    await post(shop, "/checkout", status=200, name="Tú", phone="0902 000 000", address="y")
+    await settle(office.hub)
+    first, paid = sorted(inv.orders(), key=lambda o: o["id"])
+    inv.add_payment(paid["id"], "cash", cashier="t")
+    assert await sf.release_stale() == []  # not old yet
+    sf.hold_hours = 1
+    office.hub.crm.db.execute("UPDATE inv_orders SET created='2020-01-01T00:00:00+00:00'")
+    assert await sf.release_stale() == [first["code"]]
+    assert inv.order(first["id"])["status"] == "cancelled"
+    assert inv.order(paid["id"])["status"] == "confirmed"
+    assert "đã huỷ" in mails[-1][1]["Subject"] and mails[-1][1]["To"] == "hoa@example.com"
+    sf.hold_hours = 0
+    assert await sf.release_stale() == []

@@ -619,6 +619,7 @@ storefront:
   host: 127.0.0.1                 # đặt sau reverse proxy HTTPS (Caddy, nginx)
   port: 8081
   public_url: https://shop.example.vn   # dùng trong đường dẫn gửi cho khách
+  hold_hours: 72                  # đơn web chưa thu tiền, chưa hẹn giao sau 72 giờ thì tự huỷ (0: không bao giờ)
 ```
 
 - **Sản phẩm, combo, giỏ hàng, đặt hàng**: giá, khuyến mại, tồn kho và hàng sắp về lấy thẳng từ Kho hàng, nên website
@@ -628,7 +629,11 @@ storefront:
   riêng. Khách chưa đăng nhập không được xác minh, nên đơn của họ không bao giờ vào tài khoản của một khách đã có
   (khách đó sẽ thấy đơn lạ, người đặt sẽ đọc được hoá đơn của họ): đơn gắn vào khách cùng số điện thoại chỉ khi không
   ai đăng nhập được vào khách đó (chưa có email, chưa chat), còn lại tạo khách mới để nhân viên gộp sau; email khách
-  gõ khi đặt chỉ dùng cho đơn đó. Tối đa 10 đơn / giờ mỗi địa chỉ IP và 3 đơn chưa thanh toán mỗi số điện thoại.
+  gõ khi đặt chỉ dùng cho đơn đó. Email xác nhận có đường dẫn **Tạo tài khoản** (dùng được 7 ngày): bấm vào là email
+  đã được chứng minh, khách đăng nhập được từ đó (chỉ khi mọi đơn của khách đó là đơn web với email này, nên không ai
+  mở được khách quen ở quầy). Tối đa 10 đơn / giờ mỗi địa chỉ IP và 3 đơn chưa thanh toán mỗi số điện thoại. Đơn web
+  chưa thu đồng nào và chưa hẹn giao sau `hold_hours` giờ thì tự huỷ, hàng trả lại kho, khách nhận email, nhân viên
+  bán hàng và quản trị viên được báo.
 - **Tài khoản khách, không mật khẩu**: khách gõ email hoặc số điện thoại đã dùng với cửa hàng và nhận **mã 6 số**
   (hiệu lực 10 phút, sai 5 lần là hỏng, tối đa 3 mã / 15 phút) qua email, hoặc qua **kênh chat khách vẫn dùng**
   (SimpleX, Zalo, Telegram…; hộp thư chỉ ghi "đã gửi mã", nhân viên không thấy mã). Trong ứng dụng SimpleX, khách

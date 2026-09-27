@@ -16,6 +16,7 @@ same phone number (or a new one) and can be followed with a private link.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -63,6 +64,7 @@ REQUESTS_PER_IP = 20  # login requests (and, apart, code checks) per 15 minutes
 CHECKOUTS_PER_IP = 10  # web orders per hour
 OPEN_ORDERS_PER_PHONE = 3  # unpaid web orders waiting for the shop
 CART_LINES = 30
+CLAIM_DAYS = 7  # a guest's account link in their confirmation email
 SESSION, CSRF, CART, LOGIN, LANG = "sf_session", "sf_csrf", "sf_cart", "sf_login", "sf_lang"
 CSP = (
     "default-src 'none'; style-src 'self'; img-src 'self' https:; form-action 'self'; "
@@ -95,6 +97,11 @@ def _utc(delta: timedelta = timedelta()) -> str:
     return (datetime.now(UTC) + delta).isoformat(timespec="seconds")
 
 
+def _local(delta: timedelta = timedelta()) -> str:
+    """Like the inventory's timestamps (local time with offset)."""
+    return (datetime.now().astimezone() + delta).isoformat(timespec="seconds")
+
+
 def _sha(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
@@ -102,8 +109,9 @@ def _sha(value: str) -> str:
 class Storefront:
     """What the website does, apart from HTTP (tested directly)."""
 
-    def __init__(self, office: Office, public_url: str = ""):
+    def __init__(self, office: Office, public_url: str = "", hold_hours: int = 72):
         self.office = office
+        self.hold_hours = hold_hours
         self.inv = office.inventory
         self.crm = office.hub.crm
         self.db = self.crm.db
@@ -403,7 +411,7 @@ class Storefront:
         for row in self.db.rows(
             "SELECT phone FROM inv_orders WHERE source='storefront' AND status='confirmed' AND paid=0 "
             "AND created>=? ORDER BY id DESC LIMIT 200",
-            (_utc(timedelta(days=-7)),),
+            (_local(timedelta(days=-7)),),
         ):
             n += phone_key(row["phone"]) == key
         return n
@@ -475,6 +483,17 @@ class Storefront:
             raise
         return orders
 
+    def _claim_note(self, order: dict[str, Any]) -> str:
+        """For a guest: the link that makes their own account (points, invoices, VIP)."""
+        contact = self.crm.contact(int(order["contact_id"] or 0))
+        if contact is None or contact["email"]:
+            return ""
+        return tr(
+            "\n\nTạo tài khoản để tích điểm, xem hoá đơn và giá VIP (đường dẫn dùng được {0} ngày): {1}",
+            CLAIM_DAYS,
+            self.claim_link(int(contact["id"]), order["email"]),
+        )
+
     def order_link(self, order: dict[str, Any]) -> str:
         code = order_code(int(order["id"]))
         return f"{self.public_url}/order/{code}?t={self.sign('order', code)}"
@@ -488,7 +507,7 @@ class Storefront:
             lines = []
             for o in orders:
                 kind = tr("Đặt trước (giao khi hàng về)") if o["kind"] == "preorder" else tr("Có sẵn")
-                lines.append(f"{o['code']} – {kind}: {o['total']:,}")
+                lines.append(f"{o['code']} – {kind}: {number(o['total'])}")
                 lines += [f"  • {i['name']} × {i['qty']}" for i in o["items"]]
             return "\n".join(lines)
 
@@ -505,7 +524,8 @@ class Storefront:
                         summary,
                     )
                     + "".join(tr("Theo dõi {0}: {1}\n", o["code"], self.order_link(o)) for o in orders)
-                    + tr("\nNhân viên sẽ liên hệ để hẹn giao hàng."),
+                    + tr("\nNhân viên sẽ liên hệ để hẹn giao hàng.")
+                    + self._claim_note(first),
                 )
             except InventoryError as e:
                 log.info("storefront: confirmation email not sent: %s", e)
@@ -527,6 +547,104 @@ class Storefront:
                 "🛒 Đơn web mới từ {0} ({1}):\n{2}", first["customer_name"], first["phone"], summarize()
             ),
         )
+
+    # ------------------------------------------------------------------ #
+    # a guest's own account: proven by the link in their confirmation email
+
+    def claim_link(self, contact_id: int, email: str) -> str:
+        expires = str(int(time.time()) + CLAIM_DAYS * 86400)
+        sig = self.sign("claim", f"{contact_id}:{email}:{expires}")
+        query = urlencode({"c": contact_id, "e": email, "x": expires, "s": sig})
+        return f"{self.public_url}/claim?{query}"
+
+    def claim(self, contact_id: int, email: str, expires: str, sig: str) -> int | None:
+        """The contact to log in with a claim link, else None. Opening the link proves the
+        email is theirs (it was sent there). A contact the guest's orders joined can only
+        be claimed when every one of its orders is a web order with that email: never a
+        customer staff met at the counter, nor someone else's guest orders."""
+        if not (
+            expires.isdigit()
+            and int(expires) >= time.time()
+            and self.check("claim", f"{contact_id}:{email}:{expires}", sig)
+        ):
+            return None
+        existing = self.find_contact(email)
+        if existing is not None:  # they already have an account with that email: that one
+            return int(existing["id"])
+        contact = self.crm.contact(contact_id)
+        if contact is None or contact["email"] or self.crm.conversations(contact_id):
+            return None
+        orders = self.db.rows("SELECT source, email FROM inv_orders WHERE contact_id=?", (contact_id,))
+        if not orders or any(o["source"] != "storefront" or o["email"] != email for o in orders):
+            return None
+        self.crm.update(contact_id, email=email)
+        return contact_id
+
+    # ------------------------------------------------------------------ #
+    # web orders nobody took up
+
+    def stale_orders(self) -> list[dict[str, Any]]:
+        """Unpaid web orders older than hold_hours with no delivery booked."""
+        if self.hold_hours <= 0:
+            return []
+        return self.db.rows(
+            "SELECT o.id FROM inv_orders o WHERE o.source='storefront' AND o.status='confirmed' "
+            "AND o.paid=0 AND o.created<? AND NOT EXISTS (SELECT 1 FROM dl_bookings b "
+            "WHERE b.order_id=o.id AND b.status<>'cancelled') ORDER BY o.id LIMIT 200",
+            (_local(timedelta(hours=-self.hold_hours)),),
+        )
+
+    async def release_stale(self) -> list[str]:
+        """Cancel the stale web orders (their goods go back on sale), and say so."""
+        released = []
+        for row in self.stale_orders():
+            try:
+                order = self.inv.cancel_order(int(row["id"]), actor="web-hold")
+            except InventoryError:  # paid, delivered or cancelled meanwhile
+                continue
+            released.append(order["code"])
+            if order.get("email") and self.office.mailer.ready:
+                shop = self.inv.settings()["shop_name"] or tr("Cửa hàng")
+                try:
+                    await self.office.mailer.send(
+                        order["email"],
+                        tr("{0} – đơn {1} đã huỷ", shop, order["code"]),
+                        tr(
+                            "Đơn {0} đã được huỷ vì cửa hàng chưa liên hệ được với quý khách trong {1} giờ. "
+                            "Nếu quý khách vẫn muốn mua, vui lòng đặt lại hoặc gọi cửa hàng.",
+                            order["code"],
+                            self.hold_hours,
+                        ),
+                    )
+                except InventoryError as e:
+                    log.info("storefront: cancellation email not sent: %s", e)
+        if released:
+            log.info("storefront: released stale web orders %s", released)
+
+            def text() -> str:  # in each reader's language
+                return tr(
+                    "⏰ Đơn web chưa được xử lý sau {0} giờ đã tự huỷ, hàng trả lại kho: {1}",
+                    self.hold_hours,
+                    ", ".join(released),
+                )
+
+            employee = next(iter(self.office.employees.values()), None)
+            if employee is not None:
+                with use_language(None):
+                    await employee.notify_admins(text())
+            await self.office.staff_links.notify("pos", text)
+        return released
+
+    async def run(self, stopping: asyncio.Event) -> None:
+        while not stopping.is_set():
+            try:
+                await self.release_stale()
+            except Exception:  # a database hiccup: next round
+                log.exception("storefront: releasing stale web orders failed")
+            try:
+                await asyncio.wait_for(stopping.wait(), timeout=600)
+            except TimeoutError:
+                pass
 
 
 # ---------------------------------------------------------------------- #
@@ -1097,6 +1215,49 @@ async def link_login(request: web.Request) -> web.Response:
     raise resp
 
 
+async def claim_page(request: web.Request) -> web.Response:
+    """The account link from a guest's confirmation email: confirmed with a button, so
+    that link previews and mail scanners never use it."""
+    e, q = html.escape, request.query
+    fields = "".join(
+        f'<input type="hidden" name="{k}" value="{e(q.get(k, "")[:300])}">' for k in ("c", "e", "x", "s")
+    )
+    body = tr(
+        '<h1>Tạo tài khoản</h1><p>Tài khoản dùng email {0}: đăng nhập bằng mã gửi tới email này, tích điểm, xem hoá đơn và giá VIP.</p><form method="post" action="/claim" class="checkout">{1}{2}<button>Tạo tài khoản và đăng nhập</button></form>',
+        e(q.get("e", "")[:200]),
+        _hidden(request),
+        fields,
+    )
+    return _page(request, tr("Tạo tài khoản"), body)
+
+
+async def claim(request: web.Request) -> web.Response:
+    form = await _form(request)
+    shop = request.app[SHOP]
+    if not shop.allow_ip(_client_ip(request), "verify"):
+        return _page(
+            request, tr("Tạo tài khoản"), tr("<p>Quá nhiều yêu cầu, vui lòng thử lại sau ít phút.</p>"), 429
+        )
+    cid = form.get("c", "")
+    contact_id = (
+        shop.claim(int(cid), form.get("e", ""), form.get("x", ""), form.get("s", ""))
+        if re.fullmatch(r"[0-9]{1,12}", cid)
+        else None
+    )
+    if contact_id is None:
+        return _page(
+            request,
+            tr("Tạo tài khoản"),
+            tr(
+                '<p class="error">Đường dẫn đã hết hạn hoặc không dùng được.</p><p><a href="/login">Đăng nhập bằng mã</a></p>'
+            ),
+            400,
+        )
+    resp = web.HTTPSeeOther("/account")
+    _cookie(request, resp, SESSION, shop.start_session(contact_id), days=SESSION_DAYS)
+    raise resp
+
+
 async def logout(request: web.Request) -> web.Response:
     await _form(request)
     request.app[SHOP].end_session(request.cookies.get(SESSION, ""))
@@ -1230,6 +1391,8 @@ def create_shop_app(office: Office, public_url: str = "") -> web.Application:
         ("POST", "/verify", verify),
         ("GET", "/l/{id}/{token}", link_page),
         ("POST", "/l", link_login),
+        ("GET", "/claim", claim_page),
+        ("POST", "/claim", claim),
         ("POST", "/logout", logout),
         ("GET", "/account", account),
         ("POST", "/account", account_save),

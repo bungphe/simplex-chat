@@ -121,6 +121,7 @@ storefront:
   host: 127.0.0.1
   port: 8081
   public_url: https://shop.example.vn
+  hold_hours: 72                 # unpaid web orders with no delivery booked are cancelled after this (0: never)
 
 plugins: [shop_skills]           # Python modules that register extra skills
 plugin_paths: [./plugins]

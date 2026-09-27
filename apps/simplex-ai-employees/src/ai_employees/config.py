@@ -102,6 +102,9 @@ class StorefrontConfig:
     host: str = "127.0.0.1"
     port: int = 8081
     public_url: str = ""
+    # unpaid web orders nobody at the shop took up (no payment, no delivery booked) are
+    # cancelled after this many hours, so their goods go back on sale (0: never)
+    hold_hours: int = 72
 
 
 @dataclass(frozen=True)
@@ -285,6 +288,7 @@ def parse_storefront(raw: dict[str, Any] | None) -> StorefrontConfig | None:
         host=os.environ.get("AI_STOREFRONT_HOST") or str(raw.get("host", "127.0.0.1")),
         port=number(raw, "port", 8081, "storefront."),
         public_url=url,
+        hold_hours=number(raw, "hold_hours", 72, "storefront."),
     )
 
 

@@ -648,7 +648,11 @@ class Office:
         from .storefront import Storefront
 
         # the web shop, when configured (also used by the chat commands: /shop login links)
-        self.storefront = Storefront(self, config.storefront.public_url) if config.storefront else None
+        self.storefront = (
+            Storefront(self, config.storefront.public_url, config.storefront.hold_hours)
+            if config.storefront
+            else None
+        )
         from .staff_chat import StaffLinks
 
         # staff accounts linked to their SimpleX chats (commands and menus by role)
@@ -783,6 +787,7 @@ class Office:
                 self.hub.run(self._stopping),
                 self.cluster.run(self._stopping),
                 *([self.marketplaces.run(self._stopping)] if primary else []),
+                *([self.storefront.run(self._stopping)] if primary and self.storefront else []),
                 *(e.bot.serve_forever() for e in self.employees.values() if primary),
             )
 
