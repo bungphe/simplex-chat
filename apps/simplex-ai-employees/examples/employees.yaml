@@ -49,6 +49,10 @@ actions:
 # After a restart, customer messages up to this many hours old still get an AI answer.
 catch_up_hours: 12
 
+# The language staff read and write (inbox translations, long-term summaries).
+# Customers are answered in their own language automatically.
+staff_language: vi
+
 # Chat channels besides SimpleX: every conversation appears in the admin "Hộp thư"
 # (unified inbox), and the assigned employee answers automatically until a person
 # takes over. Tokens only through environment variables. Uncomment what you use.

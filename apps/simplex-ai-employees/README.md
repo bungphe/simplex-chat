@@ -149,6 +149,47 @@ toán, viết nội dung), mỗi người một model. Mỗi nhân viên gồm:
 Skill *nội bộ* chỉ được dùng khi chạy lịch làm việc hoặc khi người chat là quản trị viên. Khách bình
 thường không bao giờ khiến nhân viên đọc được hội thoại của người khác.
 
+## Khách hàng nhiều nước (đa ngôn ngữ)
+
+Nhân viên AI trả lời mỗi khách bằng ngôn ngữ của khách, dù tài liệu và vai trò viết bằng tiếng Việt.
+
+- **Tự nhận biết ngôn ngữ** từ tin nhắn của khách (tiếng Việt có dấu hoặc không dấu, Anh, Trung, Nhật, Hàn,
+  Thái, Indonesia, Pháp, Đức, Tây Ban Nha, Nga…) và nhớ cho từng khách. Tin mơ hồ như "ok", "hi" không làm
+  đổi ngôn ngữ đã biết.
+- **Nhân viên chọn nước hoặc ngôn ngữ của khách** trong Hộp thư (vd. *Nhật Bản · 日本語*); lựa chọn này được giữ,
+  không bị tự nhận biết ghi đè. Chọn "Tự nhận biết" để quay lại.
+- AI được dặn rõ: trả lời toàn bộ bằng ngôn ngữ của khách (kể cả khi vai trò ghi "luôn trả lời tiếng Việt"),
+  tìm tài liệu bằng từ khoá tiếng Việt, **giữ nguyên giá và đơn vị tiền** (4.500.000đ = 4,500,000 VND), không
+  tự quy đổi sang tiền nước khác.
+- **Thông báo cố định** (hệ thống bận, từ chối, yêu cầu đã xác nhận / chưa được chấp nhận) có sẵn 13 ngôn ngữ.
+  `confirm_message` của hành động có thể viết theo từng ngôn ngữ (`{vi: "...", en: "...", ja: "..."}`) hoặc
+  một câu tiếng Việt: hệ thống tự dịch cho khách. Lý do từ chối quản lý gõ bằng tiếng Việt cũng được dịch.
+- **Trong Hộp thư:** huy hiệu ngôn ngữ (JA, KO, EN…) cạnh tên khách; nút **Dịch** dưới tin của khách (bản dịch
+  được lưu, dịch một lần); ô **"Viết tiếng Việt, tự dịch sang … khi gửi"**: nhân viên gõ tiếng Việt, khách nhận
+  ngôn ngữ của họ, Hộp thư hiện cả bản gốc. Nút *Gợi ý trả lời* khi đó soạn nháp bằng tiếng Việt.
+- Tóm tắt trí nhớ dài hạn luôn viết bằng tiếng Việt để nhân viên đọc được (`staff_language`, mặc định `vi`).
+
+Hai chế độ trả lời khách nước ngoài (theo từng nhân viên):
+
+```yaml
+employees:
+  - id: sales
+    translate_replies: false     # mặc định: model trả lời thẳng bằng ngôn ngữ của khách
+    # translate_replies: true    # dịch câu hỏi sang tiếng Việt → trả lời bằng tiếng Việt từ tài liệu → dịch
+    #                            # câu trả lời sang ngôn ngữ khách (tốn thêm 2 lượt gọi model)
+    # translation_model: gemini  # model riêng cho việc dịch (khai báo trong models:)
+```
+
+Khi dịch, giá tiền và mã sản phẩm được **khoá lại** trước khi đưa cho model rồi điền lại sau (model không thể
+đổi "4.500.000đ" thành "4,500,000円" hay viết "MA-100" thành "マ-100"). Bản dịch không đúng ngôn ngữ (vd. dịch
+sang tiếng Nhật mà ra tiếng Trung) được dịch lại một lần; vẫn sai thì **không gửi**: khách nhận thông báo bận
+bằng ngôn ngữ của họ, tin nhắn nằm chờ nhân viên trong Hộp thư.
+
+**Chọn model:** với khách nước ngoài nên dùng model đa ngôn ngữ tốt (Claude, GPT, Gemini…), hoặc giữ model
+chạy tại chỗ để trả lời khách Việt và đặt `translation_model` là một model đa ngôn ngữ. Khi chạy thử với
+Qwen 2.5 7B tại chỗ: khách tiếng Anh được trả lời đúng; với tiếng Nhật, tiếng Hàn model nhỏ này thường không
+tra tài liệu mà tự đoán giá, và đôi khi lẫn sang tiếng Trung.
+
 ## Trí nhớ của nhân viên AI
 
 Nhân viên AI nhớ theo ba tầng:

@@ -494,7 +494,11 @@ function attachmentView(cid, m, a, i) {
   return h("span", { class: "att-file" }, `${label} — xem trên ứng dụng của kênh`);
 }
 
+// A customer who writes in another language than the staff: translation helpers apply.
+const foreign = (c) => !!c.lang && c.lang !== c.staff_language;
+
 views.inbox = async (arg) => {
+  const langs = await api("GET", "/api/inbox/languages").catch(() => ({ languages: [], countries: [] }));
   if (arg) inboxSel = arg;
   const chSel = h("select", {}, h("option", { value: "" }, "Mọi kênh"));
   const modeSel = h("select", {}, h("option", { value: "" }, "Mọi chế độ"),
@@ -517,7 +521,8 @@ views.inbox = async (arg) => {
       onclick: () => { inboxSel = c.id; thread = null; run(openConv).then(() => run(loadList)); },
     },
     h("div", { class: "row spread" }, h("b", {}, c.customer_name || `Khách ${c.external_id}`), h("span", { class: "muted" }, fmtTime(c.last_ts))),
-    h("div", { class: "row" }, chBadge(c.channel_info), c.mode === "human" ? h("span", { class: "pill warn" }, "người") : null,
+    h("div", { class: "row" }, chBadge(c.channel_info), foreign(c) ? h("span", { class: "pill neutral", title: c.lang_name }, c.lang.toUpperCase()) : null,
+      c.mode === "human" ? h("span", { class: "pill warn" }, "người") : null,
       h("span", { class: "muted" }, c.employee_name), c.unread ? h("span", { class: "badge" }, c.unread) : null),
     h("div", { class: "preview" }, (c.last_sender && c.last_sender !== "customer" ? `${SENDER[c.last_sender]}: ` : "") + c.last_preview),
     )) : [h("p", { class: "muted" }, "Chưa có hội thoại nào.")]);
@@ -527,7 +532,7 @@ views.inbox = async (arg) => {
     // Re-render only when something changed: keeps the scroll position and does not
     // download attachments again on every refresh.
     const last = d.messages[d.messages.length - 1];
-    const sig = `${d.messages.length}:${last ? last.id : 0}`;
+    const sig = `${d.messages.length}:${last ? last.id : 0}:${d.messages.filter((m) => m.translation).length}:${d.conversation.lang}`;
     if (thread.sig === sig) return;
     thread.sig = sig;
     const nearBottom = thread.msgs.scrollHeight - thread.msgs.scrollTop - thread.msgs.clientHeight < 80;
@@ -536,6 +541,7 @@ views.inbox = async (arg) => {
         : `${SENDER[m.sender]}${m.author ? " · " + m.author : ""}`, " · ", fmtTime(m.ts)),
       h("div", { class: "bubble" }, m.text || null,
         (m.attachments || []).length ? h("div", { class: "atts" }, m.attachments.map((a, i) => attachmentView(d.conversation.id, m, a, i))) : null),
+      translationView(d.conversation, m),
     )) : [h("p", { class: "muted" }, "Chưa có tin nhắn.")]);
     const stick = nearBottom || thread.fresh;
     if (stick) {
@@ -546,6 +552,47 @@ views.inbox = async (arg) => {
       }
     }
     thread.fresh = false;
+  };
+
+  // Under a customer's message: its translation for staff (or a button to get it).
+  // Under a staff reply sent translated: what the staff member actually wrote.
+  const translationView = (c, m) => {
+    if (m.sender === "human" && m.translation) return h("div", { class: "translation" }, "Bản gốc: ", m.translation);
+    if (m.sender !== "customer" || !m.text) return null;
+    if (m.translation) return h("div", { class: "translation" }, "Dịch: ", m.translation);
+    if (!foreign(c)) return null;
+    const box = h("div", { class: "translation" });
+    const btn = h("button", { class: "small" }, "Dịch");
+    btn.addEventListener("click", () => run(async () => {
+      btn.disabled = true;
+      btn.textContent = "Đang dịch…";
+      try {
+        const r = await api("POST", `/api/inbox/${c.id}/messages/${m.id}/translate`, {});
+        put(box, "Dịch: ", r.translation);
+      } finally { btn.disabled = false; btn.textContent = "Dịch"; }
+    }));
+    put(box, btn);
+    return box;
+  };
+
+  const languagePicker = (c) => {
+    const current = c.lang_source === "staff" ? (c.country ? `C:${c.country}` : `L:${c.lang}`) : "";
+    const auto = c.lang && c.lang_source !== "staff" ? `Tự nhận biết: ${c.lang_name}` : "Tự nhận biết";
+    const sel = h("select", {},
+      h("option", { value: "", selected: !current }, auto),
+      h("optgroup", { label: "Khách ở nước" }, langs.countries.map((x) => {
+        const l = langs.languages.find((y) => y.code === x.lang);
+        return h("option", { value: `C:${x.code}`, selected: current === `C:${x.code}` }, `${x.name} · ${l ? l.native : x.lang}`);
+      })),
+      h("optgroup", { label: "Ngôn ngữ" }, langs.languages.map((x) =>
+        h("option", { value: `L:${x.code}`, selected: current === `L:${x.code}` }, `${x.name} · ${x.native}`))));
+    sel.addEventListener("change", () => run(async () => {
+      const [kind, code] = sel.value.split(":");
+      const body = kind === "C" ? { country: code } : kind === "L" ? { lang: code } : {};
+      update(await api("POST", `/api/inbox/${c.id}/language`, body));
+      loadList();
+    }, "Đã đổi ngôn ngữ trả lời khách"));
+    return h("label", { class: "inline", title: "AI và thông báo sẽ dùng ngôn ngữ này với khách" }, "Ngôn ngữ", sel);
   };
 
   const renderHead = (d) => {
@@ -561,6 +608,7 @@ views.inbox = async (arg) => {
         h("div", {}, h("h2", {}, c.customer_name || `Khách ${c.external_id}`),
           h("div", { class: "row" }, chBadge(c.channel_info), h("span", { class: "muted" }, c.channel_info.name), modePill(c.mode))),
         h("div", { class: "row" },
+          languagePicker(c),
           h("label", { class: "inline" }, "Phụ trách", assign),
           c.mode === "ai"
             ? h("button", { onclick: () => setMode("human") }, "Tiếp quản (dừng AI)")
@@ -597,6 +645,11 @@ views.inbox = async (arg) => {
 
   const update = (d) => {
     if (!thread || thread.id !== d.conversation.id) return;
+    if (thread.translateWrap) {
+      thread.translateWrap.hidden = !foreign(d.conversation);
+      const target = d.conversation.lang_name.charAt(0).toLowerCase() + d.conversation.lang_name.slice(1);
+      thread.translateLabel.textContent = `Viết tiếng Việt, tự dịch sang ${target} khi gửi`;
+    }
     renderHead(d);
     renderMessages(d);
   };
@@ -608,10 +661,14 @@ views.inbox = async (arg) => {
       const cid = d.conversation.id;
       const text = h("textarea", { rows: 3, class: "composer-text", placeholder: "Nhập trả lời… (Enter để gửi, Shift+Enter xuống dòng)" });
       const takeOver = h("input", { type: "checkbox", checked: true });
+      const translate = h("input", { type: "checkbox", checked: true });
+      const translateLabel = h("span", {});
+      const translateWrap = h("label", { class: "check inline", hidden: true }, translate, translateLabel);
+      const translating = () => !translateWrap.hidden && translate.checked;
       const sendBtn = h("button", { class: "primary" }, "Gửi");
       const suggestBtn = h("button", {}, "Gợi ý trả lời (AI)");
       const send = () => {
-        const body = { text: text.value.trim(), take_over: takeOver.checked };
+        const body = { text: text.value.trim(), take_over: takeOver.checked, translate: translating() };
         if (!body.text) return;
         run(async () => {
           sendBtn.disabled = true;
@@ -628,7 +685,7 @@ views.inbox = async (arg) => {
         suggestBtn.disabled = true;
         suggestBtn.textContent = "AI đang soạn…";
         try {
-          const r = await api("POST", `/api/inbox/${cid}/suggest`, {});
+          const r = await api("POST", `/api/inbox/${cid}/suggest`, { staff_language: translating() });
           text.value = r.text;
           text.focus();
         } finally {
@@ -636,13 +693,13 @@ views.inbox = async (arg) => {
           suggestBtn.textContent = "Gợi ý trả lời (AI)";
         }
       }, "AI đã soạn bản nháp; sửa rồi bấm Gửi"));
-      thread = { id: cid, head: h("div", { class: "thread-head" }), mem: h("details", { class: "notes" }), msgs: h("div", { class: "msgs" }), fresh: true };
+      thread = { id: cid, head: h("div", { class: "thread-head" }), mem: h("details", { class: "notes" }), msgs: h("div", { class: "msgs" }), fresh: true, translateWrap, translateLabel };
       renderMemory(d);
       put(pane, thread.head, thread.mem, thread.msgs,
         h("div", { class: "composer" }, text,
           h("div", { class: "row spread" },
             h("div", { class: "row" }, h("span", { class: "muted" }, `Trả lời với tên: ${me ? me.name : ""}`),
-              h("label", { class: "check inline" }, takeOver, h("span", {}, "Tiếp quản (AI dừng trả lời)"))),
+              h("label", { class: "check inline" }, takeOver, h("span", {}, "Tiếp quản (AI dừng trả lời)")), translateWrap),
             h("div", { class: "row" }, suggestBtn, sendBtn))));
       if (d.conversation.unread) api("POST", `/api/inbox/${cid}/read`, {}).then(refreshBadge).catch(() => {});
     }

@@ -47,6 +47,11 @@ class EmployeeConfig:
     max_tokens: int = 16000
     max_steps: int = 8
     history_messages: int = 40
+    # Foreign customers: answer in the staff language (like the documents), then translate.
+    # Recommended for small local models, which mistranslate facts when answering directly.
+    translate_replies: bool = False
+    # Model for translations (declared name); default: the employee's own model.
+    translation_model: str | None = None
     skills: tuple[str, ...] = ()
     skill_config: dict[str, dict[str, Any]] = field(default_factory=dict)
     welcome: str | None = None
@@ -90,6 +95,8 @@ class AppConfig:
     channels: tuple[ChannelConfig, ...] = ()
     # After downtime, customer messages up to this old still get an AI answer.
     catch_up_hours: float = 12.0
+    # The language staff read and write: inbox translations and long-term summaries.
+    staff_language: str = "vi"
 
     def model_profile(self, name: str) -> ModelProfile | None:
         """A declared model by name, or an implicit Claude model for a bare `claude-*` id."""
@@ -145,6 +152,11 @@ def parse_config(raw: dict[str, Any], base_dir: Path) -> AppConfig:
                 f"employee {emp_id}: model '{model}' is not declared under models: "
                 f"({', '.join(models) or 'none declared'})"
             )
+        tmodel = merged.get("translation_model")
+        if tmodel and tmodel not in models and not str(tmodel).startswith("claude-"):
+            raise ConfigError(
+                f"employee {emp_id}: translation_model '{tmodel}' is not declared under models:"
+            )
         effort = merged.get("effort", "medium")
         if effort is not None and effort not in EFFORT_LEVELS:
             raise ConfigError(f"employee {emp_id}: effort must be one of {EFFORT_LEVELS} or null")
@@ -186,6 +198,8 @@ def parse_config(raw: dict[str, Any], base_dir: Path) -> AppConfig:
                 max_tokens=int(merged.get("max_tokens", 16000)),
                 max_steps=int(merged.get("max_steps", 8)),
                 history_messages=int(merged.get("history_messages", 40)),
+                translate_replies=bool(merged.get("translate_replies", False)),
+                translation_model=merged.get("translation_model") or None,
                 skills=tuple(merged.get("skills") or ()),
                 skill_config=skill_config,
                 welcome=merged.get("welcome"),
@@ -220,6 +234,7 @@ def parse_config(raw: dict[str, Any], base_dir: Path) -> AppConfig:
         admin_ui=parse_admin_ui(raw.get("admin_ui")),
         channels=tuple(channels),
         catch_up_hours=float(raw.get("catch_up_hours", 12)),
+        staff_language=str(raw.get("staff_language") or "vi"),
     )
 
 

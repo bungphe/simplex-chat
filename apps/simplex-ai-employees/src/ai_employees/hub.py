@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 from .channels import Channel, ChannelError, InboundMessage, make_channel
 from .inbox import EXTERNAL_BASE, Conversation, Inbox, describe
+from .lang import detect
 from .state import now_iso
 
 if TYPE_CHECKING:
@@ -141,6 +142,8 @@ class ChannelHub:
         to_answer: set[int] = set()
         for m in sorted(msgs, key=lambda m: m.ts):
             conv = self.inbox.upsert(ch.id, m.conversation, m.customer_name, ch.cfg.employee)
+            if m.sender == "customer" and (employee := self.employee_for(conv)) is not None:
+                employee.state.observe_language(conv.contact_id, detect(m.text))
             if m.sender == "customer":
                 if self.inbox.add(
                     conv.id, "customer", m.text, m.customer_name, m.external_id, iso(m.ts), m.attachments
@@ -236,7 +239,9 @@ class ChannelHub:
             await self.deliver(now, answer, "ai", employee.settings.display_name)
             return answer
 
-    async def deliver(self, conv: Conversation, text: str, sender: str, author: str) -> None:
+    async def deliver(
+        self, conv: Conversation, text: str, sender: str, author: str, original: str = ""
+    ) -> None:
         """Send on the conversation's own channel and record it in the inbox."""
         from .employee import split_message
 
@@ -254,26 +259,37 @@ class ChannelHub:
             except ChannelError as e:
                 self.inbox.set_channel_state(ch.id, last_error=f"gửi tin: {e}"[:300])
                 raise
-        if self.inbox.add(conv.id, sender, text, author, external_id) is None:
+        if self.inbox.add(conv.id, sender, text, author, external_id, translation=original) is None:
             # The platform reused a message id: never lose the record of what was sent.
             log.warning(
                 "%s: message id %s already stored; keeping the reply without it", conv.channel, external_id
             )
-            self.inbox.add(conv.id, sender, text, author)
+            self.inbox.add(conv.id, sender, text, author, translation=original)
 
-    async def human_reply(self, conv_id: int, text: str, author: str, take_over: bool = True) -> None:
+    async def human_reply(
+        self, conv_id: int, text: str, author: str, take_over: bool = True, translate: bool = False
+    ) -> None:
+        """Staff reply. With `translate`, staff write in their own language and the customer
+        gets it in theirs; the inbox keeps both."""
         conv = self.inbox.conversation(conv_id)
         if conv is None:
             raise KeyError(conv_id)
+        employee = self.employee_for(conv)
+        original = ""
+        if translate and employee is not None:
+            target = employee.agent.contact_language(conv.contact_id)
+            if target and target != self.office.config.staff_language:
+                original = text
+                text = await employee.agent.translate(text, target, "A reply from shop staff to a customer.")
         if (timer := self._timers.pop(conv_id, None)) is not None:
             timer.cancel()
         if take_over:
             self.inbox.set_mode(conv_id, "human")
         pending = customer_text(self.inbox.pending_customer_text(conv_id)) or "(…)"
-        await self.deliver(conv, text, "human", author)
+        await self.deliver(conv, text, "human", author, original)
         self.inbox.mark_read(conv_id)
         # Keep the AI's memory complete, so it knows what staff said if it takes over again.
-        if (employee := self.employee_for(conv)) is not None:
+        if employee is not None:
             employee.state.append_turn(
                 conv.contact_id,
                 pending,
@@ -281,7 +297,24 @@ class ChannelHub:
                 keep=employee.settings.history_messages,
             )
 
-    async def suggest(self, conv_id: int) -> str:
+    async def translate_message(self, conv_id: int, message_id: int) -> str:
+        """A customer message in the staff language (kept, so it is translated once)."""
+        conv = self.inbox.conversation(conv_id)
+        m = self.inbox.message(conv_id, message_id) if conv else None
+        if conv is None or m is None:
+            raise KeyError(message_id)
+        if m["translation"]:
+            return m["translation"]
+        employee = self.employee_for(conv)
+        if employee is None:
+            raise KeyError(conv.employee)
+        out = await employee.agent.translate(
+            m["text"], self.office.config.staff_language, "A customer's message, for shop staff to read."
+        )
+        self.inbox.set_translation(conv_id, message_id, out)
+        return out
+
+    async def suggest(self, conv_id: int, in_staff_language: bool = False) -> str:
         conv = self.inbox.conversation(conv_id)
         if conv is None:
             raise KeyError(conv_id)
@@ -289,7 +322,12 @@ class ChannelHub:
         if employee is None:
             raise KeyError(conv.employee)
         pending = customer_text(self.inbox.pending_customer_text(conv_id))
-        return await employee.agent.suggest(conv.contact_id, conv.customer_name or "khách", pending)
+        return await employee.agent.suggest(
+            conv.contact_id,
+            conv.customer_name or "khách",
+            pending,
+            write_in=self.office.config.staff_language if in_staff_language else None,
+        )
 
     # ------------------------------------------------------------------ #
     # SimpleX conversations are answered by the employee's own bot; mirror them here
@@ -304,6 +342,7 @@ class ChannelHub:
     ) -> tuple[Conversation, int | None]:
         """Mirror a SimpleX message; returns the conversation and the stored message id."""
         conv = self.inbox.upsert(f"simplex:{employee.id}", str(contact_id), name, employee.id)
+        employee.state.observe_language(contact_id, detect(text))
         return conv, self.inbox.add(conv.id, "customer", text, name, attachments=attachments)
 
     def simplex_outbound(self, employee: Employee, contact_id: int, text: str, sender: str) -> None:

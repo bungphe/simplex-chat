@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx2
 
+from . import lang
 from . import skills as sk
 from .state import now_iso
 
@@ -52,7 +53,7 @@ class ActionDef:
     method: str = "POST"
     headers: dict[str, str] = field(default_factory=dict)
     fields: dict[str, str] = field(default_factory=dict)
-    confirm_message: str | None = None
+    confirm_message: str | dict[str, str] | None = None  # text, or {language code: text}
     timeout: float = 30.0
 
     def skill(self) -> sk.Skill:
@@ -162,9 +163,7 @@ class ActionDesk:
             action_id, status="rejected", decided_by=by, decided=now_iso(), reason=reason
         )
         self.employee.log("action", "rejected", action=rec["action"], request=action_id)
-        await self._tell_contact(
-            rec, f"Yêu cầu #{action_id} chưa được chấp nhận" + (f": {reason}" if reason else ".")
-        )
+        await self._tell_contact(rec, "request_rejected", reason=reason)
         return f"Đã từ chối #{action_id}."
 
     async def _execute(self, action_id: int, decided_by: str) -> tuple[bool, str]:
@@ -195,15 +194,34 @@ class ActionDesk:
             "action", "ok" if ok else "error", action=action.name, request=action_id, by=decided_by
         )
         if ok and decided_by != "release":
-            await self._tell_contact(rec, action.confirm_message or f"Yêu cầu #{action_id} đã được xác nhận.")
+            await self._tell_contact(rec, "request_confirmed", message=action.confirm_message)
         if not ok:
             log.warning("%s: action #%s %s failed: %s", self.employee.id, action_id, action.name, detail)
         return ok, detail
 
-    async def _tell_contact(self, rec: dict[str, Any], text: str) -> None:
-        if rec.get("contact") is None:
+    async def _tell_contact(
+        self, rec: dict[str, Any], key: str, message: str | dict[str, str] | None = None, reason: str = ""
+    ) -> None:
+        """Tell the customer a decision, in their language: the built-in text, or the action's
+        confirm_message (per language, or translated from the staff language), plus any reason."""
+        cid = rec.get("contact")
+        if cid is None:
             return
+        agent = self.employee.agent
+        code = agent.contact_language(cid)
+        if isinstance(message, dict) and message:
+            text = (
+                message.get(code or "") or message.get(agent.staff_language) or next(iter(message.values()))
+            )
+            if code and code not in message:
+                text = await agent.for_contact(cid, text)
+        elif isinstance(message, str) and message:
+            text = await agent.for_contact(cid, message)
+        else:
+            text = lang.text(key, code, id=rec["id"])
+        if reason:
+            text = text.rstrip(".。") + ": " + await agent.for_contact(cid, reason)
         try:
-            await self.employee.office.hub.send_to_contact(self.employee, rec["contact"], text)
+            await self.employee.office.hub.send_to_contact(self.employee, cid, text)
         except Exception:
             log.exception("%s: cannot notify contact %s", self.employee.id, rec.get("contact"))

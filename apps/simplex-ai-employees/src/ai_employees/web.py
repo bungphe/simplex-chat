@@ -660,11 +660,20 @@ def _channel_label(office: Office, channel: str) -> dict[str, str]:
 
 
 def _conv_json(office: Office, conv: Any) -> dict[str, Any]:
+    from . import lang
+
     e = office.employees.get(conv.employee)
+    language = e.state.language(conv.contact_id) if e else {}
+    code = language.get("lang", "")
     return {
         **conv.to_dict(),
         "channel_info": _channel_label(office, conv.channel),
         "employee_name": e.settings.display_name if e else conv.employee,
+        "lang": code,
+        "lang_name": lang.name(code, "vi"),
+        "lang_source": language.get("source", ""),
+        "country": language.get("country", ""),
+        "staff_language": office.config.staff_language,
     }
 
 
@@ -720,7 +729,13 @@ async def inbox_reply(request: web.Request) -> web.Response:
         raise ApiError(400, "Nội dung trống")
     author = _user(request).name  # who replied is the logged-in account, not a typed name
     try:
-        await _hub(request).human_reply(conv.id, text, author, take_over=bool(data.get("take_over", True)))
+        await _hub(request).human_reply(
+            conv.id,
+            text,
+            author,
+            take_over=bool(data.get("take_over", True)),
+            translate=bool(data.get("translate")),
+        )
     except Exception as e:  # noqa: BLE001 - surface the platform's error to the agent
         raise ApiError(502, f"Không gửi được: {e}") from None
     return await inbox_get(request)
@@ -807,7 +822,57 @@ async def inbox_memory(request: web.Request) -> web.Response:
 
 async def inbox_suggest(request: web.Request) -> web.Response:
     conv = _inbox_conv(request)
-    return _json({"text": await _hub(request).suggest(conv.id)})
+    data = await _body(request) if request.can_read_body else {}
+    return _json(
+        {"text": await _hub(request).suggest(conv.id, in_staff_language=bool(data.get("staff_language")))}
+    )
+
+
+async def inbox_translate(request: web.Request) -> web.Response:
+    """A customer's message in the staff language (cached on the message)."""
+    from .agent import TranslationError
+
+    conv = _inbox_conv(request)
+    try:
+        text = await _hub(request).translate_message(conv.id, int(request.match_info["mid"]))
+    except KeyError:
+        raise ApiError(404, "no such message") from None
+    except TranslationError as e:
+        raise ApiError(502, f"Không dịch được: {e}") from None
+    return _json({"translation": text})
+
+
+async def inbox_language(request: web.Request) -> web.Response:
+    """Staff set the customer's country or language (kept over detection); empty = detect again."""
+    from . import lang
+
+    conv = _inbox_conv(request)
+    e = request.app[OFFICE].employees.get(conv.employee)
+    if e is None:
+        raise ApiError(404, "no employee for this conversation")
+    data = await _body(request)
+    country = str(data.get("country") or "").upper()
+    code = str(data.get("lang") or "")
+    if country:
+        if country not in lang.COUNTRIES:
+            raise ApiError(400, "Không có nước này trong danh sách")
+        code = code or lang.COUNTRIES[country][1]
+    if code and code not in lang.LANGUAGES:
+        raise ApiError(400, "Không hỗ trợ ngôn ngữ này")
+    e.state.set_language(conv.contact_id, code or None, country or None)
+    return await inbox_get(request)
+
+
+async def languages(request: web.Request) -> web.Response:
+    from . import lang
+
+    return _json(
+        {
+            "languages": [{"code": c, "name": v[1], "native": v[2]} for c, v in lang.LANGUAGES.items()],
+            "countries": [{"code": c, "name": v[0], "lang": v[1]} for c, v in lang.COUNTRIES.items()],
+            "staff_language": request.app[OFFICE].config.staff_language,
+        }
+    )
 
 
 async def channels_get(request: web.Request) -> web.Response:
@@ -991,6 +1056,7 @@ def create_app(office: Office, password: str) -> web.Application:
     r.add_post("/api/models/{name}/test", model_test)
     r.add_get("/api/runlog", runlog)
     r.add_get("/api/inbox", inbox_list)
+    r.add_get("/api/inbox/languages", languages)  # before {cid}
     r.add_get("/api/inbox/{cid}", inbox_get)
     r.add_post("/api/inbox/{cid}/reply", inbox_reply)
     r.add_post("/api/inbox/{cid}/mode", inbox_mode)
@@ -998,6 +1064,8 @@ def create_app(office: Office, password: str) -> web.Application:
     r.add_post("/api/inbox/{cid}/read", inbox_read)
     r.add_post("/api/inbox/{cid}/suggest", inbox_suggest)
     r.add_post("/api/inbox/{cid}/memory", inbox_memory)
+    r.add_post(r"/api/inbox/{cid:\d+}/messages/{mid:\d+}/translate", inbox_translate)
+    r.add_post("/api/inbox/{cid}/language", inbox_language)
     r.add_get(r"/api/inbox/{cid:\d+}/media/{mid:\d+}/{n:\d+}", inbox_media)
     r.add_get("/api/channels", channels_get)
     r.add_post("/api/channels/{channel}/poll", channel_poll)

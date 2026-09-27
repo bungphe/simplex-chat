@@ -146,6 +146,8 @@ button.small { padding: 2px 8px; font-size: 12px; }
 .att-img { max-width: 220px; max-height: 220px; border-radius: 8px; display: block; background: var(--surface); }
 .att-file, .att-link { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 6px; background: var(--surface); color: var(--text); font-size: 13px; text-decoration: none; border: 1px solid var(--border); }
 .att-link img { width: 40px; height: 40px; object-fit: cover; border-radius: 4px; }
+.translation { font-size: 13px; color: var(--muted); margin: 3px 6px 0; max-width: 100%; white-space: pre-wrap; }
+.msg.human .translation, .msg.ai .translation { text-align: right; }
 .composer { display: flex; flex-direction: column; gap: 8px; }
 .composer textarea { min-height: 70px; font-family: inherit; font-size: 15px; }
 .composer .author { width: 160px; }

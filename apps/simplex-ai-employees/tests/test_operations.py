@@ -233,8 +233,8 @@ async def test_rejected_and_failed_actions(tmp_path):
     )
     _, sales, chat = order_office(tmp_path, llm, shop)
     await sales.command(99, "admin", "secret-token")
-    await sales.agent.respond(1, "An", "a")
-    await sales.agent.respond(1, "An", "b")
+    await sales.agent.respond(1, "An", "Cho mình đặt một máy")
+    await sales.agent.respond(1, "An", "Thêm máy nữa nhé")
 
     assert await sales.command(99, "ai", "reject 1 hết hàng") == "Đã từ chối #1."
     assert chat.sent[-1] == (1, "Yêu cầu #1 chưa được chấp nhận: hết hàng")
@@ -332,7 +332,7 @@ async def test_internal_skills_are_not_offered_to_ordinary_contacts(tmp_path):
     assert names[0] == {"current_time"}  # a customer never gets other people's conversations
     assert names[1] == {"recent_conversations", "office_report", "current_time"}  # the manager does
     assert names[2] == {"current_time"}  # nor does a colleague asking on a customer's behalf
-    assert llm.calls[1]["system"][1]["text"] == 'You are chatting with your manager "Chủ".'
+    assert llm.calls[1]["system"][1]["text"].startswith('You are chatting with your manager "Chủ".')
 
 
 async def test_recent_conversations_include_request_status(tmp_path):

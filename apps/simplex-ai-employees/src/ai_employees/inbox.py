@@ -116,6 +116,8 @@ class Inbox:
         columns = {r["name"] for r in self.db.execute("PRAGMA table_info(messages)")}
         if "attachments" not in columns:  # inbox.db from before attachments were kept
             self.db.execute("ALTER TABLE messages ADD COLUMN attachments TEXT NOT NULL DEFAULT ''")
+        if "translation" not in columns:  # customer text in the staff language, or staff's original
+            self.db.execute("ALTER TABLE messages ADD COLUMN translation TEXT NOT NULL DEFAULT ''")
         self._lock = threading.Lock()
 
     def _conv(self, row: sqlite3.Row | None) -> Conversation | None:
@@ -196,6 +198,7 @@ class Inbox:
         external_id: str | None = None,
         ts: str | None = None,
         attachments: list[dict[str, Any]] | None = None,
+        translation: str = "",
     ) -> int | None:
         """Store a message; returns None when this external message was already stored.
 
@@ -207,9 +210,10 @@ class Inbox:
         with self._lock:
             try:
                 cur = self.db.execute(
-                    "INSERT INTO messages (conversation_id, external_id, sender, author, text, ts, attachments) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (conv_id, external_id, sender, author, text, ts, stored),
+                    "INSERT INTO messages "
+                    "(conversation_id, external_id, sender, author, text, ts, attachments, translation) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (conv_id, external_id, sender, author, text, ts, stored, translation),
                 )
             except sqlite3.IntegrityError:
                 return None
@@ -230,7 +234,7 @@ class Inbox:
 
     def messages(self, conv_id: int, limit: int = 300) -> list[dict[str, Any]]:
         rows = self.db.execute(
-            "SELECT id, external_id, sender, author, text, ts, attachments FROM messages "
+            "SELECT id, external_id, sender, author, text, ts, attachments, translation FROM messages "
             "WHERE conversation_id=? ORDER BY id DESC LIMIT ?",
             (conv_id, limit),
         ).fetchall()
@@ -242,9 +246,15 @@ class Inbox:
         m["attachments"] = json.loads(m["attachments"]) if m.get("attachments") else []
         return m
 
+    def set_translation(self, conv_id: int, message_id: int, translation: str) -> None:
+        self.db.execute(
+            "UPDATE messages SET translation=? WHERE conversation_id=? AND id=?",
+            (translation, conv_id, message_id),
+        )
+
     def message(self, conv_id: int, message_id: int) -> dict[str, Any] | None:
         row = self.db.execute(
-            "SELECT id, external_id, sender, author, text, ts, attachments FROM messages "
+            "SELECT id, external_id, sender, author, text, ts, attachments, translation FROM messages "
             "WHERE conversation_id=? AND id=?",
             (conv_id, message_id),
         ).fetchone()

@@ -32,6 +32,7 @@ class EmployeeState:
             "notes": {},
             "summaries": {},  # contact -> {"text", "updated"}: turns older than the history window
             "unsummarized": {},  # contact -> turns trimmed from history, not yet in the summary
+            "languages": {},  # contact -> {"lang", "source": auto|staff, "country"?}
             "shared_memory": [],  # lessons for every conversation: {"id", "text", "status", ...}
             "next_memory_id": 1,
             "routines": {},
@@ -140,6 +141,30 @@ class EmployeeState:
         del self.data["unsummarized"].setdefault(key, [])[:consumed]
         self.save()
 
+    # the customer's language: detected from their messages, or set by staff (then kept)
+
+    def language(self, contact_id: int) -> dict[str, str]:
+        return dict(self.data["languages"].get(str(contact_id), {}))
+
+    def observe_language(self, contact_id: int, lang: str | None) -> None:
+        """A detected language; ignored when staff chose one for this customer."""
+        current = self.data["languages"].get(str(contact_id), {})
+        if not lang or current.get("source") == "staff" or current.get("lang") == lang:
+            return
+        self.data["languages"][str(contact_id)] = {"lang": lang, "source": "auto"}
+        self.save()
+
+    def set_language(self, contact_id: int, lang: str | None, country: str | None = None) -> None:
+        """Staff choice (kept until cleared); None goes back to detection."""
+        if lang:
+            entry = {"lang": lang, "source": "staff"}
+            if country:
+                entry["country"] = country
+            self.data["languages"][str(contact_id)] = entry
+        else:
+            self.data["languages"].pop(str(contact_id), None)
+        self.save()
+
     # shared memory: lessons for every conversation. Written by a manager, or proposed by
     # the AI and kept "pending" until a manager approves (so no contact can plant them).
 
@@ -176,7 +201,7 @@ class EmployeeState:
         self.save()
 
     def forget(self, contact_id: int | None = None) -> None:
-        per_contact = ("history", "notes", "summaries", "unsummarized")
+        per_contact = ("history", "notes", "summaries", "unsummarized", "languages")
         for part in per_contact:
             if contact_id is None:
                 self.data[part] = {}

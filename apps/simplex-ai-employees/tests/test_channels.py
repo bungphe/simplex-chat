@@ -463,6 +463,7 @@ async def test_webhook_channel_and_inbox_api(ui):
         "author": "Chủ",  # the logged-in account (the owner), not the typed name
         "text": "Phí ship 30k chị nhé",
         "attachments": [],
+        "translation": "",
     }
     assert (await client.post(f"/api/inbox/{cid}/reply", json={"text": " "}, headers=H)).status == 400
     assert (await client.post(f"/api/inbox/{cid}/reply", json={"text": "x"})).status == 403  # CSRF header
