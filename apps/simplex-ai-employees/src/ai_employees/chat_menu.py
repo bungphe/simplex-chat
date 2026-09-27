@@ -18,7 +18,7 @@ import logging
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from .i18n import has_catalog, tr, use_language
+from .i18n import has_catalog, number, tr, use_language
 from .inventory import InventoryError, order_code
 from .loyalty import vip_card
 from .menu_i18n import MENU_TEXT
@@ -117,11 +117,7 @@ class ChatMenu:
 
     def _money(self, v: Any) -> str:
         cur = self.office.inventory.settings()["currency"]
-        return (
-            (f"{v:,}".replace(",", ".") + (tr(" đ") if cur == "VND" else f" {cur}"))
-            if v is not None
-            else tr("liên hệ")
-        )
+        return (number(v) + (tr(" đ") if cur == "VND" else f" {cur}")) if v is not None else tr("liên hệ")
 
     def _contact(self, cid: int, name: str) -> tuple[Any, dict[str, Any]]:
         hub = self.office.hub

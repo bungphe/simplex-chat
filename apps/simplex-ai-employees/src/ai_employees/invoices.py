@@ -6,7 +6,7 @@ import html
 import logging
 from typing import TYPE_CHECKING, Any
 
-from .i18n import RTL, current, tr, use_language
+from .i18n import RTL, current, number, tr, use_language
 from .inventory import InventoryError
 
 if TYPE_CHECKING:
@@ -28,7 +28,7 @@ RECEIPT_CSP = "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe
 
 def _money(r: dict[str, Any]) -> Any:
     cur = tr("đ") if r["shop"]["currency"] == "VND" else r["shop"]["currency"]
-    return lambda v: html.escape(f"{v:,}".replace(",", ".") + f" {cur}")
+    return lambda v: html.escape(f"{number(v)} {cur}")
 
 
 RECEIPT_STYLE = (

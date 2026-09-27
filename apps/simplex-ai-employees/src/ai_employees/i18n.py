@@ -141,6 +141,18 @@ def ui_texts() -> frozenset[str]:
 
 _ = tr
 
+# thousands separators: 4.500.000 (vi, de, es, pt, id), 4 500 000 (fr, ru), else 4,500,000
+_GROUP = {"vi": ".", "de": ".", "es": ".", "pt": ".", "id": ".", "fr": "\u202f", "ru": "\u202f"}
+
+
+def number(value: Any) -> str:
+    """A number as readers of the current language write it."""
+    text = f"{value:,}"
+    sep = _GROUP.get(current(), ",")
+    if sep == ",":
+        return text
+    return text.replace(",", "\0").replace(".", "," if sep != "," else ".").replace("\0", sep)
+
 
 def has_catalog(code: str | None) -> bool:
     return code == SOURCE or bool(code and catalog(code))

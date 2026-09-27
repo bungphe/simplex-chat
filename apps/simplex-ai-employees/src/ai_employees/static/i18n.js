@@ -2,16 +2,19 @@
 // The admin UI's language: I18N (the catalog, loaded by /i18n/catalog.js just before this
 // file) turns the Vietnamese texts of the scripts into the chosen language.
 
+// the catalog: /i18n/catalog.js declares I18N (a top-level const: not a property of window)
+const CATALOG = typeof I18N !== "undefined" ? I18N : { lang: "vi", rtl: false, msgs: {}, languages: { vi: "Tiếng Việt" } };
+
 function tr(text, ...values) {
-  const out = (window.I18N && I18N.msgs[text]) || text;
+  const out = CATALOG.msgs[text] || text;
   return values.length ? out.replace(/\{(\d+)\}/g, (m, i) => (values[+i] ?? "")) : out;
 }
 
-const LANG = (window.I18N && I18N.lang) || "vi";
+const LANG = CATALOG.lang || "vi";
 // dates and numbers as the staff member reads them (4.500.000 in Vietnamese, 4,500,000 in English)
 const LOCALE = { vi: "vi-VN", zh: "zh-CN", pt: "pt-BR" }[LANG] || LANG;
 document.documentElement.lang = LANG;
-if (window.I18N && I18N.rtl) document.documentElement.dir = "rtl";
+if (CATALOG.rtl) document.documentElement.dir = "rtl";
 
 // the texts written in admin.html itself
 (function translatePage(root) {
@@ -38,7 +41,7 @@ function setLanguage(code) {
 function languageSelect(current, onChange) {
   const sel = document.createElement("select");
   sel.setAttribute("aria-label", tr("Ngôn ngữ"));
-  for (const [code, name] of Object.entries((window.I18N && I18N.languages) || { vi: "Tiếng Việt" })) {
+  for (const [code, name] of Object.entries(CATALOG.languages)) {
     const o = document.createElement("option");
     o.value = code;
     o.textContent = name;

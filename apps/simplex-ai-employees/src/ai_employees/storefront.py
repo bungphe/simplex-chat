@@ -32,7 +32,7 @@ from urllib.parse import quote, urlencode
 from aiohttp import web
 
 from .crm import phone_key
-from .i18n import LANGUAGES, RTL, best_match, current, default, normalize, tr, use_language
+from .i18n import LANGUAGES, RTL, best_match, current, default, normalize, number, tr, use_language
 from .inventory import InventoryError, order_code
 from .invoices import RECEIPT_CSP, receipt_html
 from .loyalty import vip_card
@@ -480,7 +480,7 @@ def _money(office: Office) -> Any:
     def fmt(v: Any) -> str:
         if v is None:
             return tr("Liên hệ")
-        return f"{v:,}".replace(",", ".") + f" {unit}"
+        return f"{number(v)} {unit}"
 
     return fmt
 

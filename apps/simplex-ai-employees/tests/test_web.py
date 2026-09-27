@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 
 import httpx2
@@ -63,6 +64,9 @@ async def test_page_and_security_headers(ui):
     assert r.headers["X-Frame-Options"] == "DENY"
     assert (await client.get("/static/admin.js")).headers["Content-Type"].startswith("application/javascript")
     assert (await client.get("/static/secret.py")).status == 404
+    # every script the page loads is served (the language first: the others use tr())
+    for src in re.findall(r'<script src="([^"]+)"', await r.text()):
+        assert (await client.get(src)).status == 200, src
     # an installable app (PWA): manifest, service worker at the root, icons, all public
     import json
 

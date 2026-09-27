@@ -47,6 +47,7 @@ STATIC = (
     "admin.css",
     "inventory.js",
     "business.js",
+    "i18n.js",
     "icon.svg",
     "manifest.webmanifest",
 )
