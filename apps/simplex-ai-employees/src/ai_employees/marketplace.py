@@ -191,10 +191,7 @@ class Marketplaces:
         """What a marketplace is told: the price everyone pays today and the stock to sell."""
         p = self.inv.product_row(pid)
         price = self.inv.current_price(pid)
-        summary = (
-            next((x for x in self.inv.products(p["sku"], include_inactive=True) if int(x["id"]) == pid), None)
-            or {}
-        )
+        summary = self.inv._summary(p, self.inv._stock_rows(pid), self.inv._incoming(pid), {}, {})
         return {
             "sku": p["sku"],
             "name": p["name"],
@@ -349,27 +346,31 @@ class Marketplaces:
         )
         return tr("giá {0}, còn {1}", price, offer["available"])
 
-    async def pull_amazon_orders(self, c: dict[str, Any]) -> dict[str, int]:
+    async def pull_amazon_orders(self, c: dict[str, Any], max_pages: int = 20) -> dict[str, int]:
         """New Amazon orders become orders here (goods reserved); shipped ones are completed,
-        cancelled ones cancelled. Only SKUs and quantities are read (no customer data)."""
+        cancelled ones cancelled. Only SKUs and quantities are read (no customer data).
+        The cursor never moves past an order that failed: it is read again next time."""
         state_key = f"marketplace_cursor:{c['id']}"
         cursor = (self.office.docs.get(state_key) or {}).get("after") or (
             datetime.now(UTC) - timedelta(days=2)
         ).strftime("%Y-%m-%dT%H:%M:%SZ")
-        r = await self._amazon(
-            c,
-            "GET",
-            "/orders/v0/orders",
-            params={"MarketplaceIds": c["marketplace_id"], "LastUpdatedAfter": cursor},
-        )
-        if r.status_code != 200:
-            raise MarketplaceError(f"Amazon orders: HTTP {r.status_code}")
-        payload = r.json().get("payload") or {}
+        orders: list[dict[str, Any]] = []
+        params: dict[str, str] = {"MarketplaceIds": c["marketplace_id"], "LastUpdatedAfter": cursor}
+        for _ in range(max_pages):
+            r = await self._amazon(c, "GET", "/orders/v0/orders", params=params)
+            if r.status_code != 200:
+                raise MarketplaceError(f"Amazon orders: HTTP {r.status_code}")
+            payload = r.json().get("payload") or {}
+            orders += payload.get("Orders") or []
+            token = payload.get("NextToken")
+            if not token:
+                break
+            params = {"MarketplaceIds": c["marketplace_id"], "NextToken": token}
         stats = {"created": 0, "completed": 0, "cancelled": 0}
-        latest = cursor
-        for o in payload.get("Orders") or []:
+        latest, failed = cursor, None
+        for o in sorted(orders, key=lambda x: x.get("LastUpdateDate") or ""):
             amazon_id, status = o.get("AmazonOrderId"), o.get("OrderStatus")
-            latest = max(latest, o.get("LastUpdateDate") or latest)
+            updated = o.get("LastUpdateDate") or latest
             ref = f"amazon:{amazon_id}"
             ours = self.db.row("SELECT id, status FROM inv_orders WHERE external_ref=?", (ref,))
             try:
@@ -384,6 +385,15 @@ class Marketplaces:
                     stats["cancelled"] += 1
             except InventoryError as e:
                 self._log(c["id"], None, amazon_id or "", False, tr("đơn Amazon {0}: {1}", amazon_id, e))
+                failed = failed or updated
+                continue
+            latest = max(latest, updated)
+        if failed:  # just before the first failed order (the others are skipped when seen again)
+            try:
+                before = datetime.fromisoformat(failed) - timedelta(seconds=1)
+                latest = min(latest, max(cursor, before.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")))
+            except ValueError:
+                latest = cursor
         self.office.docs.update(state_key, lambda d: d.update(after=latest), {})
         return stats
 

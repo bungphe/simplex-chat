@@ -34,6 +34,7 @@ import csv
 import io
 import json
 import math
+import unicodedata
 import uuid
 from datetime import date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
@@ -236,6 +237,15 @@ def _int(value: Any, what: str, minimum: int | None = 0) -> int:
     return n
 
 
+def _fold(text: str) -> str:
+    """Text for case-insensitive search in any script (SQL LOWER is ASCII-only in SQLite)."""
+    return unicodedata.normalize("NFC", str(text or "")).casefold()
+
+
+def _search_text(p: dict[str, Any]) -> str:
+    return _fold(" ".join(str(p.get(k) or "") for k in ("sku", "name", "category", "group_name")))
+
+
 def _today() -> str:
     return datetime.now().astimezone().date().isoformat()
 
@@ -292,8 +302,18 @@ class Inventory:
                 # the web shop (storefront.py): a picture, and whether the product is shown there
                 "image_url": "TEXT NOT NULL DEFAULT ''",
                 "on_web": "{int} NOT NULL DEFAULT 1",
+                # sku, name, category and group, case-folded in Python: searched with LIKE
+                "search_text": "TEXT NOT NULL DEFAULT ''",
             },
         )
+        stale = [
+            (_search_text(r), r["id"])
+            for r in db.rows(
+                "SELECT id, sku, name, category, group_name FROM inv_products WHERE search_text=?", ("",)
+            )
+        ]
+        if stale:
+            db.many("UPDATE inv_products SET search_text=? WHERE id=?", stale)
         # Other parts of the office react to sales and stock changes (loyalty points,
         # marketplace sync): listener(event, data), called after the change is committed.
         self.listeners: list[Any] = []
@@ -523,7 +543,7 @@ class Inventory:
             fields["address"] = str(data["address"] or "").strip()[:300]
         if "active" in data:
             fields["active"] = 1 if data["active"] else 0
-        return self._save("inv_warehouses", wid, fields, "kho")
+        return self._save("inv_warehouses", wid, fields, tr("kho"))
 
     def suppliers(self) -> list[dict[str, Any]]:
         return self.db.rows("SELECT * FROM inv_suppliers ORDER BY active DESC, name")
@@ -623,7 +643,12 @@ class Inventory:
         if "on_web" in data:
             fields["on_web"] = 1 if data["on_web"] else 0
         fields["updated"] = now_iso()
-        return self._save("inv_products", pid, fields, "SKU")
+        row = self._save("inv_products", pid, fields, "SKU")
+        text = _search_text(row)
+        if row.get("search_text") != text:
+            self.db.execute("UPDATE inv_products SET search_text=? WHERE id=?", (text, row["id"]))
+            row["search_text"] = text
+        return row
 
     def product_row(self, pid: int) -> dict[str, Any]:
         row = self.db.row("SELECT * FROM inv_products WHERE id=?", (pid,))
@@ -705,9 +730,8 @@ class Inventory:
         if not include_inactive:
             sql += " AND active=1"
         if query.strip():
-            like = f"%{query.strip().lower()}%"
-            sql += " AND (LOWER(sku) LIKE ? OR LOWER(name) LIKE ? OR LOWER(category) LIKE ? OR LOWER(group_name) LIKE ?)"
-            args += [like] * 4
+            sql += " AND (search_text LIKE ? OR LOWER(sku) LIKE ?)"
+            args += [f"%{_fold(query.strip())}%", f"%{query.strip().lower()}%"]
         rows = self.db.rows(sql + " ORDER BY group_name, sku LIMIT ?", [*args, limit])
         if not rows:
             return []
@@ -1136,13 +1160,16 @@ class Inventory:
                         break
                 self._move(wh, pid, "adjust", delta, actor=actor, note=reason)
             else:
-                lot = self.pricing_lot(pid)
+                # the lot on sale, else the latest one even if sold out (as sales are costed)
+                lot = self.pricing_lot(pid) or self.db.row(
+                    "SELECT * FROM inv_lots WHERE product_id=? ORDER BY id DESC LIMIT 1", (pid,)
+                )
+                if lot is None and unit_cost in (None, ""):
+                    raise InventoryError(tr("Sản phẩm chưa từng nhập hàng: nhập giá vốn cho số hàng thêm"))
                 landed = (
                     self.minor(unit_cost, tr("Giá vốn"))
                     if unit_cost not in (None, "")
                     else int(lot["landed_cost"])
-                    if lot
-                    else 0
                 )
                 prices = (
                     [int(lot[f"price{i}"]) for i in range(1, 6)] if lot else self.price_plan(landed)["prices"]
@@ -1387,10 +1414,11 @@ class Inventory:
             "ordered": ("shipping", "arrived", "cancelled", "draft"),
             "shipping": ("arrived", "ordered"),
             "arrived": ("shipping",),
+            "partial": ("received",),  # closed: the rest will not come, it is no longer counted as incoming
         }
         if status not in allowed.get(head["status"], ()):
             raise InventoryError(tr("Không chuyển được đơn nhập từ '{0}' sang '{1}'", head["status"], status))
-        if status in ("cancelled", "draft") and any(i["qty_preordered"] for i in head["items"]):
+        if status in ("cancelled", "draft", "received") and any(i["qty_preordered"] for i in head["items"]):
             raise InventoryError(tr("Đơn nhập đã có khách đặt trước: huỷ các đơn đặt trước trước"))
         self.db.execute(
             "UPDATE inv_purchase_orders SET status=?, updated=? WHERE id=?", (status, now_iso(), po_id)
@@ -1488,31 +1516,24 @@ class Inventory:
         return out
 
     def _serve_preorders(self, po_item_id: int, lot_id: int, wh: int, pid: int, actor: str) -> list[int]:
-        """Allocate goods just received to the pre-orders waiting for them (whole lines, oldest first)."""
+        """Allocate goods to the pre-orders waiting for this purchase order item (whole lines,
+        oldest first): from any free stock of the product in the warehouse, the lot just
+        received first. A line that does not fit yet waits for the next receipt."""
         served = []
         for line in self.db.rows(
             "SELECT i.* FROM inv_order_items i JOIN inv_orders o ON o.id=i.order_id "
-            "WHERE i.po_item_id=? AND i.status='awaiting' AND o.status='confirmed' ORDER BY o.id, i.id",
-            (po_item_id,),
+            "WHERE i.po_item_id=? AND i.status='awaiting' AND o.status='confirmed' AND o.warehouse_id=? "
+            "ORDER BY o.id, i.id",
+            (po_item_id, wh),
         ):
             qty = int(line["qty"])
-            ok = self.db.execute(
-                "UPDATE inv_lots SET reserved_qty=reserved_qty+?, preordered_qty=preordered_qty+? "
-                "WHERE id=? AND remaining_qty-reserved_qty>=? RETURNING id",
-                (qty, qty, lot_id, qty),
-            )
-            if ok is None or not self._reserve(wh, pid, qty):
-                break
-            cost = self.db.row("SELECT landed_cost FROM inv_lots WHERE id=?", (lot_id,))
-            self.db.execute(
-                "INSERT INTO inv_order_allocs (order_item_id, lot_id, qty, unit_cost) VALUES (?, ?, ?, ?)",
-                (line["id"], lot_id, qty, cost["landed_cost"]),
-            )
+            if not self._reserve(wh, pid, qty):
+                continue
+            self._allocate(int(line["id"]), pid, qty, first_lot=lot_id, preorder_item=po_item_id)
             self.db.execute("UPDATE inv_order_items SET status='reserved' WHERE id=?", (line["id"],))
             self.db.execute(
                 "UPDATE inv_po_items SET qty_preordered=qty_preordered-? WHERE id=?", (qty, po_item_id)
             )
-            self.db.execute("UPDATE inv_orders SET warehouse_id=? WHERE id=?", (wh, line["order_id"]))
             self._move(
                 wh,
                 pid,
@@ -1875,12 +1896,18 @@ class Inventory:
                 price = self.current_price(pid, vip)
                 promo, combo = (price or {}).get("promo", ""), str(it.get("combo") or "")
                 list_price = (price or {}).get("list_price")
-                if it.get("unit_price") not in (None, ""):
+                # a price set by staff (may be 0: a gift), else the product's price if it has one
+                given = it.get("unit_price") not in (None, "")
+                priced = given or (price is not None and int(price["list_price"]) > 0)
+                if given:
                     unit = self.minor(it["unit_price"], tr("Giá bán"))
                     stage, is_vip, promo = (price or {}).get("stage"), False, ""
-                elif price is not None:
+                elif priced:
+                    assert price is not None
                     unit, stage, is_vip = price["price"], price["stage"], price["vip"]
-                else:
+                elif kind == "now":
+                    raise InventoryError(tr("{0}: chưa có giá bán, cần nhập giá cho dòng này", p["sku"]))
+                else:  # a pre-order: the price of the goods on their way
                     unit, stage, is_vip = 0, None, False
                 if it.get("discount_pct") not in (None, "", 0) and not combo:
                     pct = _dec(it["discount_pct"], tr("Giảm %"))
@@ -1913,28 +1940,39 @@ class Inventory:
                         actor,
                         tr("Giữ {0} cho {1}", qty, order_code(oid)),
                     )
-                else:
-                    po_item = self._preorder_slot(pid, qty, it.get("po_id"))
-                    if unit == 0:
-                        unit = int(po_item["price1"])
-                    self.db.execute(
-                        "UPDATE inv_po_items SET qty_preordered=qty_preordered+? WHERE id=?",
-                        (qty, po_item["id"]),
-                    )
-                    self._order_line(
-                        oid,
-                        pid,
-                        qty,
-                        unit,
-                        stage or 1,
-                        is_vip,
-                        int(po_item["id"]),
-                        "awaiting",
-                        list_price,
-                        promo,
-                        combo,
-                    )
-                subtotal += unit * qty
+                    subtotal += unit * qty
+                else:  # on one or more incoming purchase orders for this warehouse
+                    for po_item, part in self._preorder_slots(pid, qty, it.get("po_id"), wh):
+                        part_unit = unit if priced else int(po_item["price1"])
+                        if not priced and not part_unit:
+                            raise InventoryError(
+                                tr("{0}: chưa có giá bán, cần nhập giá cho dòng này", p["sku"])
+                            )
+                        if (
+                            self.db.execute(
+                                "UPDATE inv_po_items SET qty_preordered=qty_preordered+? WHERE id=? "
+                                "AND qty_ordered-qty_received-qty_damaged-qty_preordered>=? RETURNING id",
+                                (part, po_item["id"], part),
+                            )
+                            is None
+                        ):
+                            raise InventoryError(
+                                tr("Không có lô hàng sắp về nào còn đủ số lượng để đặt trước")
+                            )
+                        self._order_line(
+                            oid,
+                            pid,
+                            part,
+                            part_unit,
+                            stage or 1,
+                            is_vip,
+                            int(po_item["id"]),
+                            "awaiting",
+                            list_price,
+                            promo,
+                            combo,
+                        )
+                        subtotal += part_unit * part
             disc = self.minor(discount, tr("Giảm giá")) if discount not in (None, "", 0) else 0
             disc += combo_saving
             code, vdisc = "", 0
@@ -1986,18 +2024,31 @@ class Inventory:
         assert line_id is not None
         return line_id
 
-    def _allocate(self, line_id: int, pid: int, qty: int) -> int:
-        """Reserve lot quantities for a sale, oldest lot first; returns the cost of the goods."""
+    def _allocate(
+        self,
+        line_id: int,
+        pid: int,
+        qty: int,
+        first_lot: int | None = None,
+        preorder_item: int | None = None,
+    ) -> int:
+        """Reserve lot quantities for a sale, oldest lot first (`first_lot` before all others);
+        returns the cost of the goods. For a pre-order served on arrival (`preorder_item`),
+        goods from lots of that purchase order item count as pre-sold on their lot."""
         left, cost = qty, 0
-        for lot in self._lots(pid):
+        lots = self._lots(pid)
+        lots.sort(key=lambda x: 0 if x["id"] == first_lot else 1)  # stable: FIFO otherwise
+        for lot in lots:
             free = int(lot["remaining_qty"]) - int(lot["reserved_qty"])
             take = min(left, free)
             if take <= 0:
                 continue
+            pre = take if preorder_item is not None and lot["po_item_id"] == preorder_item else 0
             if (
                 self.db.execute(
-                    "UPDATE inv_lots SET reserved_qty=reserved_qty+? WHERE id=? AND remaining_qty-reserved_qty>=? RETURNING id",
-                    (take, lot["id"], take),
+                    "UPDATE inv_lots SET reserved_qty=reserved_qty+?, preordered_qty=preordered_qty+? "
+                    "WHERE id=? AND remaining_qty-reserved_qty>=? RETURNING id",
+                    (take, pre, lot["id"], take),
                 )
                 is None
             ):
@@ -2022,12 +2073,19 @@ class Inventory:
             cost += left * unit_cost
         return cost
 
-    def _preorder_slot(self, pid: int, qty: int, po_id: Any) -> dict[str, Any]:
+    def _preorder_slots(self, pid: int, qty: int, po_id: Any, wh: int) -> list[tuple[dict[str, Any], int]]:
+        """Where a pre-order of `qty` is served from: incoming purchase order items for the
+        order's warehouse (earliest ETA first), split over several when one is not enough."""
+        out, left = [], qty
         for slot in self._incoming(pid):
-            if po_id and int(slot["po_id"]) != int(po_id):
+            if int(slot["warehouse_id"]) != wh or (po_id and int(slot["po_id"]) != int(po_id)):
                 continue
-            if int(slot["qty"]) - int(slot["qty_preordered"]) >= qty:
-                return {**slot, "id": slot["po_item_id"]}
+            take = min(left, int(slot["qty"]) - int(slot["qty_preordered"]))
+            if take > 0:
+                out.append(({**slot, "id": slot["po_item_id"]}, take))
+                left -= take
+            if not left:
+                return out
         raise InventoryError(tr("Không có lô hàng sắp về nào còn đủ số lượng để đặt trước"))
 
     def complete_order(self, oid: int, actor: str = "") -> dict[str, Any]:
@@ -2035,11 +2093,12 @@ class Inventory:
         order = self._order_row(oid)
         if order["status"] != "confirmed":
             raise InventoryError(tr("Đơn đang ở trạng thái '{0}'", order["status"]))
-        lines = self.db.rows("SELECT * FROM inv_order_items WHERE order_id=?", (oid,))
-        if any(x["status"] == "awaiting" for x in lines):
-            raise InventoryError(tr("Đơn đặt trước còn chờ hàng về"))
-        wh = int(order["warehouse_id"])
         with self.db.transaction():
+            order = self._claim(oid, "confirmed", "completed", "completed")
+            lines = self.db.rows("SELECT * FROM inv_order_items WHERE order_id=?", (oid,))
+            if any(x["status"] == "awaiting" for x in lines):
+                raise InventoryError(tr("Đơn đặt trước còn chờ hàng về"))
+            wh = int(order["warehouse_id"])
             cost = 0
             for line in lines:
                 pid, qty = int(line["product_id"]), int(line["qty"])
@@ -2057,20 +2116,40 @@ class Inventory:
                     )
                 self.db.execute("UPDATE inv_order_items SET status='done' WHERE id=?", (line["id"],))
             self.db.execute(
-                "UPDATE inv_orders SET status='completed', completed=?, cost=?, profit=total-shipping_fee-? WHERE id=?",
-                (now_iso(), cost, cost, oid),
+                "UPDATE inv_orders SET cost=?, profit=total-shipping_fee-? WHERE id=?", (cost, cost, oid)
             )
         done = self.order(oid)
         self._emit("order_completed", order=done)
         self._emit("stock", product_ids=[int(x["product_id"]) for x in lines])
         return done
 
+    def _claim(self, oid: int, old: str, new: str, stamp: str) -> dict[str, Any]:
+        """Inside a transaction: move the order from status `old` to `new` (and stamp the time),
+        only if nobody else did first (another process, a double click); the fresh order row."""
+        if (
+            self.db.execute(
+                f"UPDATE inv_orders SET status=?, {stamp}=? WHERE id=? AND status=? RETURNING id",
+                (new, now_iso(), oid, old),
+            )
+            is None
+        ):
+            now = self.db.row("SELECT status FROM inv_orders WHERE id=?", (oid,))
+            if now is None:
+                raise InventoryError(tr("Không có đơn hàng này"))
+            if old == "completed":
+                raise InventoryError(tr("Chỉ hoàn tác được đơn đã giao"))
+            raise InventoryError(tr("Đơn đang ở trạng thái '{0}'", now["status"]))
+        row = self.db.row("SELECT * FROM inv_orders WHERE id=?", (oid,))
+        assert row is not None
+        return row
+
     def cancel_order(self, oid: int, actor: str = "") -> dict[str, Any]:
         order = self._order_row(oid)
         if order["status"] != "confirmed":
             raise InventoryError(tr("Đơn đang ở trạng thái '{0}'", order["status"]))
-        wh = int(order["warehouse_id"])
         with self.db.transaction():
+            order = self._claim(oid, "confirmed", "cancelled", "cancelled")
+            wh = int(order["warehouse_id"])
             for line in self.db.rows("SELECT * FROM inv_order_items WHERE order_id=?", (oid,)):
                 pid, qty = int(line["product_id"]), int(line["qty"])
                 if line["status"] == "awaiting":
@@ -2084,10 +2163,16 @@ class Inventory:
                         (qty, wh, pid),
                     )
                     for a in self.db.rows(
-                        "SELECT * FROM inv_order_allocs WHERE order_item_id=? AND lot_id IS NOT NULL",
+                        "SELECT a.*, l.po_item_id AS lot_po_item FROM inv_order_allocs a "
+                        "JOIN inv_lots l ON l.id=a.lot_id WHERE a.order_item_id=?",
                         (line["id"],),
                     ):
-                        pre = int(a["qty"]) if line["po_item_id"] else 0
+                        # pre-sold goods: only those from the purchase order the line waited for
+                        pre = (
+                            int(a["qty"])
+                            if line["po_item_id"] and a["lot_po_item"] == line["po_item_id"]
+                            else 0
+                        )
                         self.db.execute(
                             "UPDATE inv_lots SET reserved_qty=reserved_qty-?, preordered_qty=preordered_qty-? WHERE id=?",
                             (a["qty"], pre, a["lot_id"]),
@@ -2104,18 +2189,18 @@ class Inventory:
                         tr("Huỷ {0}: trả {1} về kho", order_code(oid), qty),
                     )
                 self.db.execute("UPDATE inv_order_items SET status='released' WHERE id=?", (line["id"],))
-            self.db.execute(
-                "UPDATE inv_orders SET status='cancelled', cancelled=? WHERE id=?", (now_iso(), oid)
-            )
             self._refund(oid, actor, tr("Huỷ đơn"))
-            if order["voucher"]:
-                self.db.execute(
-                    "UPDATE inv_vouchers SET used=used-1 WHERE code=? AND used>0", (order["voucher"],)
-                )
+            self._give_back_voucher(order)
         out = self.order(oid)
         self._emit("order_cancelled", order=out)
         self._emit("stock", product_ids=[int(x["product_id"]) for x in out["items"]])
         return out
+
+    def _give_back_voucher(self, order: dict[str, Any]) -> None:
+        if order["voucher"]:
+            self.db.execute(
+                "UPDATE inv_vouchers SET used=used-1 WHERE code=? AND used>0", (order["voucher"],)
+            )
 
     def _order_row(self, oid: int) -> dict[str, Any]:
         row = self.db.row("SELECT * FROM inv_orders WHERE id=?", (oid,))
@@ -2395,16 +2480,10 @@ class Inventory:
     # for the AI employee: what a customer may be told (never costs or margins)
 
     def lookup(self, query: str, vip: bool = False, limit: int = 8) -> list[dict[str, Any]]:
-        words = [w for w in query.lower().split() if w]
+        words = [w for w in _fold(query).split() if w]
         rows = self.products(" ".join(words[:1]) if words else "", limit=200)
         if len(words) > 1:
-            rows = [
-                r
-                for r in rows
-                if all(
-                    w in f"{r['sku']} {r['name']} {r['category']} {r['group_name']}".lower() for w in words
-                )
-            ]
+            rows = [r for r in rows if all(w in _search_text(r) for w in words)]
         out = []
         for r in rows[:limit]:
             price = self.current_price(int(r["id"]), vip)
@@ -2440,55 +2519,74 @@ class Inventory:
         customer handed over. The same idempotency key never records a payment twice."""
         if method not in PAYMENT_METHODS:
             raise InventoryError(tr("Hình thức thanh toán: {0}", ", ".join(PAYMENT_METHODS)))
-        order = self._order_row(oid)
-        if order["status"] not in ("confirmed", "completed"):
+        if self._order_row(oid)["status"] not in ("confirmed", "completed"):
             raise InventoryError(tr("Đơn đã huỷ hoặc đã trả hàng"))
         if idempotency_key and self.db.row(
             "SELECT 1 AS x FROM inv_payments WHERE idempotency_key=?", (idempotency_key,)
         ):
             return self.order(oid)
-        due = int(order["total"]) - int(order["paid"])
-        if due <= 0:
-            raise InventoryError(tr("Đơn đã thanh toán đủ"))
         given = self.minor(tendered, tr("Tiền khách đưa")) if tendered not in (None, "") else None
-        pay = (
-            self.minor(amount, tr("Số tiền"))
-            if amount not in (None, "")
-            else min(due, given if given is not None else due)
-        )
-        if pay <= 0:
-            raise InventoryError(tr("Số tiền phải lớn hơn 0"))
-        if pay > due:
-            raise InventoryError(tr("Chỉ còn phải trả {0:,}", self.major(due)))
-        change = None
-        if method == "cash" and given is not None:
-            if given < pay:
-                raise InventoryError(tr("Tiền khách đưa ít hơn số tiền thanh toán"))
-            change = given - pay
-        with self.db.transaction():
-            self.db.execute(
-                "INSERT INTO inv_payments (order_id, method, amount, tendered, change_given, ref, idempotency_key, cashier, ts) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    oid,
-                    method,
-                    pay,
-                    given,
-                    change,
-                    ref[:120],
-                    idempotency_key[:80] or None,
-                    cashier[:80],
-                    now_iso(),
-                ),
-            )
-            paid = int(order["paid"]) + pay
-            status = "paid" if paid >= int(order["total"]) else "partial"
-            self.db.execute("UPDATE inv_orders SET paid=?, payment_status=? WHERE id=?", (paid, status, oid))
+        asked = self.minor(amount, tr("Số tiền")) if amount not in (None, "") else None
+        try:
+            with self.db.transaction():
+                order = self.db.row("SELECT * FROM inv_orders WHERE id=?", (oid,))
+                assert order is not None
+                if order["status"] not in ("confirmed", "completed"):
+                    raise InventoryError(tr("Đơn đã huỷ hoặc đã trả hàng"))
+                due = int(order["total"]) - int(order["paid"])
+                if due <= 0:
+                    raise InventoryError(tr("Đơn đã thanh toán đủ"))
+                pay = asked if asked is not None else min(due, given if given is not None else due)
+                if pay <= 0:
+                    raise InventoryError(tr("Số tiền phải lớn hơn 0"))
+                if pay > due:
+                    raise InventoryError(tr("Chỉ còn phải trả {0:,}", self.major(due)))
+                change = None
+                if method == "cash" and given is not None:
+                    if given < pay:
+                        raise InventoryError(tr("Tiền khách đưa ít hơn số tiền thanh toán"))
+                    change = given - pay
+                self.db.execute(
+                    "INSERT INTO inv_payments (order_id, method, amount, tendered, change_given, ref, idempotency_key, "
+                    "cashier, ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        oid,
+                        method,
+                        pay,
+                        given,
+                        change,
+                        ref[:120],
+                        idempotency_key[:80] or None,
+                        cashier[:80],
+                        now_iso(),
+                    ),
+                )
+                # never more than is due, even if another till took a payment meanwhile
+                if (
+                    self.db.execute(
+                        "UPDATE inv_orders SET paid=paid+?, "
+                        "payment_status=CASE WHEN paid+?>=total THEN 'paid' ELSE 'partial' END "
+                        "WHERE id=? AND total-paid>=? AND status IN ('confirmed','completed') RETURNING paid",
+                        (pay, pay, oid, pay),
+                    )
+                    is None
+                ):
+                    now = self.db.row("SELECT total, paid, status FROM inv_orders WHERE id=?", (oid,)) or {}
+                    if now.get("status") not in ("confirmed", "completed"):
+                        raise InventoryError(tr("Đơn đã huỷ hoặc đã trả hàng"))
+                    raise InventoryError(
+                        tr("Chỉ còn phải trả {0:,}", self.major(max(0, int(now["total"]) - int(now["paid"]))))
+                    )
+        except IntegrityError:
+            if not idempotency_key:
+                raise
+            # the same payment sent twice at once: the other one was recorded
         return self.order(oid)
 
     def _refund(self, oid: int, actor: str, reason: str) -> None:
-        order = self._order_row(oid)
-        if int(order["paid"]) > 0:
+        """Inside the transaction that cancels or takes back the order: all that was paid."""
+        order = self.db.row("SELECT paid FROM inv_orders WHERE id=?", (oid,))
+        if order and int(order["paid"]) > 0:
             self.db.execute(
                 "INSERT INTO inv_payments (order_id, method, amount, ref, cashier, ts) VALUES (?, 'refund', ?, ?, ?, ?)",
                 (oid, -int(order["paid"]), reason[:120], actor[:80], now_iso()),
@@ -2509,7 +2607,8 @@ class Inventory:
         self, oid: int, actor: str = "", reason: str = "", admin: bool = False
     ) -> dict[str, Any]:
         """Take back a completed sale (goods back into their lots and the shop's stock, money
-        refunded), within `undo_hours` of completion; admins can do it later too."""
+        refunded, the voucher use given back), within `undo_hours` of completion; admins can
+        do it later too."""
         order = self._order_row(oid)
         if order["status"] != "completed":
             raise InventoryError(tr("Chỉ hoàn tác được đơn đã giao"))
@@ -2517,9 +2616,11 @@ class Inventory:
         hours = self.settings()["undo_hours"]
         if not admin and done and datetime.now().astimezone() - done > timedelta(hours=hours):
             raise InventoryError(tr("Quá {0} giờ sau khi giao: cần quản lý hoàn tác", hours))
-        wh = int(order["warehouse_id"])
         pids = []
         with self.db.transaction():
+            order = self._claim(oid, "completed", "returned", "returned")
+            self.db.execute("UPDATE inv_orders SET profit=0 WHERE id=?", (oid,))
+            wh = int(order["warehouse_id"])
             for line in self.db.rows("SELECT * FROM inv_order_items WHERE order_id=?", (oid,)):
                 pid = int(line["product_id"])
                 pids.append(pid)
@@ -2544,10 +2645,8 @@ class Inventory:
                         tr("Trả hàng {0}: {1}", order_code(oid), reason)[:300],
                     )
                 self.db.execute("UPDATE inv_order_items SET status='returned' WHERE id=?", (line["id"],))
-            self.db.execute(
-                "UPDATE inv_orders SET status='returned', returned=?, profit=0 WHERE id=?", (now_iso(), oid)
-            )
             self._refund(oid, actor, reason or tr("Trả hàng"))
+            self._give_back_voucher(order)
         out = self.order(oid)
         self._emit("order_returned", order=out)
         self._emit("stock", product_ids=pids)
@@ -2710,7 +2809,7 @@ class Inventory:
             "active": 1 if data.get("active", True) else 0,
             "note": str(data.get("note") or "")[:300],
         }
-        row = self._save("inv_vouchers", vid, fields, "voucher")
+        row = self._save("inv_vouchers", vid, fields, tr("voucher"))
         return self._voucher_json(row)
 
     def _voucher_json(self, v: dict[str, Any]) -> dict[str, Any]:
@@ -2766,7 +2865,7 @@ class Inventory:
         if not fields["code"] or not fields["name"]:
             raise InventoryError(tr("Mã và tên combo là bắt buộc"))
         with self.db.transaction():
-            row = self._save("inv_combos", cid, fields, "combo")
+            row = self._save("inv_combos", cid, fields, tr("combo"))
             if items:
                 self.db.execute("DELETE FROM inv_combo_items WHERE combo_id=?", (row["id"],))
                 for it in items:

@@ -241,8 +241,29 @@ class Sales:
         return {**r, **{k: self.inv.major(r[k]) for k in keys if r.get(k) is not None}}
 
     def save_commissions(self, start: str, end: str, actor: str, **params: Any) -> list[dict[str, Any]]:
+        """Save the period's commissions as drafts; saving the same period again replaces its
+        drafts. A commission already finalized or paid must be put back to draft first."""
         rows = self.preview_commissions(start, end, **params)
+        start, end = _date(start, tr("Từ ngày")), _date(end, tr("Đến ngày"))
         with self.db.transaction():
+            done = self.db.row(
+                "SELECT username FROM sales_commissions WHERE period_start=? AND period_end=? AND status<>'draft' "
+                "ORDER BY id LIMIT 1",
+                (start, end),
+            )
+            if done:
+                raise InventoryError(
+                    tr(
+                        "Hoa hồng kỳ {0} – {1} của {2} đã chốt: chuyển về nháp trước khi tính lại",
+                        start,
+                        end,
+                        done["username"],
+                    )
+                )
+            self.db.execute(
+                "DELETE FROM sales_commissions WHERE period_start=? AND period_end=? AND status='draft'",
+                (start, end),
+            )
             for r in rows:
                 self.db.execute(
                     "INSERT INTO sales_commissions (username, period_start, period_end, sales, orders, hours, target_per_hour, "
@@ -512,7 +533,8 @@ class Sales:
         if channel_type:
             ids = [c for c, ch in self.office.hub.channels.items() if ch.type == channel_type]
             if channel_type == "simplex":
-                sql += " AND EXISTS (SELECT 1 FROM crm_links l JOIN conversations v ON v.id=l.conversation_id WHERE l.contact_id=c.id AND v.channel LIKE 'simplex:%')"
+                sql += " AND EXISTS (SELECT 1 FROM crm_links l JOIN conversations v ON v.id=l.conversation_id WHERE l.contact_id=c.id AND v.channel LIKE ?)"
+                args.append("simplex:%")  # a literal % breaks PostgreSQL's %s placeholders
             elif ids:
                 sql += (
                     " AND EXISTS (SELECT 1 FROM crm_links l JOIN conversations v ON v.id=l.conversation_id "
