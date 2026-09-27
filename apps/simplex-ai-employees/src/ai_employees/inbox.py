@@ -14,12 +14,11 @@ use EXTERNAL_BASE + the inbox conversation id, which never collides with them.
 from __future__ import annotations
 
 import json
-import sqlite3
-import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any
 
+from .db import Database, IntegrityError
 from .state import now_iso
 
 EXTERNAL_BASE = 1_000_000_000
@@ -47,35 +46,39 @@ MODES = ("ai", "human")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS conversations (
-  id INTEGER PRIMARY KEY,
+  id {id},
   channel TEXT NOT NULL,
   external_id TEXT NOT NULL,
   customer_name TEXT NOT NULL DEFAULT '',
   employee TEXT NOT NULL DEFAULT '',
   mode TEXT NOT NULL DEFAULT 'ai',
-  unread INTEGER NOT NULL DEFAULT 0,
+  unread {int} NOT NULL DEFAULT 0,
   last_ts TEXT,
   last_preview TEXT NOT NULL DEFAULT '',
   last_sender TEXT NOT NULL DEFAULT '',
   created TEXT NOT NULL,
   UNIQUE (channel, external_id)
 );
+CREATE INDEX IF NOT EXISTS conversations_recent ON conversations (last_ts);
 CREATE TABLE IF NOT EXISTS messages (
-  id INTEGER PRIMARY KEY,
-  conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  id {id},
+  conversation_id {int} NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
   external_id TEXT,
   sender TEXT NOT NULL,
   author TEXT NOT NULL DEFAULT '',
   text TEXT NOT NULL,
   ts TEXT NOT NULL,
+  attachments TEXT NOT NULL DEFAULT '',
+  translation TEXT NOT NULL DEFAULT '',
   UNIQUE (conversation_id, external_id)
 );
 CREATE INDEX IF NOT EXISTS messages_conv ON messages (conversation_id, id);
 CREATE TABLE IF NOT EXISTS channel_state (
   channel TEXT PRIMARY KEY,
   data TEXT NOT NULL
-);
+)
 """
+MESSAGE_COLUMNS = "id, external_id, sender, author, text, ts, attachments, translation"
 
 
 @dataclass
@@ -106,33 +109,33 @@ class Conversation:
 
 
 class Inbox:
-    def __init__(self, path: str | Path):
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(str(path), check_same_thread=False, isolation_level=None)
-        self.db.row_factory = sqlite3.Row
-        self.db.execute("PRAGMA journal_mode=WAL")
-        self.db.execute("PRAGMA foreign_keys=ON")
-        self.db.executescript(SCHEMA)
-        columns = {r["name"] for r in self.db.execute("PRAGMA table_info(messages)")}
-        if "attachments" not in columns:  # inbox.db from before attachments were kept
-            self.db.execute("ALTER TABLE messages ADD COLUMN attachments TEXT NOT NULL DEFAULT ''")
-        if "translation" not in columns:  # customer text in the staff language, or staff's original
-            self.db.execute("ALTER TABLE messages ADD COLUMN translation TEXT NOT NULL DEFAULT ''")
-        self._lock = threading.Lock()
+    """The inbox tables, in SQLite (a file path) or the office's PostgreSQL (a Database)."""
 
-    def _conv(self, row: sqlite3.Row | None) -> Conversation | None:
-        return Conversation(**dict(row)) if row else None
+    def __init__(self, path: str | Path | Database):
+        self.db = path if isinstance(path, Database) else Database(str(path))
+        self.db.script(SCHEMA)
+        if not self.db.postgres:  # inbox.db files from before these columns existed
+            columns = {r["name"] for r in self.db.rows("PRAGMA table_info(messages)")}
+            for column in ("attachments", "translation"):
+                if column not in columns:
+                    self.db.execute(f"ALTER TABLE messages ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
+
+    _FIELDS = tuple(f.name for f in fields(Conversation))
+
+    def _conv(self, row: dict[str, Any] | None) -> Conversation | None:
+        return Conversation(**{k: row[k] for k in self._FIELDS}) if row else None
 
     # conversations
 
     def conversation(self, conv_id: int) -> Conversation | None:
-        return self._conv(self.db.execute("SELECT * FROM conversations WHERE id=?", (conv_id,)).fetchone())
+        return self._conv(self.db.row("SELECT * FROM conversations WHERE id=?", (conv_id,)))
 
     def find(self, channel: str, external_id: str) -> Conversation | None:
-        row = self.db.execute(
-            "SELECT * FROM conversations WHERE channel=? AND external_id=?", (channel, external_id)
-        ).fetchone()
-        return self._conv(row)
+        return self._conv(
+            self.db.row(
+                "SELECT * FROM conversations WHERE channel=? AND external_id=?", (channel, external_id)
+            )
+        )
 
     def by_contact(self, employee: str, contact_id: int) -> Conversation | None:
         if contact_id >= EXTERNAL_BASE:
@@ -140,18 +143,14 @@ class Inbox:
         return self.find(f"simplex:{employee}", str(contact_id))
 
     def upsert(self, channel: str, external_id: str, customer_name: str, employee: str) -> Conversation:
-        with self._lock:
-            conv = self.find(channel, external_id)
-            if conv is None:
-                self.db.execute(
-                    "INSERT INTO conversations (channel, external_id, customer_name, employee, created) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (channel, external_id, customer_name, employee, now_iso()),
-                )
-            elif customer_name and customer_name != conv.customer_name:
-                self.db.execute(
-                    "UPDATE conversations SET customer_name=? WHERE id=?", (customer_name, conv.id)
-                )
+        # one statement, safe when several processes see the same new customer at once
+        self.db.execute(
+            "INSERT INTO conversations (channel, external_id, customer_name, employee, created) "
+            "VALUES (?, ?, ?, ?, ?) ON CONFLICT (channel, external_id) DO UPDATE SET "
+            "customer_name = CASE WHEN excluded.customer_name <> '' THEN excluded.customer_name "
+            "ELSE conversations.customer_name END",
+            (channel, external_id, customer_name, employee, now_iso()),
+        )
         conv = self.find(channel, external_id)
         assert conv is not None
         return conv
@@ -175,7 +174,7 @@ class Inbox:
             args += [f"%{query}%", f"%{query}%"]
         sql += " ORDER BY last_ts DESC NULLS LAST, id DESC LIMIT ?"
         args.append(limit)
-        return [c for c in (self._conv(r) for r in self.db.execute(sql, args)) if c]
+        return [c for c in (self._conv(r) for r in self.db.rows(sql, args)) if c]
 
     def set_mode(self, conv_id: int, mode: str) -> None:
         assert mode in MODES
@@ -207,41 +206,44 @@ class Inbox:
         ts = ts or now_iso()
         stored = json.dumps(attachments, ensure_ascii=False) if attachments else ""
         preview = describe(text, attachments)
-        with self._lock:
-            try:
-                cur = self.db.execute(
+        try:
+            with self.db.transaction():
+                mid = self.db.execute(
                     "INSERT INTO messages "
                     "(conversation_id, external_id, sender, author, text, ts, attachments, translation) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
                     (conv_id, external_id, sender, author, text, ts, stored, translation),
                 )
-            except sqlite3.IntegrityError:
-                return None
-            # Arrival order, not platform timestamps, decides what is "last": platform
-            # clocks can be ahead of ours, and a reply must never look older than its question.
-            self.db.execute(
-                "UPDATE conversations SET last_ts=MAX(COALESCE(last_ts, ''), ?), last_preview=?, "
-                "last_sender=?, unread = unread + ? WHERE id=?",
-                (ts, preview[:160], sender, 1 if sender == "customer" else 0, conv_id),
-            )
-            return cur.lastrowid
+                # Arrival order, not platform timestamps, decides what is "last": platform
+                # clocks can be ahead of ours, and a reply must never look older than its question.
+                self.db.execute(
+                    "UPDATE conversations SET "
+                    "last_ts = CASE WHEN last_ts IS NULL OR last_ts < ? THEN ? ELSE last_ts END, "
+                    "last_preview=?, last_sender=?, unread = unread + ? WHERE id=?",
+                    (ts, ts, preview[:160], sender, 1 if sender == "customer" else 0, conv_id),
+                )
+        except IntegrityError:
+            return None
+        return mid
 
     def has_external(self, conv_id: int, external_id: str) -> bool:
-        row = self.db.execute(
-            "SELECT 1 FROM messages WHERE conversation_id=? AND external_id=?", (conv_id, external_id)
-        ).fetchone()
-        return row is not None
+        return (
+            self.db.row(
+                "SELECT 1 AS x FROM messages WHERE conversation_id=? AND external_id=?",
+                (conv_id, external_id),
+            )
+            is not None
+        )
 
     def messages(self, conv_id: int, limit: int = 300) -> list[dict[str, Any]]:
-        rows = self.db.execute(
-            "SELECT id, external_id, sender, author, text, ts, attachments, translation FROM messages "
-            "WHERE conversation_id=? ORDER BY id DESC LIMIT ?",
+        rows = self.db.rows(
+            f"SELECT {MESSAGE_COLUMNS} FROM messages WHERE conversation_id=? ORDER BY id DESC LIMIT ?",
             (conv_id, limit),
-        ).fetchall()
+        )
         return [self._message(r) for r in reversed(rows)]
 
     @staticmethod
-    def _message(row: sqlite3.Row) -> dict[str, Any]:
+    def _message(row: dict[str, Any]) -> dict[str, Any]:
         m = dict(row)
         m["attachments"] = json.loads(m["attachments"]) if m.get("attachments") else []
         return m
@@ -253,11 +255,9 @@ class Inbox:
         )
 
     def message(self, conv_id: int, message_id: int) -> dict[str, Any] | None:
-        row = self.db.execute(
-            "SELECT id, external_id, sender, author, text, ts, attachments, translation FROM messages "
-            "WHERE conversation_id=? AND id=?",
-            (conv_id, message_id),
-        ).fetchone()
+        row = self.db.row(
+            f"SELECT {MESSAGE_COLUMNS} FROM messages WHERE conversation_id=? AND id=?", (conv_id, message_id)
+        )
         return self._message(row) if row else None
 
     def pending_customer_text(self, conv_id: int) -> list[dict[str, Any]]:
@@ -271,36 +271,35 @@ class Inbox:
 
     def is_pending(self, conv_id: int, message_id: int) -> bool:
         """True while nothing has been sent in this conversation after that message."""
-        row = self.db.execute(
-            "SELECT 1 FROM messages WHERE conversation_id=? AND id>? AND sender!='customer' LIMIT 1",
+        row = self.db.row(
+            "SELECT 1 AS x FROM messages WHERE conversation_id=? AND id>? AND sender<>'customer' LIMIT 1",
             (conv_id, message_id),
-        ).fetchone()
+        )
         return row is None
 
     def awaiting_answer(self, since_ts: str) -> list[Conversation]:
         """Conversations in AI mode whose last message is a customer's, newer than since_ts."""
-        rows = self.db.execute(
-            "SELECT * FROM conversations WHERE mode='ai' AND last_sender='customer' AND last_ts>=? "
-            "ORDER BY last_ts",
+        rows = self.db.rows(
+            "SELECT * FROM conversations WHERE mode='ai' AND last_sender='customer' AND last_ts>=? ORDER BY last_ts",
             (since_ts,),
-        ).fetchall()
+        )
         return [c for c in (self._conv(r) for r in rows) if c]
 
     def recent_outbound(self, conv_id: int, since_ts: str) -> list[str]:
-        rows = self.db.execute(
+        rows = self.db.rows(
             "SELECT text FROM messages WHERE conversation_id=? AND sender IN ('ai','human','system') AND ts>=?",
             (conv_id, since_ts),
-        ).fetchall()
+        )
         return [r["text"] for r in rows]
 
     # per-channel cursors and settings
 
     def channel_state(self, channel: str) -> dict[str, Any]:
-        row = self.db.execute("SELECT data FROM channel_state WHERE channel=?", (channel,)).fetchone()
+        row = self.db.row("SELECT data FROM channel_state WHERE channel=?", (channel,))
         return json.loads(row["data"]) if row else {}
 
     def set_channel_state(self, channel: str, **fields: Any) -> None:
-        with self._lock:
+        with self.db.transaction():
             data = {**self.channel_state(channel), **fields}
             self.db.execute(
                 "INSERT INTO channel_state (channel, data) VALUES (?, ?) "
@@ -310,12 +309,13 @@ class Inbox:
 
     def stats(self) -> dict[str, dict[str, int]]:
         out: dict[str, dict[str, int]] = {}
-        for r in self.db.execute(
-            "SELECT channel, COUNT(*) n, SUM(unread) unread, SUM(mode='human') human FROM conversations GROUP BY channel"
+        for r in self.db.rows(
+            "SELECT channel, COUNT(*) AS n, SUM(unread) AS unread, "
+            "SUM(CASE WHEN mode='human' THEN 1 ELSE 0 END) AS human FROM conversations GROUP BY channel"
         ):
             out[r["channel"]] = {
-                "conversations": r["n"],
-                "unread": r["unread"] or 0,
-                "human": r["human"] or 0,
+                "conversations": int(r["n"]),
+                "unread": int(r["unread"] or 0),
+                "human": int(r["human"] or 0),
             }
         return out

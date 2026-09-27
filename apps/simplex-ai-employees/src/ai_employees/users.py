@@ -2,7 +2,7 @@
 
 - The owner logs in as "admin" with the password from the config file (admin_ui); that
   account always works, so a lost staff password can never lock the owner out.
-- Staff accounts are kept in state_dir/users.json (owner-only file), passwords as
+- Staff accounts are kept in the office database (shared by all processes), passwords as
   salted scrypt hashes. Roles:
     admin  everything the owner can do;
     agent  sales staff: the unified inbox only, optionally limited to some channels.
@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .db import Database, DocStore
 from .state import now_iso
 
 OWNER = "admin"
@@ -57,20 +58,19 @@ def _hash(password: str, salt: bytes) -> str:
 
 
 class Users:
-    def __init__(self, path: str | os.PathLike[str], owner_password: str):
-        self.path = Path(path)
+    def __init__(
+        self, docs: DocStore, owner_password: str, legacy_path: str | os.PathLike[str] | None = None
+    ):
+        self.docs = docs
         self._owner_password = owner_password
-        self._data: dict[str, dict[str, Any]] = (
-            json.loads(self.path.read_text(encoding="utf-8")) if self.path.exists() else {}
-        )
+        if legacy_path is not None and (old := Path(legacy_path)).exists():  # users.json from before
+            accounts = json.loads(old.read_text(encoding="utf-8"))
+            self.docs.update("users", lambda d: d.update(accounts), {})
+            old.rename(old.with_suffix(".json.imported"))
 
-    def _save(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(".tmp")
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(self._data, f, ensure_ascii=False, indent=1)
-        os.replace(tmp, self.path)
+    @property
+    def _data(self) -> dict[str, dict[str, Any]]:
+        return self.docs.get("users", {})
 
     @staticmethod
     def _user(username: str, d: dict[str, Any]) -> User:
@@ -127,11 +127,9 @@ class Users:
         username = username.strip().lower()
         if not _USERNAME.match(username) or username == OWNER:
             raise ValueError("tên đăng nhập: 2-32 ký tự a-z, 0-9, . _ - (không dùng 'admin')")
-        if username in self._data:
-            raise ValueError("tên đăng nhập đã có")
         self._check(role, channels or [], password)
         salt = secrets.token_bytes(16)
-        self._data[username] = {
+        account = {
             "name": name.strip()[:60] or username,
             "role": role,
             "channels": channels or [],
@@ -139,25 +137,73 @@ class Users:
             "hash": _hash(password, salt),
             "created": now_iso(),
         }
-        self._save()
-        return self._user(username, self._data[username])
+
+        def change(d: dict[str, Any]) -> None:
+            if username in d:
+                raise ValueError("tên đăng nhập đã có")
+            d[username] = account
+
+        self.docs.update("users", change, {})
+        return self._user(username, account)
 
     def update(self, username: str, **fields: Any) -> None:
-        d = self._data.get(username)
-        if d is None:
-            raise KeyError(username)
         self._check(fields.get("role"), fields.get("channels"), fields.get("password"))
-        if (password := fields.get("password")) is not None:
+        hashed = None
+        if (password := fields.get("password")) is not None:  # hash once, outside the retry loop
             salt = secrets.token_bytes(16)
-            d["salt"], d["hash"] = salt.hex(), _hash(password, salt)
-        for key in ("role", "channels", "disabled"):
-            if fields.get(key) is not None:
-                d[key] = fields[key]
-        if fields.get("name"):
-            d["name"] = str(fields["name"]).strip()[:60]
-        self._save()
+            hashed = (salt.hex(), _hash(password, salt))
+
+        def change(accounts: dict[str, Any]) -> None:
+            d = accounts.get(username)
+            if d is None:
+                raise KeyError(username)
+            if hashed:
+                d["salt"], d["hash"] = hashed
+            for key in ("role", "channels", "disabled"):
+                if fields.get(key) is not None:
+                    d[key] = fields[key]
+            if fields.get("name"):
+                d["name"] = str(fields["name"]).strip()[:60]
+
+        self.docs.update("users", change, {})
 
     def remove(self, username: str) -> None:
-        if self._data.pop(username, None) is None:
-            raise KeyError(username)
-        self._save()
+        def change(accounts: dict[str, Any]) -> None:
+            if accounts.pop(username, None) is None:
+                raise KeyError(username)
+
+        self.docs.update("users", change, {})
+
+
+class Sessions:
+    """Login sessions in the office database, so any web process accepts them. Only a hash
+    of each token is stored: a copy of the database cannot be used to log in."""
+
+    def __init__(self, db: Database):
+        self.db = db
+        db.script(
+            "CREATE TABLE IF NOT EXISTS web_sessions (token TEXT PRIMARY KEY, username TEXT NOT NULL, expiry REAL NOT NULL)"
+        )
+
+    @staticmethod
+    def _key(token: str) -> str:
+        return hashlib.sha256(token.encode()).hexdigest()
+
+    def add(self, token: str, username: str, expiry: float) -> None:
+        self.db.execute(
+            "INSERT INTO web_sessions (token, username, expiry) VALUES (?, ?, ?)",
+            (self._key(token), username, expiry),
+        )
+
+    def get(self, token: str) -> tuple[float, str] | None:
+        row = self.db.row("SELECT username, expiry FROM web_sessions WHERE token=?", (self._key(token),))
+        return (float(row["expiry"]), row["username"]) if row else None
+
+    def remove(self, token: str) -> None:
+        self.db.execute("DELETE FROM web_sessions WHERE token=?", (self._key(token),))
+
+    def drop_user(self, username: str) -> None:
+        self.db.execute("DELETE FROM web_sessions WHERE username=?", (username,))
+
+    def purge(self, now: float) -> None:
+        self.db.execute("DELETE FROM web_sessions WHERE expiry<?", (now,))

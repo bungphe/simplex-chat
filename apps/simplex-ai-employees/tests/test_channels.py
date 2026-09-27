@@ -247,12 +247,9 @@ async def test_zalo_poll_refreshes_token_and_ai_answers_only_new_messages(setup,
 
     # the rotated token pair is kept (owner-only) so it survives restarts
     assert platforms.refreshes == 1
-    secrets_file = tmp_path / "state" / "channel_secrets.json"
-    assert json.loads(secrets_file.read_text())["zalo-shop"] == {
-        "access_token": "fresh",
-        "refresh_token": "r2",
-    }
-    assert stat.S_IMODE(os.stat(secrets_file).st_mode) == 0o600
+    assert hub.secrets["zalo-shop"] == {"access_token": "fresh", "refresh_token": "r2"}
+    if office.db is None:  # SQLite: the file holding tokens is owner-only
+        assert stat.S_IMODE(os.stat(tmp_path / "state" / "office.sqlite").st_mode) == 0o600
 
     # only the message that arrived after start-up was answered; the backlog is context
     assert platforms.sent == [
@@ -885,11 +882,10 @@ async def test_staff_accounts_roles_and_channel_scope(ui, tmp_path):
         "disabled": False,
         "created": users["thu"]["created"],
     }
-    stored = (tmp_path / "state" / "users.json").read_text()
-    assert (
-        "thu-pass-2026" not in stored
-        and oct(os.stat(tmp_path / "state" / "users.json").st_mode & 0o777) == "0o600"
-    )
+    stored = json.dumps(office.docs.get("users"))
+    assert "thu-pass-2026" not in stored and '"thu"' in stored  # the account is there, hashed
+    if office.db is None:
+        assert oct(os.stat(tmp_path / "state" / "office.sqlite").st_mode & 0o777) == "0o600"
     await client.post("/api/logout", json={}, headers=H)
 
     # the sales agent: inbox of their channel only

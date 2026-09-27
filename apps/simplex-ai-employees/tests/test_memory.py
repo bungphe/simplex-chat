@@ -46,7 +46,7 @@ async def test_old_turns_are_summarized_and_remembered(tmp_path):
     assert "câu 0: em là An, SĐT 0901" in request and "trả lời 0" in request
     assert sales.state.summary(7) == "Chị An, SĐT 0901, hỏi MA-100; đã hẹn giao thứ Bảy."
     assert sales.state.unsummarized(7) == []
-    assert EmployeeState(sales.state.path).summary(7) == sales.state.summary(7)  # on disk
+    assert EmployeeState(sales.state.path, db=sales.state.db).summary(7) == sales.state.summary(7)  # on disk
     assert [r["kind"] for r in sales.office.runlog.tail(kind="memory")] == ["memory"]
 
     # the next reply carries the summary, although those turns left the window long ago
@@ -195,3 +195,55 @@ async def test_memory_in_the_admin_ui(client):
     assert d["summary"] == "Chị Hà ở Hà Nội (đã chuyển nhà)" and d["notes"] == {"địa chỉ": "Cầu Giấy"}
     # but not the shared memory of the employee
     assert (await c.post("/api/employees/sales/memory", json={"text": "x"}, headers=H)).status == 403
+
+
+def test_old_json_state_moves_into_the_tables(tmp_path):
+    old = {
+        "admins": [9],
+        "contacts": {"7": "An"},
+        "history": {
+            "7": [
+                {"role": "user", "content": "chào", "ts": "2026-09-01T10:00:00+07:00"},
+                {"role": "assistant", "content": "dạ", "ts": "2026-09-01T10:00:00+07:00"},
+            ]
+        },
+        "unsummarized": {"7": [{"role": "user", "content": "cũ", "ts": "2026-08-01T10:00:00+07:00"}]},
+        "notes": {"7": {"phone": "0901"}},
+        "summaries": {"7": {"text": "Chị An", "updated": "2026-09-01"}},
+        "languages": {"7": {"lang": "vi", "source": "staff"}},
+    }
+    path = tmp_path / "sales.json"
+    path.write_text(json.dumps(old, ensure_ascii=False))
+    state = EmployeeState(path)
+    assert state.contacts == {7: "An"} and state.admins == [9]
+    assert [t["content"] for t in state.history(7)] == ["chào", "dạ"]
+    assert [t["content"] for t in state.unsummarized(7)] == ["cũ"]
+    assert state.notes(7) == {"phone": "0901"} and state.summary(7) == "Chị An"
+    assert state.language(7) == {"lang": "vi", "source": "staff"}
+    assert not path.exists() and path.with_suffix(".json.imported").exists()  # imported once
+    again = EmployeeState(path)
+    assert again.history(7) == state.history(7) and again.admins == [9]
+
+
+def test_many_contacts_write_rows_not_files(tmp_path):
+    state = EmployeeState(tmp_path / "sales.json")
+    for cid in range(2000):
+        state.remember_contact(cid, f"Khách {cid}")
+        state.append_turn(cid, "hỏi", "đáp", keep=4)
+    assert len(state.contacts) == 2000 and state.contact_overview(limit=5)[0]["turns"] == 1
+
+
+def test_orders_are_numbered_per_employee_and_settings_survive_concurrent_writers(tmp_path):
+    a = EmployeeState(tmp_path / "sales.json")
+    b = EmployeeState(tmp_path / "sales.json")  # another process on the same database
+    b.cache_seconds = 0
+    assert [a.add_action(status="pending")["id"], b.add_action(status="pending")["id"]] == [1, 2]
+    assert [x["id"] for x in a.pending_actions()] == [1, 2]
+    a.update_action(1, status="done")
+    assert [x["id"] for x in b.pending_actions()] == [2]
+    # both write the settings document; neither change is lost
+    a.data  # noqa: B018 - a reads version 0
+    b.add_admin(5)
+    a.set_override("paused", True)  # a's copy is stale: it re-reads and retries
+    fresh = EmployeeState(tmp_path / "sales.json")
+    assert fresh.admins == [5] and fresh.overrides == {"paused": True}

@@ -33,7 +33,7 @@ async def test_admin_login_and_runtime_config(tmp_path):
     assert sales.settings.paused
 
     # overrides survive a restart
-    reloaded = EmployeeState(sales.state.path)
+    reloaded = EmployeeState(sales.state.path, db=sales.state.db)
     assert reloaded.overrides["model"] == "claude-sonnet-5" and reloaded.is_admin(5)
     assert "claude-sonnet-5" in await sales.command(5, "ai", "show")
 

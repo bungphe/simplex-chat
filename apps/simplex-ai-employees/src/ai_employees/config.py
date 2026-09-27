@@ -97,6 +97,8 @@ class AppConfig:
     catch_up_hours: float = 12.0
     # The language staff read and write: inbox translations and long-term summaries.
     staff_language: str = "vi"
+    # PostgreSQL shared by several office processes; None: SQLite files in state_dir.
+    database_url: str | None = None
 
     def model_profile(self, name: str) -> ModelProfile | None:
         """A declared model by name, or an implicit Claude model for a bare `claude-*` id."""
@@ -235,6 +237,9 @@ def parse_config(raw: dict[str, Any], base_dir: Path) -> AppConfig:
         channels=tuple(channels),
         catch_up_hours=float(raw.get("catch_up_hours", 12)),
         staff_language=str(raw.get("staff_language") or "vi"),
+        database_url=raw.get("database_url")
+        or (os.environ.get(str(raw["database_url_env"])) if raw.get("database_url_env") else None)
+        or None,
     )
 
 

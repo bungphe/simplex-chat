@@ -184,7 +184,7 @@ async def test_summaries_stay_in_the_staff_language(tmp_path):
     llm = ScriptedLLM(text("Khách: Tanaka"))
     sales = make_office(tmp_path, llm).employees["sales"]
     sales.state.append_turn(1, "こんにちは", "こんにちは", keep=0)
-    sales.state.data["unsummarized"]["1"] = sales.state.data["history"].pop("1")
+    sales.state.archive_history(1)
     assert await sales.agent.summarize(1, "Tanaka")
     assert "{staff}" in SUMMARY_PROMPT
     assert (

@@ -7,7 +7,6 @@ import asyncio
 import hmac
 import json
 import logging
-import os
 from collections import defaultdict
 from contextlib import AsyncExitStack
 from datetime import UTC, datetime
@@ -22,6 +21,7 @@ from . import skills as sk
 from .actions import ActionDesk
 from .agent import Agent, RunResult
 from .config import EFFORT_LEVELS, AppConfig, ConfigError, EmployeeConfig, parse_models
+from .db import Database, DocStore, connect
 from .llm import LLM
 from .providers import ChatModel, ModelProfile, make_model
 from .routines import Routine
@@ -72,7 +72,7 @@ class Employee:
         self.id = cfg.id
         self.base = cfg
         self.office = office
-        self.state = EmployeeState(Path(state_dir) / f"{cfg.id}.json")
+        self.state = EmployeeState(Path(state_dir) / f"{cfg.id}.json", db=office.db, employee=cfg.id)
         self.agent = Agent(self)
         self.actions = ActionDesk(self)
         self._locks: defaultdict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
@@ -493,9 +493,12 @@ class Office:
         self._models: dict[str, ChatModel] = {}
         self.tick_seconds = tick_seconds
         self._stopping = asyncio.Event()
-        self.runlog = RunLog(Path(config.state_dir) / "runlog.jsonl")
-        self._office_file = Path(config.state_dir) / "office.json"
-        self.runtime_models: dict[str, dict[str, Any]] = self._load_office_file().get("models", {})
+        # database_url: one PostgreSQL for every process; otherwise SQLite files in state_dir
+        self.db: Database | None = connect(config.database_url) if config.database_url else None
+        self.office_db = self.db or Database(str(Path(config.state_dir) / "office.sqlite"))
+        self.docs = DocStore(self.office_db)
+        self._import_office_file(Path(config.state_dir) / "office.json")
+        self.runlog = RunLog(Path(config.state_dir) / "runlog.jsonl", db=self.db)
         prepare_skills(config)
         self.employees: dict[str, Employee] = {
             e.id: Employee(e, self, config.state_dir) for e in config.employees
@@ -507,24 +510,24 @@ class Office:
     @property
     def http_client(self) -> httpx2.AsyncClient:
         if self._http is None:
-            self._http = httpx2.AsyncClient(timeout=60.0)
+            # Replies wait on model APIs for seconds: allow many requests in flight at once
+            # (the default pool of 100 caps a process near 100 replies per second).
+            limits = httpx2.Limits(max_connections=2000, max_keepalive_connections=200)
+            self._http = httpx2.AsyncClient(timeout=60.0, limits=limits)
         return self._http
 
     # models: declared in the config, or added at runtime from the admin UI
 
-    def _load_office_file(self) -> dict[str, Any]:
-        if self._office_file.exists():
-            return json.loads(self._office_file.read_text(encoding="utf-8"))
-        return {}
+    @property
+    def runtime_models(self) -> dict[str, dict[str, Any]]:
+        """Models added from the admin UI (API keys included): shared by all processes."""
+        return self.docs.get("office", {}).get("models", {})
 
-    def _save_office_file(self) -> None:
-        self._office_file.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self._office_file.with_suffix(".tmp")
-        # Runtime models may carry API keys: owner-only permissions.
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump({"models": self.runtime_models}, f, ensure_ascii=False, indent=1)
-        os.replace(tmp, self._office_file)
+    def _import_office_file(self, path: Path) -> None:
+        if path.exists():  # models added at runtime before they were kept in the database
+            models = json.loads(path.read_text(encoding="utf-8")).get("models", {})
+            self.docs.update("office", lambda d: d.setdefault("models", {}).update(models), {})
+            path.rename(path.with_suffix(".json.imported"))
 
     def model_profile(self, name: str) -> ModelProfile | None:
         if name in self.runtime_models:
@@ -538,20 +541,21 @@ class Office:
         if name in self.config.models:
             raise ConfigError(f"model {name} is declared in the config file; edit it there")
         profile = parse_models({name: raw})[name]  # validates
-        self.runtime_models[name] = raw
+        self.docs.update("office", lambda d: d.setdefault("models", {}).__setitem__(name, raw), {})
         self._models.pop(name, None)
-        self._save_office_file()
         return profile
 
     def remove_runtime_model(self, name: str) -> None:
         if name not in self.runtime_models:
             raise KeyError(name)
-        del self.runtime_models[name]
+        self.docs.update("office", lambda d: d.get("models", {}).pop(name, None), {})
         self._models.pop(name, None)
-        self._save_office_file()
 
     def model_for(self, name: str) -> ChatModel | None:
         """One client per model, shared by the employees assigned to it."""
+        cached = self._models.get(name)
+        if cached is not None and name in self.runtime_models and cached.profile != self.model_profile(name):
+            self._models.pop(name)  # changed from the admin UI, maybe by another process
         if name not in self._models:
             profile = self.model_profile(name)
             if profile is None:

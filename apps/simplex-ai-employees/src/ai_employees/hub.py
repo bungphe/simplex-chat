@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -50,11 +49,12 @@ class ChannelHub:
     def __init__(self, office: Office):
         self.office = office
         state_dir = Path(office.config.state_dir)
-        self.inbox = Inbox(state_dir / "inbox.db")
-        self._secrets_file = state_dir / "channel_secrets.json"
-        self.secrets: dict[str, dict[str, str]] = (
-            json.loads(self._secrets_file.read_text(encoding="utf-8")) if self._secrets_file.exists() else {}
-        )
+        self.inbox = Inbox(office.db or state_dir / "inbox.db")
+        old = state_dir / "channel_secrets.json"
+        if old.exists():  # tokens kept before they moved into the database
+            saved = json.loads(old.read_text(encoding="utf-8"))
+            office.docs.update("channel_secrets", lambda d: d.update(saved), {})
+            old.rename(old.with_suffix(".json.imported"))
         self.channels: dict[str, Channel] = {c.id: make_channel(c, self) for c in office.config.channels}
         self.started = datetime.now(UTC)
         self.catch_up = timedelta(hours=office.config.catch_up_hours)
@@ -76,14 +76,13 @@ class ChannelHub:
     # ------------------------------------------------------------------ #
     # secrets that change at runtime (rotating Zalo tokens), owner-only file
 
+    @property
+    def secrets(self) -> dict[str, dict[str, str]]:
+        """Tokens that change at runtime (rotating Zalo tokens), shared by all processes."""
+        return self.office.docs.get("channel_secrets", {})
+
     def save_secret(self, channel_id: str, **values: str) -> None:
-        self.secrets.setdefault(channel_id, {}).update(values)
-        self._secrets_file.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self._secrets_file.with_suffix(".tmp")
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(self.secrets, f)
-        os.replace(tmp, self._secrets_file)
+        self.office.docs.update("channel_secrets", lambda d: d.setdefault(channel_id, {}).update(values), {})
 
     # ------------------------------------------------------------------ #
     # polling

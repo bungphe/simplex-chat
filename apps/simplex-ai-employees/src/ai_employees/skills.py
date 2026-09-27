@@ -354,15 +354,18 @@ def recent_conversations(ctx: SkillContext, hours: int) -> str:
     state = ctx.employee.state
     limit = int(ctx.options.get("max_chars", 12000))
     parts: list[str] = []
-    for cid, name in state.contacts.items():
-        turns = [
-            t for t in state.timed_history(cid) if "ts" in t and datetime.fromisoformat(t["ts"]) >= since
-        ]
+    for cid, turns in state.turns_since(since.isoformat(timespec="seconds")).items():
+        name = state.contact_name(cid)
+        turns = [t for t in turns if t.get("ts") and datetime.fromisoformat(t["ts"]) >= since]
         if turns:
             lines = [f"{'Contact' if t['role'] == 'user' else 'You'}: {t['content'][:400]}" for t in turns]
             parts.append(f"## {name} (contact #{cid}, {len(turns) // 2} exchanges)\n" + "\n".join(lines))
     # Conversations only say what was promised; the queue says what actually happened.
-    requests = [a for a in state.actions if datetime.fromisoformat(a["created"]) >= since]
+    requests = [
+        a
+        for a in reversed(state.recent_actions(500, since=since.isoformat(timespec="seconds")))
+        if datetime.fromisoformat(a["created"]) >= since
+    ]
     if requests:
         parts.insert(
             0,

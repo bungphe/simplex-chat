@@ -148,8 +148,8 @@ async def test_models_keys_are_write_only(ui, tmp_path):
         and row["source"] == "ui"
         and row["describe"] == "openai: deepseek-chat @ api.deepseek.com"
     )
-    office_file = tmp_path / "state" / "office.json"
-    assert stat.S_IMODE(os.stat(office_file).st_mode) == 0o600
+    if office.db is None:  # SQLite: keys added from the UI are in an owner-only file
+        assert stat.S_IMODE(os.stat(tmp_path / "state" / "office.sqlite").st_mode) == 0o600
     assert office.model_profile("deepseek").extra_body == {"temperature": 0.2}
 
     # assign it, then test a connection on the Claude model through the fake

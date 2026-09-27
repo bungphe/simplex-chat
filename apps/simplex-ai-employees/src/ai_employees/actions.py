@@ -120,7 +120,7 @@ class ActionDesk:
         return name in self.employee.settings.releases
 
     def pending(self) -> list[dict[str, Any]]:
-        return [a for a in self.state.actions if a["status"] == "pending"]
+        return self.state.pending_actions()
 
     async def request(self, action: ActionDef, args: dict[str, str], ctx: sk.SkillContext) -> str:
         rec = self.state.add_action(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace as NS
@@ -92,7 +93,28 @@ def make_office(
             },
         ],
     }
+    if base := os.environ.get("AIE_TEST_DATABASE_URL"):
+        raw["database_url"] = postgres_schema(base, tmp_path)
     return Office(parse_config(raw, base_dir=tmp_path), llm, http)
+
+
+_SCHEMAS: set[str] = set()
+
+
+def postgres_schema(base: str, tmp_path: Path) -> str:
+    """A fresh PostgreSQL schema per test (AIE_TEST_DATABASE_URL runs the suite on PostgreSQL)."""
+    import hashlib
+
+    import psycopg
+
+    schema = "t_" + hashlib.sha1(str(tmp_path).encode()).hexdigest()[:16]
+    if schema not in _SCHEMAS:  # the same test may start an office again (a "restart")
+        with psycopg.connect(base, autocommit=True) as c:
+            c.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
+            c.execute(f"CREATE SCHEMA {schema}")
+        _SCHEMAS.add(schema)
+    sep = "&" if "?" in base else "?"
+    return f"{base}{sep}options=-csearch_path%3D{schema}"
 
 
 class OpenAIServer:

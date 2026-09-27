@@ -29,7 +29,7 @@ from aiohttp import web
 from . import skills as sk
 from .config import EFFORT_LEVELS, AdminUIConfig, ConfigError
 from .providers import PROVIDERS, ModelError
-from .users import User, Users
+from .users import Sessions, User, Users
 
 if TYPE_CHECKING:
     from .employee import Employee, Office
@@ -51,7 +51,7 @@ SECURITY_HEADERS = {
 
 OFFICE: web.AppKey[Office] = web.AppKey("office")
 PASSWORD: web.AppKey[str] = web.AppKey("password")
-SESSIONS: web.AppKey[dict[str, tuple[float, str]]] = web.AppKey("sessions")  # token -> (expiry, user)
+SESSIONS: web.AppKey[Sessions] = web.AppKey("sessions")
 USERS: web.AppKey[Users] = web.AppKey("users")
 USER: web.RequestKey[User] = web.RequestKey("user")
 
@@ -107,21 +107,19 @@ async def guard(request: web.Request, handler: Any) -> web.StreamResponse:
 def _session_user(request: web.Request) -> User | None:
     token = request.cookies.get(COOKIE, "")
     sessions = request.app[SESSIONS]
-    session = sessions.get(token)
+    session = sessions.get(token) if token else None
     if session is None:
         return None
     expiry, username = session
     user = request.app[USERS].get(username)  # a disabled or deleted account loses its sessions
     if expiry < time.time() or user is None:
-        sessions.pop(token, None)
+        sessions.remove(token)
         return None
     return user
 
 
 def _drop_sessions(app: web.Application, username: str) -> None:
-    for token, (_, u) in list(app[SESSIONS].items()):
-        if u == username:
-            app[SESSIONS].pop(token, None)
+    app[SESSIONS].drop_user(username)
 
 
 async def _body(request: web.Request) -> dict[str, Any]:
@@ -167,7 +165,8 @@ async def login(request: web.Request) -> web.Response:
         log.warning("admin UI: failed login for %r from %s", username[:40], request.remote)
         raise ApiError(401, "Sai tên đăng nhập hoặc mật khẩu")
     token = secrets.token_urlsafe(32)
-    request.app[SESSIONS][token] = (time.time() + SESSION_TTL, user.username)
+    request.app[SESSIONS].purge(time.time())
+    request.app[SESSIONS].add(token, user.username, time.time() + SESSION_TTL)
     log.info("admin UI: %s logged in", user.username)
     resp = _json({"ok": True, "user": user.to_dict()})
     resp.set_cookie(
@@ -177,7 +176,7 @@ async def login(request: web.Request) -> web.Response:
 
 
 async def logout(request: web.Request) -> web.Response:
-    request.app[SESSIONS].pop(request.cookies.get(COOKIE, ""), None)
+    request.app[SESSIONS].remove(request.cookies.get(COOKIE, ""))
     resp = _json({"ok": True})
     resp.del_cookie(COOKIE, path="/")
     return resp
@@ -476,14 +475,19 @@ async def routine_pause(request: web.Request) -> web.Response:
 
 async def approvals(request: web.Request) -> web.Response:
     office = request.app[OFFICE]
-    items = [
-        {**a, "employee": e.id, "employee_name": e.settings.display_name}
+
+    def tagged(e: Employee, actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [{**a, "employee": e.id, "employee_name": e.settings.display_name} for a in actions]
+
+    pending = [a for e in office.employees.values() for a in tagged(e, e.state.pending_actions())]
+    pending.sort(key=lambda a: a["created"])
+    recent = [
+        a
         for e in office.employees.values()
-        for a in e.state.actions
+        for a in tagged(e, e.state.recent_actions(150))
+        if a["status"] != "pending"
     ]
-    items.sort(key=lambda a: (a["status"] != "pending", a["created"]), reverse=False)
-    pending = [a for a in items if a["status"] == "pending"]
-    recent = sorted((a for a in items if a["status"] != "pending"), key=lambda a: a["created"], reverse=True)
+    recent.sort(key=lambda a: a["created"], reverse=True)
     return _json({"pending": pending, "recent": recent[:100]})
 
 
@@ -590,19 +594,7 @@ async def model_test(request: web.Request) -> web.Response:
 
 async def conversations(request: web.Request) -> web.Response:
     e = _employee(request)
-    rows = []
-    for cid, name in e.state.contacts.items():
-        turns = e.state.timed_history(cid)
-        rows.append(
-            {
-                "id": cid,
-                "name": name,
-                "turns": len(turns) // 2,
-                "last": turns[-1].get("ts") if turns else None,
-                "admin": e.state.is_admin(cid),
-            }
-        )
-    rows.sort(key=lambda r: r["last"] or "", reverse=True)
+    rows = [{**r, "admin": e.state.is_admin(r["id"])} for r in e.state.contact_overview()]
     return _json({"contacts": rows})
 
 
@@ -1019,8 +1011,8 @@ def create_app(office: Office, password: str) -> web.Application:
     app = web.Application(middlewares=[guard], client_max_size=256 * 1024)
     app[OFFICE] = office
     app[PASSWORD] = password
-    app[SESSIONS] = {}
-    app[USERS] = Users(os.path.join(office.config.state_dir, "users.json"), password)
+    app[SESSIONS] = Sessions(office.office_db)
+    app[USERS] = Users(office.docs, password, legacy_path=os.path.join(office.config.state_dir, "users.json"))
     r = app.router
     r.add_get("/", page)
     r.add_get("/static/{file}", page)

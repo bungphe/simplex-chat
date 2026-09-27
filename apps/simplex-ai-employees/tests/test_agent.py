@@ -62,7 +62,7 @@ async def test_memory_is_per_contact_and_trimmed(tmp_path):
     assert llm.calls[2]["messages"][0] == {"role": "user", "content": "câu 0"}  # history was sent
     assert llm.calls[3]["messages"] == [{"role": "user", "content": "xin chào"}]  # other contact
     # persisted to disk
-    assert EmployeeState(sales.state.path).history(1) == sales.state.history(1)
+    assert EmployeeState(sales.state.path, db=sales.state.db).history(1) == sales.state.history(1)
 
 
 async def test_ask_colleague_consults_other_employee_without_delegation(tmp_path):

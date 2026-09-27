@@ -208,7 +208,9 @@ class OpenAICompatibleChatModel:
 
     def __init__(self, profile: ModelProfile, http: httpx2.AsyncClient | None = None):
         self.profile = profile
-        self.http = http or httpx2.AsyncClient(timeout=profile.timeout)
+        self.http = http or httpx2.AsyncClient(
+            timeout=profile.timeout, limits=httpx2.Limits(max_connections=2000, max_keepalive_connections=200)
+        )
         self.url = (profile.base_url or "https://api.openai.com/v1").rstrip("/") + "/chat/completions"
 
     def supports(self, skill: Skill) -> bool:
