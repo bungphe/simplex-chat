@@ -23,6 +23,9 @@ def main() -> None:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    # request logs show full URLs, and Telegram's carry the bot token
+    for noisy in ("httpx", "httpx2", "httpcore"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
     try:
         config = load_config(args.config)
         prepare_skills(config)

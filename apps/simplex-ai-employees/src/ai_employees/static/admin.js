@@ -460,7 +460,8 @@ views.conversations = async (arg) => {
 // --------------------------------------------------------------------------
 // Unified inbox: every channel's conversations in one place
 
-const CH_SHORT = { simplex: "SimpleX", zalo_oa: "Zalo OA", zalo_personal: "Zalo", facebook: "Messenger", webhook: "Web" };
+const CH_SHORT = { simplex: "SimpleX", zalo_oa: "Zalo OA", zalo_personal: "Zalo", facebook: "Messenger", webhook: "Web",
+  telegram: "Telegram", whatsapp: "WhatsApp", email: "Email" };
 const SENDER = { customer: "Khách", ai: "AI", human: "Nhân viên", system: "Hệ thống" };
 let inboxSel = null;
 
@@ -478,9 +479,10 @@ const ATT_LABEL = { image: "Ảnh", video: "Video", audio: "Ghi âm", file: "T�
 // (/api/inbox/.../media/...), since the page may only load images from itself.
 function attachmentView(cid, m, a, i) {
   const media = `/api/inbox/${cid}/media/${m.id}/${i}`;
-  const remote = (u) => typeof u === "string" && /^https?:\/\//.test(u);
+  // http(s) links, and files only the channel can download (telegram:<file id>)
+  const remote = (u) => typeof u === "string" && /^(https?:\/\/|telegram:)/.test(u);
   const label = `${ATT_LABEL[a.kind] || "Tệp"}${a.name ? ": " + a.name : ""}`;
-  if (a.kind === "link" && remote(a.url)) {
+  if (a.kind === "link" && /^https?:\/\//.test(a.url || "")) {
     return h("a", { class: "att-link", href: a.url, target: "_blank", rel: "noopener noreferrer" },
       a.thumb && a.thumb.startsWith("data:image/") ? h("img", { src: a.thumb, alt: "" }) : null, label);
   }
@@ -769,6 +771,17 @@ views.channels = async () => {
     let how;
     if (c.type === "simplex") how = "tin đến trực tiếp";
     else if (c.type === "webhook") how = h("span", { class: "mono" }, `POST /hooks/${c.id}`);
+    else if (c.type === "telegram") {
+      const btn = h("button", {}, "Đăng ký webhook");
+      btn.addEventListener("click", () => run(async () => {
+        btn.disabled = true;
+        try { toast(`Telegram sẽ gửi tin tới ${(await api("POST", `/api/channels/${encodeURIComponent(c.id)}/webhook`, {})).url}`); go("channels"); }
+        finally { btn.disabled = false; }
+      }));
+      how = h("div", {}, h("div", { class: "muted" }, s.webhook ? `tin đẩy về ${s.webhook}` : "chưa đăng ký webhook"), btn);
+    }
+    else if (c.type === "whatsapp") how = h("div", {}, h("div", { class: "muted" }, "tin đẩy về từ WAHA"), h("span", { class: "mono" }, `POST /hooks/${c.id}`));
+    else if (c.type === "email") how = h("div", {}, h("div", { class: "muted" }, "Inbound Parse → trả lời qua SMTP"), h("span", { class: "mono" }, `POST /hooks/${c.id}?key=…`));
     else if (c.type === "zalo_personal") {
       const box = h("div", { class: "zalo-login" });
       const btn = h("button", {}, "Đăng nhập Zalo (QR)");

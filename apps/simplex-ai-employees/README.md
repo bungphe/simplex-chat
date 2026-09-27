@@ -306,7 +306,7 @@ Mở `http://127.0.0.1:8080`. Chủ đăng nhập với tên `admin` và mật k
 | Trang | Làm được gì |
 |---|---|
 | Tổng quan | Trạng thái từng nhân viên, số việc 24 giờ, yêu cầu chờ duyệt, lịch tiếp theo, địa chỉ SimpleX |
-| Hộp thư | **Mọi kênh chat trong một màn hình**: SimpleX, Zalo OA, Zalo cá nhân, Messenger, webhook. Trả lời khách, AI gợi ý câu trả lời, tiếp quản / giao lại cho AI, đổi nhân viên phụ trách |
+| Hộp thư | **Mọi kênh chat trong một màn hình**: SimpleX, Zalo OA, Zalo cá nhân, Messenger, Telegram, WhatsApp, email, webhook. Trả lời khách, AI gợi ý câu trả lời, tiếp quản / giao lại cho AI, đổi nhân viên phụ trách |
 | Kênh chat & SimpleX | Trạng thái từng kênh, lấy tin ngay, đăng nhập Zalo cá nhân bằng QR; địa chỉ SimpleX kèm mã QR, tạo link mời một lần, kết nối bằng link |
 | Nhân viên | Sửa vai trò, gán model, mức suy nghĩ, bật/tắt skill, mở kênh hành động, quy tắc sửa sai, chạy/tạm dừng lịch, gỡ quản trị viên, khôi phục cấu hình gốc |
 | Chờ duyệt | Duyệt hoặc từ chối yêu cầu của mọi nhân viên, xem lịch sử |
@@ -339,8 +339,8 @@ Bảo mật của giao diện:
 
 ## Kênh chat và hộp thư chung
 
-Ngoài SimpleX, nhân viên AI trả lời khách trên Zalo, Facebook Messenger và mọi nền tảng khác qua
-webhook. Mọi hội thoại vào **Hộp thư** chung trên giao diện web (lưu ở `state_dir/inbox.db`).
+Ngoài SimpleX, nhân viên AI trả lời khách trên Zalo, Facebook Messenger, Telegram, WhatsApp, email và mọi
+nền tảng khác qua webhook. Mọi hội thoại vào **Hộp thư** chung trên giao diện web (lưu ở `state_dir/inbox.db`).
 
 ```yaml
 channels:
@@ -364,7 +364,7 @@ channels:
     employee: sales
     page_id: "100000000000000"
     access_token_env: FB_PAGE_TOKEN
-  - id: website                    # nền tảng khác (chat trên web, Telegram qua n8n…)
+  - id: website                    # nền tảng khác (chat trên web, cầu nối n8n…)
     type: webhook
     employee: sales
     secret_env: WEBCHAT_SECRET
@@ -413,6 +413,45 @@ tài khoản riêng cho bán hàng. Chạy gateway: đặt `ZALO_GATEWAY_KEY` v�
 nhiên dài) trong `.env`, `docker compose --profile zalo up -d`, rồi vào **Kênh chat & SimpleX → Đăng nhập
 Zalo (QR)** và quét mã bằng app Zalo. Id của kênh chính là id tài khoản trên gateway. Phiên đăng nhập nằm
 trong volume `zalo-sessions`; coi như mật khẩu.
+
+**Telegram, WhatsApp, email** (dựng lại từ các adapter của m.agent; mọi yêu cầu vào đều được xác thực):
+
+```yaml
+  - id: telegram
+    type: telegram
+    employee: sales
+    bot_token_env: TELEGRAM_BOT_TOKEN      # từ @BotFather
+    secret_env: TELEGRAM_WEBHOOK_SECRET    # chuỗi ngẫu nhiên; Telegram gửi lại trong mỗi tin
+    public_url: https://shop.example.com   # địa chỉ HTTPS công khai của máy chủ này
+  - id: whatsapp
+    type: whatsapp                         # qua máy chủ WAHA (github.com/devlikeapro/waha)
+    employee: sales
+    waha_url: http://waha:3000
+    session: default
+    api_key_env: WAHA_API_KEY
+    hmac_key_env: WAHA_WEBHOOK_HMAC
+  - id: email
+    type: email
+    employee: sales
+    secret_env: EMAIL_INBOUND_KEY
+    smtp_host: smtp.example.com            # smtp_port: 587, smtp_tls: starttls | ssl | none
+    smtp_user: support@example.com
+    smtp_password_env: SMTP_PASSWORD
+    smtp_from: "Shop Minh An <support@example.com>"
+```
+
+- *Telegram*: bấm **Đăng ký webhook** trên trang Kênh chat (gọi `setWebhook` với `public_url/hooks/<id kênh>` và
+  `secret_token`). Chỉ trả lời chat riêng, không trả lời trong nhóm. Ảnh/tệp của khách được máy chủ tải qua Bot API;
+  token bot không bao giờ hiện trong giao diện hay nhật ký.
+- *WhatsApp*: trong WAHA đặt webhook `https://<máy chủ>/hooks/whatsapp`, sự kiện `message` (và `message.any` để thấy
+  nhân viên trả lời từ điện thoại), `hmac.key` = `WAHA_WEBHOOK_HMAC` (kiểm chữ ký `X-Webhook-Hmac`, SHA-512). Bỏ qua
+  nhóm và status. Tệp của khách tải từ WAHA bằng API key. WAHA cũng dùng API không chính thức của WhatsApp: nên dùng
+  số riêng cho bán hàng, hoặc WhatsApp Business API qua cầu nối `webhook`.
+- *Email*: nhận thư bằng SendGrid Inbound Parse (hoặc dịch vụ gửi form tương tự) tới
+  `https://<máy chủ>/hooks/email?key=<EMAIL_INBOUND_KEY>` (hoặc Basic Auth với mật khẩu là key). Trả lời qua SMTP, đúng
+  luồng thư (`Re:`, `In-Reply-To`, `References`), phần trích dẫn thư cũ được cắt bỏ. Thư tự động, thư báo lỗi,
+  danh sách thư (`Auto-Submitted`, `Precedence`, `List-Id`, `noreply@`) không được trả lời, nên không có vòng lặp
+  thư. Tệp đính kèm chỉ giữ tên (xem trong hộp thư gốc).
 
 **Webhook** cho mọi nền tảng khác. Cầu nối của bạn gửi tin của khách:
 

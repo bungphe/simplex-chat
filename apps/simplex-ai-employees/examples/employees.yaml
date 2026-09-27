@@ -80,6 +80,25 @@ staff_language: vi
 #     app_secret_env: FB_APP_SECRET       # official webhook: /hooks/fanpage
 #     verify_token: choose-a-long-random-string
 #     poll_seconds: 0
+#   - id: telegram                  # Telegram bot; "Đăng ký webhook" on the channels page
+#     type: telegram
+#     employee: sales
+#     bot_token_env: TELEGRAM_BOT_TOKEN
+#     secret_env: TELEGRAM_WEBHOOK_SECRET
+#     public_url: https://shop.example.com
+#   - id: whatsapp                  # WhatsApp through a WAHA server
+#     type: whatsapp
+#     employee: sales
+#     waha_url: http://waha:3000
+#     api_key_env: WAHA_API_KEY
+#     hmac_key_env: WAHA_WEBHOOK_HMAC
+#   - id: email                     # SendGrid Inbound Parse -> /hooks/email?key=..., replies over SMTP
+#     type: email
+#     employee: sales
+#     secret_env: EMAIL_INBOUND_KEY
+#     smtp_host: smtp.example.com
+#     smtp_user: support@example.com
+#     smtp_password_env: SMTP_PASSWORD
 #   - id: website                   # anything else: your bridge POSTs to /hooks/website
 #     type: webhook
 #     employee: sales

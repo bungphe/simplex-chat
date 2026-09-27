@@ -1,4 +1,5 @@
-"""Chat channels outside SimpleX: Zalo OA, Facebook Messenger and generic webhooks.
+"""Chat channels outside SimpleX: Zalo OA, Facebook Messenger and generic webhooks
+(Telegram, WhatsApp and email are in channels_extra.py).
 
 Each channel polls its platform for new messages (no public URL needed) and can
 send a text reply. The Zalo and Facebook calls follow the same endpoints as the
@@ -54,7 +55,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-TYPES = ("zalo_oa", "zalo_personal", "facebook", "webhook")
+TYPES = ("zalo_oa", "zalo_personal", "facebook", "webhook", "telegram", "whatsapp", "email")
 _ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,47}$")
 
 
@@ -96,10 +97,13 @@ def parse_channel(raw: dict[str, Any], employees: set[str]) -> ChannelConfig:
         "zalo_personal": ("gateway_url",),
         "facebook": ("page_id",),
         "webhook": (),
+        "telegram": ("bot_token|bot_token_env",),
+        "whatsapp": ("waha_url",),
+        "email": ("smtp_host",),
     }[ctype]
     for r in required:
-        if not options.get(r):
-            raise ValueError(f"channel {cid}: '{r}' is required for {ctype}")
+        if not any(options.get(alt) for alt in r.split("|")):
+            raise ValueError(f"channel {cid}: '{r.split('|')[0]}' is required for {ctype}")
     return ChannelConfig(
         id=cid,
         type=ctype,
@@ -135,6 +139,7 @@ def attachment(kind: str, url: Any = None, thumb: Any = None, name: Any = None) 
 
 class Channel:
     type = ""
+    push_format = "json"  # or "form" (multipart / urlencoded posts, e.g. inbound email)
 
     def __init__(self, cfg: ChannelConfig, hub: ChannelHub):
         self.cfg = cfg
@@ -160,7 +165,9 @@ class Channel:
     def accepts_push(self) -> bool:
         return bool(self.secret())
 
-    def verify_push(self, headers: Mapping[str, str], body: bytes) -> bool:
+    def verify_push(
+        self, headers: Mapping[str, str], body: bytes, query: Mapping[str, str] | None = None
+    ) -> bool:
         """Is this request really from the platform? Default: a shared X-Hook-Secret."""
         given = headers.get("X-Hook-Secret", "").encode()
         return bool(self.secret()) and hmac.compare_digest(given, self.secret().encode())
@@ -171,6 +178,11 @@ class Channel:
     async def lookup_name(self, conversation: str) -> str:
         """The customer's display name, when the platform's events do not carry it."""
         return ""
+
+    async def fetch_media(self, url: str) -> tuple[str, bytes] | None:
+        """(content type, bytes) for an attachment only this channel can download
+        (with its credentials); None for ordinary public URLs."""
+        return None
 
 
 def _ms(ts: Any) -> datetime:
@@ -299,7 +311,9 @@ class ZaloOAChannel(Channel):
     def accepts_push(self) -> bool:
         return bool(self.cfg.opt("webhook_secret"))
 
-    def verify_push(self, headers: Mapping[str, str], body: bytes) -> bool:
+    def verify_push(
+        self, headers: Mapping[str, str], body: bytes, query: Mapping[str, str] | None = None
+    ) -> bool:
         """X-ZEvent-Signature: mac=sha256(app_id + body + timestamp + OA secret key)."""
         secret = self.cfg.opt("webhook_secret", "")
         given = headers.get("X-ZEvent-Signature", "").removeprefix("mac=").strip()
@@ -464,7 +478,9 @@ class FacebookChannel(Channel):
             return query.get("hub.challenge", "")
         return None
 
-    def verify_push(self, headers: Mapping[str, str], body: bytes) -> bool:
+    def verify_push(
+        self, headers: Mapping[str, str], body: bytes, query: Mapping[str, str] | None = None
+    ) -> bool:
         """X-Hub-Signature-256: sha256=HMAC-SHA256(app secret, raw body)."""
         secret = self.cfg.opt("app_secret", "")
         given = headers.get("X-Hub-Signature-256", "").removeprefix("sha256=")
@@ -661,7 +677,12 @@ class WebhookChannel(Channel):
 
 
 def make_channel(cfg: ChannelConfig, hub: ChannelHub) -> Channel:
+    from .channels_extra import EmailChannel, TelegramChannel, WhatsAppChannel
+
     classes: dict[str, type[Channel]] = {
+        "telegram": TelegramChannel,
+        "whatsapp": WhatsAppChannel,
+        "email": EmailChannel,
         "zalo_oa": ZaloOAChannel,
         "zalo_personal": ZaloPersonalChannel,
         "facebook": FacebookChannel,

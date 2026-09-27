@@ -230,7 +230,7 @@ def test_channel_config_is_validated(tmp_path):
     bad = [
         ({"id": "Zalo Shop", "type": "zalo_oa", "employee": "sales", "app_id": "1"}, "lowercase"),
         ({"id": "simplex-x", "type": "webhook", "employee": "sales"}, "lowercase"),
-        ({"id": "z", "type": "telegram", "employee": "sales"}, "type must be"),
+        ({"id": "z", "type": "viber", "employee": "sales"}, "type must be"),
         ({"id": "z", "type": "zalo_oa", "employee": "nobody", "app_id": "1"}, "not declared"),
         ({"id": "z", "type": "zalo_oa", "employee": "sales"}, "'app_id' is required"),
         ({"id": "f", "type": "facebook", "employee": "sales"}, "'page_id' is required"),

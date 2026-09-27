@@ -124,6 +124,9 @@ pre.output { white-space: pre-wrap; background: var(--surface-2); border-radius:
 .ch-zalo_personal { background: #0284c7; }
 .ch-facebook { background: #7b3fe4; }
 .ch-webhook { background: #0f766e; }
+.ch-telegram { background: #229ed9; }
+.ch-whatsapp { background: #128c4a; }
+.ch-email { background: #b45309; }
 .thread { display: flex; flex-direction: column; gap: 10px; min-height: 60vh; }
 .thread-head h2 { margin: 0 0 4px; }
 .notes ul { margin: 6px 0 0; }

@@ -23,7 +23,7 @@ from dataclasses import replace
 from importlib import resources
 from typing import TYPE_CHECKING, Any
 
-from aiohttp import web
+from aiohttp import BodyPartReader, web
 
 from . import skills as sk
 from .config import EFFORT_LEVELS, AdminUIConfig, ConfigError
@@ -646,6 +646,9 @@ def _channel_label(office: Office, channel: str) -> dict[str, str]:
         "zalo_personal": "Zalo cá nhân",
         "facebook": "Messenger",
         "webhook": "Webhook",
+        "telegram": "Telegram",
+        "whatsapp": "WhatsApp",
+        "email": "Email",
     }
     return {"type": ch.type if ch else "?", "name": f"{names.get(ch.type, '?') if ch else '?'} · {channel}"}
 
@@ -772,10 +775,16 @@ async def inbox_media(request: web.Request) -> web.Response:
         raise ApiError(404, "no such attachment")
     a = m["attachments"][n]
     url = a.get("thumb") if request.query.get("thumb") and a.get("thumb") else a.get("url") or a.get("thumb")
-    if not url or not url.startswith(("https://", "http://")):
+    channel = _hub(request).channels.get(conv.channel)
+    private = url.startswith("telegram:") if url else False
+    if not url or not (private or url.startswith(("https://", "http://"))):
         raise ApiError(404, "no remote file for this attachment")
     try:
-        ctype, body = await fetch(request.app[OFFICE].http_client, url)
+        # files only the channel can download (Telegram, a WAHA server), with its credentials
+        got = await channel.fetch_media(url) if channel is not None else None
+        if got is None and private:
+            raise MediaError("channel unavailable")
+        ctype, body = got or await fetch(request.app[OFFICE].http_client, url)
     except (MediaError, Exception) as e:  # noqa: BLE001 - expired links, platform errors
         raise ApiError(502, f"Không tải được tệp: {e}") from None
     cache = {"Cache-Control": "private, max-age=3600"}
@@ -907,6 +916,21 @@ async def channel_poll(request: web.Request) -> web.Response:
     return _json({"added": await hub.poll_once(cid), "state": hub.inbox.channel_state(cid)})
 
 
+async def channel_webhook(request: web.Request) -> web.Response:
+    """Telegram: point the bot at this server's /hooks/<channel id>."""
+    ch = _hub(request).channels.get(request.match_info["channel"])
+    if ch is None or not hasattr(ch, "register_webhook"):
+        raise ApiError(404, "this channel has no webhook registration")
+    if not ch.accepts_push():
+        raise ApiError(400, "set the channel's secret first (Telegram sends it back on every update)")
+    try:
+        url = await ch.register_webhook()
+    except Exception as e:  # noqa: BLE001 - wrong token, no public URL
+        raise ApiError(502, str(e)) from None
+    _hub(request).inbox.set_channel_state(ch.id, webhook=url)
+    return _json({"ok": True, "url": url})
+
+
 async def channel_login(request: web.Request) -> web.Response:
     """Zalo personal accounts: start the gateway login and return its QR (a data: URI)."""
     hub = _hub(request)
@@ -975,7 +999,7 @@ def _push_channel(request: web.Request, body: bytes = b"") -> Any:
     ch = request.app[OFFICE].hub.channels.get(request.match_info["channel"])
     if ch is None or not ch.accepts_push():
         raise ApiError(404, "no such channel")
-    if not ch.verify_push(request.headers, body):
+    if not ch.verify_push(request.headers, body, request.query):
         log.warning("hooks: rejected a request for %s from %s (bad signature)", ch.id, request.remote)
         raise ApiError(401, "bad signature")
     return ch
@@ -990,17 +1014,50 @@ async def hook_verify(request: web.Request) -> web.Response:
     return web.Response(text=challenge, content_type="text/plain")
 
 
+async def _form_fields(request: web.Request, limit: int = 2 * 1024 * 1024) -> dict[str, str]:
+    """The text fields of a form post. File parts (email attachments, often several MB,
+    over the app's request limit) are read past and dropped: only their names are kept."""
+    if not request.content_type.startswith("multipart/"):
+        if (request.content_length or 0) > limit:
+            raise ApiError(413, "form too large")
+        return {k: v for k, v in (await request.post()).items() if isinstance(v, str)}
+    fields: dict[str, str] = {}
+    total = 0
+    reader = await request.multipart()
+    while (part := await reader.next()) is not None:
+        if not isinstance(part, BodyPartReader) or part.filename or not part.name:
+            if isinstance(part, BodyPartReader):
+                while await part.read_chunk():
+                    pass
+            continue
+        value = bytearray()
+        while chunk := await part.read_chunk():
+            total += len(chunk)
+            if total > limit:
+                raise ApiError(413, "form too large")
+            value.extend(chunk)
+        fields[part.name] = part.decode(bytes(value)).decode(part.get_charset(default="utf-8"), "replace")
+    return fields
+
+
 async def hook_inbound(request: web.Request) -> web.Response:
-    body = await request.read()
+    office = request.app[OFFICE]
+    target = office.hub.channels.get(request.match_info["channel"])
+    form = target is not None and target.push_format == "form"
+    # form posts (inbound email) are authenticated by the URL key or basic auth, not the body
+    body = b"" if form else await request.read()
     ch = _push_channel(request, body)
     # The Zalo gateway posts to {WEBHOOK_URL}/{account}: the account must be this channel's.
     if (account := request.match_info.get("account")) is not None and account != getattr(ch, "account", None):
         raise ApiError(404, "no such account")
     try:
-        payload = json.loads(body)
+        if form:
+            payload = await _form_fields(request)
+        else:
+            payload = json.loads(body)
         if not isinstance(payload, dict):
             raise ApiError(400, "expected a JSON object")
-        conv = request.app[OFFICE].hub.push_inbound(ch.id, payload)
+        conv = office.hub.push_inbound(ch.id, payload)
     except ValueError as e:
         raise ApiError(400, str(e)) from None
     return _json({"ok": True, "conversation": conv.id if conv else None})
@@ -1079,6 +1136,7 @@ def create_app(office: Office, password: str) -> web.Application:
     r.add_post("/api/simplex/{emp}/invite", simplex_invite)
     r.add_post("/api/simplex/{emp}/connect", simplex_connect)
     r.add_post("/api/channels/{channel}/login", channel_login)
+    r.add_post("/api/channels/{channel}/webhook", channel_webhook)
     r.add_get("/hooks/{channel}", hook_verify)
     r.add_post("/hooks/{channel}", hook_inbound)
     r.add_post("/hooks/{channel}/{account}", hook_inbound)
