@@ -772,6 +772,26 @@ views.inbox = async (arg) => {
         text.value = text.value.trim() ? `${text.value.trimEnd()}\n${filled}` : filled;
         text.focus();
       });
+      // Look up a product (price for this customer, stock, arrivals) and put it into the reply.
+      const pickQuery = h("input", { type: "search", placeholder: "Tìm sản phẩm: tên hoặc SKU" });
+      const pickResults = h("div", { class: "results", hidden: true });
+      const picker = h("div", { class: "product-picker" }, pickResults, pickQuery);
+      let pickTimer;
+      pickQuery.addEventListener("input", () => {
+        clearTimeout(pickTimer);
+        pickTimer = setTimeout(() => run(async () => {
+          const q = pickQuery.value.trim();
+          if (!q) { pickResults.hidden = true; return; }
+          const r = await api("GET", `/api/inbox/${cid}/products?q=${encodeURIComponent(q)}`);
+          const unit = r.currency === "VND" ? "đ" : r.currency;
+          put(pickResults, r.products.length ? r.products.map((p) => {
+            const line = `${p.name} (${p.sku}): ${p.price !== null ? p.price.toLocaleString("vi-VN") + " " + unit : "chưa có giá"}${p.available ? `, còn ${p.available}` : ", tạm hết hàng"}${p.incoming ? `, sắp về ${p.incoming}${p.next_eta ? " khoảng " + p.next_eta : ""}` : ""}`;
+            return h("button", { class: "small", onclick: () => { text.value = text.value.trim() ? `${text.value.trimEnd()}\n${line}` : line; pickResults.hidden = true; pickQuery.value = ""; text.focus(); } },
+              line, p.vip_price ? " ⭐ giá VIP" : "");
+          }) : [h("p", { class: "muted" }, "Không có sản phẩm nào.")]);
+          pickResults.hidden = false;
+        }), 300);
+      });
       const send = () => {
         const body = { text: text.value.trim(), take_over: takeOver.checked, translate: translating() };
         if (!body.text) return;
@@ -809,7 +829,7 @@ views.inbox = async (arg) => {
           h("div", { class: "row" }, h("span", { class: "muted" }, `Trả lời với tên: ${me ? me.name : ""}`),
             h("label", { class: "check inline" }, takeOver, h("span", {}, "Tiếp quản (AI dừng trả lời)")), translateWrap,
             h("label", { class: "check inline", title: "Chỉ nhân viên thấy" }, noteMode, h("span", {}, "Ghi chú nội bộ"))),
-          h("div", { class: "row" }, canned, suggestBtn, sendBtn)));
+          h("div", { class: "row" }, picker, canned, suggestBtn, sendBtn)));
       put(pane, thread.head, thread.contact, thread.mem, thread.msgs, composer);
       if (d.conversation.unread) api("POST", `/api/inbox/${cid}/read`, {}).then(refreshBadge).catch(() => {});
     }
@@ -848,18 +868,21 @@ function contactPanel(c, companies, act) {
     company_id: h("select", {}, h("option", { value: "" }, "— không —"),
       companies.map((x) => h("option", { value: x.id, selected: x.id === c.company_id }, x.name))),
     notes: h("textarea", { rows: 2, placeholder: "Ghi chú về khách (chỉ nhân viên thấy)" }, c.notes),
+    vip: h("input", { type: "checkbox", checked: !!c.vip, disabled: !(me && me.role === "admin") }),
   };
   const channels = c.conversations || [];
   const dupes = (c.duplicates || []).flatMap((g) => g.contacts.filter((x) => x.id !== c.id).map((x) => ({ ...x, reason: g.reason })));
-  const summary = [c.name || "Khách chưa rõ tên", c.phone, c.company].filter(Boolean).join(" · ");
+  const summary = [c.vip ? "⭐ VIP" : null, c.name || "Khách chưa rõ tên", c.phone, c.company].filter(Boolean).join(" · ");
   return [
     h("summary", { class: "muted" }, `Khách hàng: ${summary}${channels.length > 1 ? ` · ${channels.length} kênh` : ""}${dupes.length ? " · có thể trùng" : ""}`),
     h("div", { class: "memory" },
       h("div", { class: "two" }, h("label", {}, "Tên", f.name), h("label", {}, "Công ty", f.company_id),
         h("label", {}, "Số điện thoại", f.phone), h("label", {}, "Email", f.email)),
       h("label", {}, "Ghi chú", f.notes),
+      h("label", { class: "check", title: "Khách VIP được giá VIP (hoặc giá giai đoạn kế tiếp). Quản trị viên đặt." }, f.vip, h("span", {}, "Khách VIP")),
       h("div", { class: "row" }, h("button", { onclick: () => act.save({ name: f.name.value, phone: f.phone.value, email: f.email.value,
-        company_id: f.company_id.value ? parseInt(f.company_id.value, 10) : null, notes: f.notes.value }) }, "Lưu thông tin khách")),
+        company_id: f.company_id.value ? parseInt(f.company_id.value, 10) : null, notes: f.notes.value,
+        ...(me && me.role === "admin" ? { vip: f.vip.checked } : {}) }) }, "Lưu thông tin khách")),
       h("h3", {}, "Các kênh của khách"),
       h("div", { class: "row" }, channels.map((x) => h("button", {
         class: "small" + (x.id === act.current ? " active" : ""), title: x.last_preview,

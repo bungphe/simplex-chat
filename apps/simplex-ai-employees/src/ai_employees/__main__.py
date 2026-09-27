@@ -45,7 +45,8 @@ def main() -> None:
             for r in e.routines:
                 print(f"  routine {r.id}: {r.describe()} -> {r.deliver}")
         for name, a in config.actions.items():
-            print(f"action {name}: {a.method} {a.url} (fields: {', '.join(a.fields)})")
+            target = "inventory order" if a.kind == "stock_order" else f"{a.method} {a.url}"
+            print(f"action {name}: {target} (fields: {', '.join(a.fields)})")
         if config.admin_ui:
             ui = config.admin_ui
             pw = (

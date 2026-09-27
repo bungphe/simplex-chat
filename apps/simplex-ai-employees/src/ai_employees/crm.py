@@ -58,7 +58,7 @@ CREATE INDEX IF NOT EXISTS crm_links_contact ON crm_links (contact_id)
 _PHONE = re.compile(r"(?<![\w+])(?:\+?84|0)(?:[ .-]?\d){9}(?!\d)|(?<![\w+])\+\d(?:[ .-]?\d){7,13}(?!\d)")
 _EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)*\.[a-zA-Z]{2,}")
 FREE_MAIL = {"gmail.com", "yahoo.com", "yahoo.com.vn", "hotmail.com", "outlook.com", "icloud.com", "live.com"}
-FIELDS = ("name", "phone", "email", "company_id", "notes")
+FIELDS = ("name", "phone", "email", "company_id", "notes", "vip")
 
 
 def phone_key(phone: str) -> str:
@@ -92,6 +92,15 @@ class CRM:
     def __init__(self, db: Database):
         self.db = db
         db.script(SCHEMA)
+        # added later: VIP customers get VIP prices (see inventory.py)
+        if db.postgres:
+            db.execute(
+                "ALTER TABLE crm_contacts ADD COLUMN IF NOT EXISTS vip {int} NOT NULL DEFAULT 0".replace(
+                    "{int}", "BIGINT"
+                )
+            )
+        elif "vip" not in {r["name"] for r in db.rows("PRAGMA table_info(crm_contacts)")}:
+            db.execute("ALTER TABLE crm_contacts ADD COLUMN vip INTEGER NOT NULL DEFAULT 0")
 
     # contacts of conversations
 
@@ -169,6 +178,8 @@ class CRM:
         for key, limit in (("name", 120), ("notes", 4000)):
             if key in fields:
                 fields[key] = str(fields[key] or "").strip()[:limit]
+        if "vip" in fields:
+            fields["vip"] = 1 if fields["vip"] else 0
         if "company_id" in fields:
             fields["company_id"] = int(fields["company_id"]) if fields["company_id"] else None
             if fields["company_id"] is not None and self.company(fields["company_id"]) is None:
@@ -211,7 +222,7 @@ class CRM:
         self, query: str = "", company_id: int | None = None, limit: int = 200
     ) -> list[dict[str, Any]]:
         sql = (
-            "SELECT c.id, c.name, c.phone, c.email, c.company_id, c.notes, c.created, "
+            "SELECT c.id, c.name, c.phone, c.email, c.company_id, c.notes, c.vip, c.created, "
             "MAX(v.last_ts) AS last_ts, COUNT(v.id) AS conversation_count "
             "FROM crm_contacts c LEFT JOIN crm_links l ON l.contact_id=c.id "
             "LEFT JOIN conversations v ON v.id=l.conversation_id WHERE 1=1"
@@ -225,7 +236,7 @@ class CRM:
             sql += " AND c.company_id=?"
             args.append(company_id)
         sql += (
-            " GROUP BY c.id, c.name, c.phone, c.email, c.company_id, c.notes, c.created"
+            " GROUP BY c.id, c.name, c.phone, c.email, c.company_id, c.notes, c.vip, c.created"
             " ORDER BY last_ts DESC NULLS LAST, c.id DESC LIMIT ?"
         )
         return self.db.rows(sql, [*args, limit])
@@ -255,7 +266,9 @@ class CRM:
         a, b = self.contact(keep), self.contact(other)
         if a is None or b is None:
             raise KeyError(other if a else keep)
-        filled = {k: b[k] for k in ("name", "phone", "phone_key", "email", "company_id") if not a[k] and b[k]}
+        filled = {
+            k: b[k] for k in ("name", "phone", "phone_key", "email", "company_id", "vip") if not a[k] and b[k]
+        }
         if b["notes"]:
             filled["notes"] = f"{a['notes']}\n{b['notes']}".strip()[:4000]
         with self.db.transaction():

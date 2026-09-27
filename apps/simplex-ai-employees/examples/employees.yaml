@@ -44,6 +44,12 @@ actions:
       address: Delivery address
       items: Products and quantities
     confirm_message: Đơn hàng của bạn đã được xác nhận. Cảm ơn bạn!
+  # Or keep orders in this office's own inventory (Kho hàng page): stock is reserved at
+  # today's price for this customer, after approval. Give the employee the "products"
+  # skill too, so it quotes real prices and stock:
+  # reserve_order:
+  #   kind: stock_order
+  #   description: Chốt đơn và giữ hàng trong kho cho khách.
 
 # Admin web UI (optional). Open http://127.0.0.1:8080 and log in with the password.
 # After a restart, customer messages up to this many hours old still get an AI answer.

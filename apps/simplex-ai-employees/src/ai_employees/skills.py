@@ -419,3 +419,36 @@ def office_report(ctx: SkillContext, hours: int) -> str:
 
 
 BUILTIN = frozenset(REGISTRY)
+
+
+@skill(
+    "products",
+    "Look up products in the shop's inventory: the price for this contact today, how many can be "
+    "sold now, and goods arriving soon (with the expected date, for pre-orders). Search by product "
+    "name, code (SKU) or category. Always check here before quoting a price or promising stock; "
+    "prices change automatically, so never reuse an old price.",
+    {"query": {"type": "string", "description": "Product name, SKU or category words"}},
+)
+def products(ctx: SkillContext, query: str) -> str:
+    office = ctx.employee.office
+    vip = office.hub.is_vip(ctx.employee, ctx.contact_id) if ctx.contact_id is not None else False
+    found = office.inventory.lookup(query, vip=vip)
+    if not found:
+        return "No product matches. Try other words, or ask the contact for the product name."
+    currency = office.inventory.settings()["currency"]
+    lines = []
+    for p in found:
+        attrs = ", ".join(f"{k}: {v}" for k, v in p["attributes"].items())
+        price = (
+            f"{p['price']:,} {currency}" + (" (VIP price for this contact)" if p["vip_price"] else "")
+            if p["price"] is not None
+            else "no price yet"
+        )
+        stock = f"{p['available']} {p['unit'] or 'units'} in stock" if p["available"] else "out of stock"
+        coming = (
+            f"; {p['incoming']} arriving around {p['next_eta']} (can be pre-ordered)" if p["incoming"] else ""
+        )
+        lines.append(
+            f"- {p['sku']} | {p['name']}{' (' + attrs + ')' if attrs else ''} | {price} | {stock}{coming}"
+        )
+    return "\n".join(lines)

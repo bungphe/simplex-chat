@@ -307,6 +307,7 @@ Mở `http://127.0.0.1:8080`. Chủ đăng nhập với tên `admin` và mật k
 |---|---|
 | Tổng quan | Trạng thái từng nhân viên, số việc 24 giờ, yêu cầu chờ duyệt, lịch tiếp theo, địa chỉ SimpleX |
 | Hộp thư | **Mọi kênh chat trong một màn hình**: SimpleX, Zalo OA, Zalo cá nhân, Messenger, Telegram, WhatsApp, email, webhook. Trả lời khách, AI gợi ý câu trả lời, tiếp quản / giao lại cho AI; nhãn, ghi chú nội bộ, câu trả lời mẫu, đóng/mở, giao cho người hoặc nhóm, AI tóm tắt hội thoại |
+| Kho hàng | Sản phẩm, tồn theo kho, đơn nhập (container) tính giá vốn, lô FIFO, tự động định giá 5 giai đoạn, đơn bán, đặt trước, chuyển kho, kiểm kho, gợi ý đặt hàng lại, nhập/xuất CSV |
 | Khách hàng | Danh bạ khách qua mọi kênh (tên, điện thoại, email, công ty, ghi chú), khách có thể trùng, gộp khách, công ty |
 | SLA | Khách đang chờ, chờ quá hạn, thời gian trả lời của AI và từng nhân viên, việc của từng người/nhóm |
 | Cài đặt hộp thư | Nhãn, câu trả lời mẫu, nhóm, quy tắc tự phân loại, mục tiêu thời gian trả lời |
@@ -506,6 +507,44 @@ không ghi đè thông tin nhân viên đã nhập.
 
 Nhân viên bán hàng dùng được mọi tính năng trên trong các kênh mình được xem; nhãn, câu mẫu, nhóm và quy tắc do
 quản trị viên khai báo.
+
+## Kho hàng, nhập hàng và tự động định giá
+
+Dựng lại từ dự án sale-management (module sản phẩm và định giá 5 giai đoạn, module kho và đặt hàng nhà cung cấp),
+trên cơ sở dữ liệu của văn phòng (SQLite hoặc PostgreSQL). Trang **Kho hàng** gồm:
+
+- **Kho & nhà cung cấp:** nhiều kho tổng và cửa hàng (mỗi cửa hàng là một kho con); nhà cung cấp với thời gian giao
+  hàng (ngày), dùng để tính điểm đặt hàng lại.
+- **Sản phẩm:** SKU, nhóm biến thể, thuộc tính, CBM; tồn theo kho (có sẵn, đang giữ, có thể bán), hàng sắp về và
+  ngày về, mức tồn (hết hàng / cần đặt / thấp / vừa / tốt). Nhập và xuất CSV (mở bằng Excel). Tồn đầu kỳ cho hàng
+  đã có trước khi dùng hệ thống; kiểm kho có ghi lý do.
+- **Nhập hàng (đơn nhập / container):** giá vốn cập bến = giá mua × tỷ giá + cước và thuế cả container chia theo
+  thể tích (CBM), hoặc theo giá trị nếu không có CBM. Nhập **% lãi mục tiêu** thì có giá giai đoạn 1
+  (= giá vốn / (1 − lãi)), hoặc nhập giá thì ra % lãi; giá giai đoạn 2-5 tự sinh theo mức giảm (mặc định 10%, 25%,
+  35%, 50%), làm tròn tới 1.000 đ, sửa được từng giá; giá dưới giá vốn được cảnh báo. Nhận hàng theo số thực nhận
+  (ghi số hỏng), nhận nhiều đợt được.
+- **Lô FIFO:** mỗi đợt nhận là một lô với giá vốn và 5 giá riêng. Sản phẩm bán theo giá của **lô đang bán**; lô mới
+  xếp hàng chờ đến khi lô cũ bán hết, rồi lên bán ở **giá giai đoạn 1** (hàng mới về).
+- **Tự động định giá mỗi đêm** (giờ cài đặt được, mặc định 0 giờ, để giá không đổi giữa giờ bán) và nút **Cập nhật
+  giá ngay**: lô chuyển sang giai đoạn kế tiếp khi hàng còn lại (hàng chưa bán và chưa giữ / số nhận trừ phần khách
+  đặt trước) xuống dưới ngưỡng **và** đã giữ giá đủ số ngày tối thiểu, **hoặc** đã giữ giá quá số ngày tối đa (hàng
+  bán chậm). Mặc định: 80% / 60% / 40% / 20%, tối thiểu 7 ngày, tối đa 14 / 30 / 45 / 60 ngày; từng sản phẩm có quy
+  tắc riêng hoặc tắt tự định giá; quản lý đặt giai đoạn bằng tay. Mọi lần đổi giá ghi lại lý do.
+- **Khách VIP** (đánh dấu trong hồ sơ khách): giá VIP riêng của sản phẩm/lô nếu có, không thì giá giai đoạn kế tiếp.
+- **Đơn bán:** xác nhận là giữ hàng (theo lô FIFO để tính giá vốn); *Đã giao* thì trừ kho và ghi lãi; huỷ thì trả
+  hàng về. **Đặt trước** hàng đang về: giữ chỗ trên đơn nhập; khi hàng về, đơn đặt trước được phục vụ trước.
+- **Chuyển kho:** tạo phiếu, xuất kho, cửa hàng kiểm đếm và ký nhận; hàng thiếu ghi vào sổ kho.
+- **Đặt hàng lại:** tốc độ bán 30 ngày × thời gian giao của nhà cung cấp + tồn an toàn (mặc định 7 ngày bán) = điểm
+  đặt hàng lại; khi tồn có thể bán + hàng đang về ≤ điểm này, gợi ý số cần đặt (đủ bán thêm 30 ngày sau khi hàng về).
+
+**Nhân viên AI bán từ kho thật.** Thêm skill `products` cho nhân viên bán hàng: AI tra giá hôm nay cho đúng khách này
+(VIP hay không), số còn, hàng sắp về, và không bao giờ thấy giá vốn. Thêm hành động `kind: stock_order` (xem
+`examples/employees.yaml`): khi khách chốt, AI tạo yêu cầu "SKU x số lượng"; quản lý duyệt thì đơn được tạo và hàng
+được giữ, gắn với hội thoại và hồ sơ khách. Trong Hộp thư, nhân viên gõ tên sản phẩm ở ô *Tìm sản phẩm* để chèn
+giá và tồn vào câu trả lời.
+
+Chưa làm (có trong sale-management): POS thanh toán tại quầy, giao hàng, hoa hồng marketing, đồng bộ Amazon, gợi ý
+bộ sản phẩm, tích điểm tự động lên VIP.
 
 ## Mở rộng quy mô và đo tải
 

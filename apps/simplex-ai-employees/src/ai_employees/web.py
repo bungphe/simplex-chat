@@ -39,7 +39,7 @@ COOKIE = "aie_session"
 SESSION_TTL = 12 * 3600
 CSRF_HEADER = "X-Requested-With"
 CSRF_VALUE = "ai-employees"
-STATIC = ("admin.html", "admin.js", "admin.css")
+STATIC = ("admin.html", "admin.js", "admin.css", "inventory.js")
 SECURITY_HEADERS = {
     "Content-Security-Policy": "default-src 'self'; img-src 'self' data:; frame-ancestors 'none'",
     "X-Content-Type-Options": "nosniff",
@@ -915,6 +915,7 @@ def _contact_json(request: web.Request, contact: dict[str, Any], full: bool = Fa
     office = request.app[OFFICE]
     crm = office.hub.crm
     out = {k: contact[k] for k in ("id", "name", "phone", "email", "company_id", "notes", "created")}
+    out["vip"] = bool(contact.get("vip"))
     for extra in ("last_ts", "conversation_count"):
         if extra in contact:
             out[extra] = contact[extra]
@@ -1011,10 +1012,16 @@ async def inbox_contact_save(request: web.Request) -> web.Response:
     _conv, contact = _inbox_contact(request)
     data = await _body(request)
     try:
-        _crm(request).update(
-            int(contact["id"]),
-            **{k: v for k, v in data.items() if k in ("name", "phone", "email", "company_id", "notes")},
+        # VIP status changes prices: only admins set it
+        allowed = (
+            "name",
+            "phone",
+            "email",
+            "company_id",
+            "notes",
+            *(("vip",) if _user(request).is_admin else ()),
         )
+        _crm(request).update(int(contact["id"]), **{k: v for k, v in data.items() if k in allowed})
     except ValueError as e:
         raise ApiError(400, str(e)) from None
     return await inbox_contact(request)
@@ -1034,6 +1041,309 @@ async def inbox_contact_merge(request: web.Request) -> web.Response:
     except (KeyError, ValueError) as e:
         raise ApiError(400, f"Không gộp được: {e}") from None
     return await inbox_contact(request)
+
+
+# --------------------------------------------------------------------------- #
+# Inventory: products, warehouses, purchasing, pricing, orders (see inventory.py)
+
+
+def _inv(request: web.Request):
+    return request.app[OFFICE].inventory
+
+
+def _id(request: web.Request, key: str = "id") -> int:
+    return _int(request.match_info[key], key)
+
+
+async def _inv_call(fn: Any, *args: Any, **kwargs: Any) -> web.Response:
+    from .inventory import InventoryError
+
+    try:
+        return _json(fn(*args, **kwargs))
+    except InventoryError as e:
+        raise ApiError(400, str(e)) from None
+
+
+async def inv_overview(request: web.Request) -> web.Response:
+    inv = _inv(request)
+    return _json(
+        {
+            "settings": inv.settings(),
+            "warehouses": inv.warehouses(),
+            "suppliers": inv.suppliers(),
+            "today": inv.summary(1),
+            "month": inv.summary(30),
+        }
+    )
+
+
+async def inv_settings(request: web.Request) -> web.Response:
+    return await _inv_call(_inv(request).save_settings, await _body(request))
+
+
+async def inv_warehouse_save(request: web.Request) -> web.Response:
+    wid = _id(request) if "id" in request.match_info else None
+    return await _inv_call(_inv(request).save_warehouse, wid, await _body(request))
+
+
+async def inv_supplier_save(request: web.Request) -> web.Response:
+    sid = _id(request) if "id" in request.match_info else None
+    return await _inv_call(_inv(request).save_supplier, sid, await _body(request))
+
+
+async def inv_products(request: web.Request) -> web.Response:
+    q = request.query
+    rows = _inv(request).products(q.get("q", ""), include_inactive=q.get("all") == "1")
+    if level := q.get("level"):
+        rows = [r for r in rows if r["level"] == level]
+    return _json({"products": rows})
+
+
+async def inv_product_get(request: web.Request) -> web.Response:
+    return await _inv_call(_inv(request).product, _id(request))
+
+
+async def inv_product_save(request: web.Request) -> web.Response:
+    pid = _id(request) if "id" in request.match_info else None
+    inv = _inv(request)
+    data = await _body(request)
+    from .inventory import InventoryError
+
+    try:
+        row = inv.save_product(pid, data)
+        return _json(inv.product(int(row["id"])))
+    except InventoryError as e:
+        raise ApiError(400, str(e)) from None
+
+
+async def inv_product_stage(request: web.Request) -> web.Response:
+    data = await _body(request)
+    return await _inv_call(
+        _inv(request).set_stage,
+        _id(request),
+        _int(data.get("stage"), "stage"),
+        _user(request).name,
+        str(data.get("reason", "")),
+    )
+
+
+async def inv_product_opening(request: web.Request) -> web.Response:
+    d = await _body(request)
+    return await _inv_call(
+        _inv(request).add_opening_stock,
+        _id(request),
+        _int(d.get("warehouse_id"), "warehouse_id"),
+        d.get("qty"),
+        d.get("unit_cost"),
+        d.get("margin_pct"),
+        d.get("price1"),
+        _user(request).name,
+    )
+
+
+async def inv_product_adjust(request: web.Request) -> web.Response:
+    d = await _body(request)
+    return await _inv_call(
+        _inv(request).adjust,
+        _id(request),
+        _int(d.get("warehouse_id"), "warehouse_id"),
+        d.get("counted"),
+        str(d.get("reason", "")),
+        _user(request).name,
+        d.get("unit_cost"),
+    )
+
+
+async def inv_lot_prices(request: web.Request) -> web.Response:
+    d = await _body(request)
+    return await _inv_call(
+        _inv(request).set_lot_prices, _id(request), d.get("prices"), d.get("vip_price"), _user(request).name
+    )
+
+
+async def inv_export(request: web.Request) -> web.Response:
+    return web.Response(
+        text=_inv(request).export_csv(),
+        content_type="text/csv",
+        charset="utf-8",
+        headers={"Content-Disposition": 'attachment; filename="san-pham.csv"'},
+    )
+
+
+async def inv_import(request: web.Request) -> web.Response:
+    """A CSV file as the request body (up to 5 MB: bigger than the JSON limit)."""
+    data = bytearray()
+    while chunk := await request.content.read(65536):
+        data.extend(chunk)
+        if len(data) > 5 * 1024 * 1024:
+            raise ApiError(413, "Tệp quá lớn (tối đa 5 MB)")
+    try:
+        text = bytes(data).decode("utf-8")
+    except UnicodeDecodeError:
+        raise ApiError(400, "Tệp phải là CSV UTF-8 (trong Excel: Lưu thành CSV UTF-8)") from None
+    return await _inv_call(_inv(request).import_csv, text)
+
+
+async def inv_calc(request: web.Request) -> web.Response:
+    """Preview: landed costs of a container and the stage prices, before saving anything."""
+    from .inventory import InventoryError
+
+    inv = _inv(request)
+    d = await _body(request)
+    try:
+        items = d.get("items") or []
+        costs = inv.landed_costs(
+            items, d.get("exchange_rate", "1"), inv.minor(d.get("freight", 0)), inv.minor(d.get("customs", 0))
+        )
+        out = []
+        for it, c in zip(items, costs, strict=True):
+            plan = inv.price_plan(c["landed_cost"], it.get("margin_pct"), it.get("price1"))
+            out.append(
+                {
+                    **{k: inv.major(v) for k, v in c.items()},
+                    **plan,
+                    "landed_cost": inv.major(c["landed_cost"]),
+                    "prices": [inv.major(p) for p in plan["prices"]],
+                    "profit": inv.major(plan["profit"]),
+                }
+            )
+    except InventoryError as e:
+        raise ApiError(400, str(e)) from None
+    return _json({"items": out})
+
+
+async def inv_pos(request: web.Request) -> web.Response:
+    return _json({"purchase_orders": _inv(request).pos(request.query.get("status") or None)})
+
+
+async def inv_po_get(request: web.Request) -> web.Response:
+    return await _inv_call(_inv(request).po, _id(request))
+
+
+async def inv_po_save(request: web.Request) -> web.Response:
+    pid = _id(request) if "id" in request.match_info else None
+    return await _inv_call(_inv(request).save_po, pid, await _body(request), _user(request).name)
+
+
+async def inv_po_status(request: web.Request) -> web.Response:
+    return await _inv_call(
+        _inv(request).set_po_status, _id(request), str((await _body(request)).get("status", ""))
+    )
+
+
+async def inv_po_receive(request: web.Request) -> web.Response:
+    d = await _body(request)
+    return await _inv_call(
+        _inv(request).receive_po,
+        _id(request),
+        d.get("items") or [],
+        _user(request).name,
+        d.get("date") or None,
+    )
+
+
+async def inv_transfers(request: web.Request) -> web.Response:
+    return _json({"transfers": _inv(request).transfers()})
+
+
+async def inv_transfer_create(request: web.Request) -> web.Response:
+    d = await _body(request)
+    return await _inv_call(
+        _inv(request).create_transfer,
+        _int(d.get("from_wh"), "from_wh"),
+        _int(d.get("to_wh"), "to_wh"),
+        d.get("items") or [],
+        str(d.get("note", "")),
+        _user(request).name,
+    )
+
+
+async def inv_transfer_step(request: web.Request) -> web.Response:
+    inv, tid, step = _inv(request), _id(request), request.match_info["step"]
+    d = await _body(request)
+    if step == "ship":
+        return await _inv_call(inv.ship_transfer, tid, _user(request).name)
+    if step == "receive":
+        got = {int(k): v for k, v in (d.get("received") or {}).items()} or None
+        return await _inv_call(inv.receive_transfer, tid, got, _user(request).name)
+    if step == "cancel":
+        return await _inv_call(inv.cancel_transfer, tid, _user(request).name)
+    raise ApiError(404, "unknown step")
+
+
+async def inv_orders(request: web.Request) -> web.Response:
+    return _json({"orders": _inv(request).orders(request.query.get("status") or None)})
+
+
+async def inv_order_get(request: web.Request) -> web.Response:
+    return await _inv_call(_inv(request).order, _id(request))
+
+
+async def inv_order_create(request: web.Request) -> web.Response:
+    d = await _body(request)
+    crm = _crm(request)
+    contact = crm.contact(_int(d["contact_id"], "contact_id")) if d.get("contact_id") else None
+    return await _inv_call(
+        _inv(request).create_order,
+        d.get("items") or [],
+        warehouse_id=d.get("warehouse_id") or None,
+        kind=str(d.get("kind", "now")),
+        contact_id=int(contact["id"]) if contact else None,
+        customer_name=str(d.get("customer_name") or (contact or {}).get("name") or ""),
+        phone=str(d.get("phone") or (contact or {}).get("phone") or ""),
+        address=str(d.get("address", "")),
+        discount=d.get("discount", 0),
+        vip=bool(contact and contact.get("vip")),
+        note=str(d.get("note", "")),
+        source="admin",
+        actor=_user(request).name,
+    )
+
+
+async def inv_order_step(request: web.Request) -> web.Response:
+    inv, oid, step = _inv(request), _id(request), request.match_info["step"]
+    if step == "complete":
+        return await _inv_call(inv.complete_order, oid, _user(request).name)
+    if step == "cancel":
+        return await _inv_call(inv.cancel_order, oid, _user(request).name)
+    raise ApiError(404, "unknown step")
+
+
+async def inv_pricing_run(request: web.Request) -> web.Response:
+    """ "Cập nhật giá ngay": the daily price run, now (or for one product)."""
+    d = await _body(request)
+    pid = _int(d["product_id"], "product_id") if d.get("product_id") else None
+    changes = _inv(request).run_pricing(actor=_user(request).name, product_id=pid)
+    log.info("admin UI: %s ran the price update (%d change(s))", _user(request).username, len(changes))
+    return _json({"changes": changes})
+
+
+async def inv_pricing_log(request: web.Request) -> web.Response:
+    return _json({"log": _inv(request).price_log()})
+
+
+async def inv_reorder(request: web.Request) -> web.Response:
+    return _json({"products": _inv(request).reorder()})
+
+
+async def inv_moves(request: web.Request) -> web.Response:
+    pid = _int(request.query["product"], "product") if request.query.get("product") else None
+    return _json({"moves": _inv(request).moves(pid)})
+
+
+async def inbox_products(request: web.Request) -> web.Response:
+    """For staff in the inbox: price (for this customer), stock and arrivals; no costs."""
+    conv = _inbox_conv(request)
+    office = request.app[OFFICE]
+    contact = office.hub.crm.contact_of(conv.id)
+    vip = bool(contact and contact.get("vip"))
+    return _json(
+        {
+            "products": _inv(request).lookup(request.query.get("q", ""), vip=vip, limit=20),
+            "vip": vip,
+            "currency": _inv(request).settings()["currency"],
+        }
+    )
 
 
 async def inbox_read(request: web.Request) -> web.Response:
@@ -1413,6 +1723,41 @@ def create_app(office: Office, password: str) -> web.Application:
     r.add_post("/api/inbox/{cid}/assignee", inbox_assignee)
     r.add_post("/api/inbox/{cid}/labels", inbox_labels)
     r.add_post("/api/inbox/{cid}/summary", inbox_summary)
+    r.add_get("/api/inbox/{cid}/products", inbox_products)
+    r.add_get("/api/inventory", inv_overview)
+    r.add_put("/api/inventory/settings", inv_settings)
+    r.add_post("/api/inventory/warehouses", inv_warehouse_save)
+    r.add_patch("/api/inventory/warehouses/{id}", inv_warehouse_save)
+    r.add_post("/api/inventory/suppliers", inv_supplier_save)
+    r.add_patch("/api/inventory/suppliers/{id}", inv_supplier_save)
+    r.add_get("/api/inventory/products", inv_products)
+    r.add_get("/api/inventory/products.csv", inv_export)
+    r.add_post("/api/inventory/products/import", inv_import)
+    r.add_post("/api/inventory/products", inv_product_save)
+    r.add_get(r"/api/inventory/products/{id:\d+}", inv_product_get)
+    r.add_patch(r"/api/inventory/products/{id:\d+}", inv_product_save)
+    r.add_post(r"/api/inventory/products/{id:\d+}/stage", inv_product_stage)
+    r.add_post(r"/api/inventory/products/{id:\d+}/opening", inv_product_opening)
+    r.add_post(r"/api/inventory/products/{id:\d+}/adjust", inv_product_adjust)
+    r.add_put(r"/api/inventory/lots/{id:\d+}/prices", inv_lot_prices)
+    r.add_post("/api/inventory/calc", inv_calc)
+    r.add_get("/api/inventory/purchase-orders", inv_pos)
+    r.add_post("/api/inventory/purchase-orders", inv_po_save)
+    r.add_get(r"/api/inventory/purchase-orders/{id:\d+}", inv_po_get)
+    r.add_put(r"/api/inventory/purchase-orders/{id:\d+}", inv_po_save)
+    r.add_post(r"/api/inventory/purchase-orders/{id:\d+}/status", inv_po_status)
+    r.add_post(r"/api/inventory/purchase-orders/{id:\d+}/receive", inv_po_receive)
+    r.add_get("/api/inventory/transfers", inv_transfers)
+    r.add_post("/api/inventory/transfers", inv_transfer_create)
+    r.add_post(r"/api/inventory/transfers/{id:\d+}/{step}", inv_transfer_step)
+    r.add_get("/api/inventory/orders", inv_orders)
+    r.add_post("/api/inventory/orders", inv_order_create)
+    r.add_get(r"/api/inventory/orders/{id:\d+}", inv_order_get)
+    r.add_post(r"/api/inventory/orders/{id:\d+}/{step}", inv_order_step)
+    r.add_post("/api/inventory/pricing/run", inv_pricing_run)
+    r.add_get("/api/inventory/pricing/log", inv_pricing_log)
+    r.add_get("/api/inventory/reorder", inv_reorder)
+    r.add_get("/api/inventory/moves", inv_moves)
     r.add_get("/api/inbox/{cid}/contact", inbox_contact)
     r.add_post("/api/inbox/{cid}/contact", inbox_contact_save)
     r.add_post("/api/inbox/{cid}/contact/merge", inbox_contact_merge)

@@ -189,3 +189,12 @@ input[type=color] { width: 48px; height: 36px; padding: 2px; }
 tr.clickable { cursor: pointer; }
 tr.clickable:hover, tr.clickable.active { background: var(--surface-2); }
 button.small.active { border-color: var(--accent); }
+.tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 14px; border-bottom: 1px solid var(--border); }
+.tabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none; padding: 8px 12px; }
+.tabs button.active { border-bottom-color: var(--accent); font-weight: 700; }
+input.price { width: 110px; }
+input.narrow, .row input.narrow, td input.narrow { width: 90px; }
+a.button { display: inline-block; border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; color: inherit; text-decoration: none; background: var(--surface); }
+.product-picker { position: relative; }
+.product-picker .results { position: absolute; bottom: 110%; left: 0; z-index: 6; width: min(560px, 90vw); max-height: 320px; overflow-y: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px; box-shadow: var(--shadow); }
+.product-picker .results button { display: block; width: 100%; text-align: left; margin-bottom: 4px; }

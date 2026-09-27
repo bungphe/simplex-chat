@@ -15,6 +15,14 @@ are declared in the config as webhooks, so any system with an HTTP endpoint
           phone: Phone number
           items: Products and quantities
 
+An action with `kind: stock_order` needs no URL: it confirms a sales order in the
+office's own inventory (see inventory.py), reserving the goods at current prices:
+
+    actions:
+      create_order:
+        kind: stock_order
+        description: Confirm an order and reserve the goods
+
 Each action becomes a skill of the same name. When an employee uses it, the
 request is **held for a manager's approval** unless that employee's managers have
 released the action (`releases:` in the config, or `/ai release <action>` in chat).
@@ -55,6 +63,7 @@ class ActionDef:
     fields: dict[str, str] = field(default_factory=dict)
     confirm_message: str | dict[str, str] | None = None  # text, or {language code: text}
     timeout: float = 30.0
+    kind: str = "webhook"  # or "stock_order": an order in the office's own inventory
 
     def skill(self) -> sk.Skill:
         props = {k: {"type": "string", "description": v} for k, v in self.fields.items()}
@@ -72,9 +81,35 @@ class ActionDef:
         return sk.Skill(name=self.name, description=desc, input_schema=schema, handler=handler)
 
 
+STOCK_ORDER_FIELDS = {
+    "items": "Products and quantities as 'SKU x quantity', separated by ';' (e.g. 'MA-100 x 2; LOC-01 x 1'). "
+    "Use the SKUs from the products skill.",
+    "customer_name": "Customer's full name",
+    "phone": "Phone number",
+    "address": "Delivery address, or 'nhận tại cửa hàng' for pickup",
+    "note": "Anything else the shop must know (delivery time...), or '-'",
+}
+
+
 def parse_action(name: str, raw: dict[str, Any]) -> ActionDef:
     if not _NAME.match(name):
         raise ValueError(f"action name '{name}' must be lowercase letters, digits or '_'")
+    if raw.get("kind") == "stock_order":
+        unknown = set(raw) - {"kind", "description", "confirm_message"}
+        if unknown:
+            raise ValueError(f"action {name}: unknown fields {', '.join(sorted(unknown))}")
+        return ActionDef(
+            name=name,
+            description=str(
+                raw.get("description") or "Confirm a sales order and reserve the goods in stock."
+            ),
+            url="",
+            fields=dict(STOCK_ORDER_FIELDS),
+            confirm_message=raw.get("confirm_message"),
+            kind="stock_order",
+        )
+    if raw.get("kind") not in (None, "webhook"):
+        raise ValueError(f"action {name}: kind must be webhook or stock_order")
     url = str(raw.get("url") or "")
     if not url.startswith(("http://", "https://")):
         raise ValueError(f"action {name}: 'url' must be an http(s) URL")
@@ -86,7 +121,16 @@ def parse_action(name: str, raw: dict[str, Any]) -> ActionDef:
     fields = {str(k): str(v) for k, v in (raw.get("fields") or {}).items()}
     if not fields:
         raise ValueError(f"action {name}: 'fields' must list at least one field")
-    unknown = set(raw) - {"description", "url", "method", "headers", "fields", "confirm_message", "timeout"}
+    unknown = set(raw) - {
+        "kind",
+        "description",
+        "url",
+        "method",
+        "headers",
+        "fields",
+        "confirm_message",
+        "timeout",
+    }
     if unknown:
         raise ValueError(f"action {name}: unknown fields {', '.join(sorted(unknown))}")
     return ActionDef(
@@ -175,6 +219,17 @@ class ActionDesk:
             detail = f"action {rec['action']} is no longer configured"
             self.state.update_action(action_id, status="failed", result=detail)
             return False, detail
+        if action.kind == "stock_order":
+            ok, detail = self._stock_order(rec)
+            self.state.update_action(
+                action_id, status="done" if ok else "failed", result=detail, finished=now_iso()
+            )
+            self.employee.log(
+                "action", "ok" if ok else "error", action=action.name, request=action_id, by=decided_by
+            )
+            if ok and decided_by != "release":
+                await self._tell_contact(rec, "request_confirmed", message=action.confirm_message)
+            return ok, detail
         headers = {k: expand_env(v) for k, v in action.headers.items()}
         payload = {**rec["args"], "_request_id": action_id, "_employee": self.employee.id}
         try:
@@ -198,6 +253,42 @@ class ActionDesk:
         if not ok:
             log.warning("%s: action #%s %s failed: %s", self.employee.id, action_id, action.name, detail)
         return ok, detail
+
+    def _stock_order(self, rec: dict[str, Any]) -> tuple[bool, str]:
+        """An order in the office's own inventory: goods reserved at the customer's price."""
+        from .inventory import InventoryError
+
+        office = self.employee.office
+        args = rec["args"]
+        items = [
+            {"sku": sku, "qty": int(qty)}
+            for sku, qty in re.findall(
+                r"([A-Za-z0-9][A-Za-z0-9._/-]*)\s*[x×*]\s*(\d+)", str(args.get("items", ""))
+            )
+        ]
+        if not items:
+            return False, "no 'SKU x quantity' items in the request"
+        contact = rec.get("contact")
+        conv = office.hub.inbox.by_contact(self.employee.id, int(contact)) if contact is not None else None
+        customer = office.hub.crm.contact_of(conv.id) if conv else None
+        note = str(args.get("note", "")).strip()
+        try:
+            order = office.inventory.create_order(
+                items,
+                contact_id=int(customer["id"]) if customer else None,
+                conversation_id=conv.id if conv else None,
+                customer_name=str(args.get("customer_name", ""))[:120],
+                phone=str(args.get("phone", ""))[:40],
+                address=str(args.get("address", ""))[:300],
+                vip=bool(customer and customer.get("vip")),
+                note="" if note == "-" else note,
+                source=f"ai:{self.employee.id}#{rec['id']}",
+                actor=self.employee.settings.display_name,
+            )
+        except InventoryError as e:
+            return False, str(e)
+        lines = ", ".join(f"{i['sku']} x{i['qty']} ({i['unit_price']:,})" for i in order["items"])
+        return True, f"order {order['code']}: {lines}; total {order['total']:,}"
 
     async def _tell_contact(
         self, rec: dict[str, Any], key: str, message: str | dict[str, str] | None = None, reason: str = ""

@@ -237,6 +237,12 @@ class ChannelHub:
             return True
         return False
 
+    def is_vip(self, employee: Employee, contact_id: int) -> bool:
+        """Whether staff marked this customer VIP (their prices are the VIP prices)."""
+        conv = self.inbox.by_contact(employee.id, contact_id)
+        contact = self.crm.contact_of(conv.id) if conv else None
+        return bool(contact and contact.get("vip"))
+
     def channel_type(self, conv: Conversation) -> str:
         if conv.is_simplex:
             return "simplex"

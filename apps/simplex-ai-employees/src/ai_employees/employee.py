@@ -508,6 +508,10 @@ class Office:
         from .cluster import Cluster
 
         self.cluster = Cluster(self)
+        from .inventory import Inventory
+
+        # products and stock live with the inbox (the office database, or inbox.db)
+        self.inventory = Inventory(self.hub.inbox.db, self.docs)
 
     @property
     def http_client(self) -> httpx2.AsyncClient:
@@ -601,6 +605,11 @@ class Office:
     async def _scheduler(self) -> None:
         while not self._stopping.is_set():
             self.tick()
+            try:
+                if changes := self.inventory.maybe_run_daily():
+                    log.info("inventory: daily price run changed %d product(s)", len(changes))
+            except Exception:
+                log.exception("inventory: daily price run failed")
             try:
                 await asyncio.wait_for(self._stopping.wait(), timeout=self.tick_seconds)
             except TimeoutError:
