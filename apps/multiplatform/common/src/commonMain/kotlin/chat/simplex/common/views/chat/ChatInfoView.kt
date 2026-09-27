@@ -600,6 +600,11 @@ fun ChatInfoLayout(
         // }
       }
 
+      if (contact.isBot) {
+        // the shop's AI employee: its admin app (inbox, sales, stock, deliveries)
+        ShopAdminButton { openShopAdmin() }
+      }
+
       WallpaperButton {
         ModalManager.end.showModal {
           val chat = remember { derivedStateOf { chatModel.chats.value.firstOrNull { it.id == chat.id } } }
@@ -1202,6 +1207,15 @@ private fun SendReceiptsOption(currentUser: User, state: State<SendReceipts>, on
     icon = painterResource(MR.images.ic_double_check),
     enabled = remember { mutableStateOf(true) },
     onSelected = onSelected
+  )
+}
+
+@Composable
+private fun ShopAdminButton(onClick: () -> Unit) {
+  SettingsActionItem(
+    painterResource(MR.images.ic_storefront),
+    stringResource(MR.strings.shop_admin),
+    click = onClick
   )
 }
 

@@ -195,6 +195,15 @@ struct ChatInfoView: View {
                         //     synchronizeConnectionButtonForce()
                         // }
 
+                        if contact.isBot {
+                            // the shop's AI employee: its admin app (inbox, sales, stock, deliveries)
+                            NavigationLink {
+                                ShopAdminEntry()
+                            } label: {
+                                Label("Shop management", systemImage: "bag")
+                            }
+                        }
+
                         NavigationLink {
                             ChatWallpaperEditorSheet(chat: chat)
                         } label: {
