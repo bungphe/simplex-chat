@@ -186,3 +186,6 @@ label.inline select { width: auto; margin: 0; }
 .narrow { width: 90px; }
 .row > select, .row > input.narrow { width: auto; max-width: 100%; }
 input[type=color] { width: 48px; height: 36px; padding: 2px; }
+tr.clickable { cursor: pointer; }
+tr.clickable:hover, tr.clickable.active { background: var(--surface-2); }
+button.small.active { border-color: var(--accent); }

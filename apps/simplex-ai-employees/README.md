@@ -307,6 +307,7 @@ Mở `http://127.0.0.1:8080`. Chủ đăng nhập với tên `admin` và mật k
 |---|---|
 | Tổng quan | Trạng thái từng nhân viên, số việc 24 giờ, yêu cầu chờ duyệt, lịch tiếp theo, địa chỉ SimpleX |
 | Hộp thư | **Mọi kênh chat trong một màn hình**: SimpleX, Zalo OA, Zalo cá nhân, Messenger, Telegram, WhatsApp, email, webhook. Trả lời khách, AI gợi ý câu trả lời, tiếp quản / giao lại cho AI; nhãn, ghi chú nội bộ, câu trả lời mẫu, đóng/mở, giao cho người hoặc nhóm, AI tóm tắt hội thoại |
+| Khách hàng | Danh bạ khách qua mọi kênh (tên, điện thoại, email, công ty, ghi chú), khách có thể trùng, gộp khách, công ty |
 | SLA | Khách đang chờ, chờ quá hạn, thời gian trả lời của AI và từng nhân viên, việc của từng người/nhóm |
 | Cài đặt hộp thư | Nhãn, câu trả lời mẫu, nhóm, quy tắc tự phân loại, mục tiêu thời gian trả lời |
 | Kênh chat & SimpleX | Trạng thái từng kênh, lấy tin ngay, đăng nhập Zalo cá nhân bằng QR; địa chỉ SimpleX kèm mã QR, tạo link mời một lần, kết nối bằng link |
@@ -486,6 +487,22 @@ mở đường dẫn `/hooks/` qua reverse proxy có HTTPS, không mở `/api/` 
 - **SLA:** mỗi lần khách chờ được tính từ tin đầu tiên chưa được trả lời tới câu trả lời của AI hoặc nhân viên (tin
   hệ thống và ghi chú không tính). Trang SLA cho thấy số khách đang chờ, chờ quá mục tiêu, thời gian trả lời trung
   bình, lâu nhất, tỉ lệ đúng hạn theo AI và từng nhân viên, và danh sách khách chờ lâu nhất. Chỉ quản trị viên xem.
+
+### Khách hàng qua nhiều kênh (CRM)
+
+Mỗi hội thoại (một khách trên một kênh) thuộc về một **khách hàng**. Khách mới nhắn thì có hồ sơ riêng; số điện
+thoại, email khách tự viết trong tin (và số WhatsApp, địa chỉ email của kênh) được điền vào hồ sơ nếu còn trống,
+không ghi đè thông tin nhân viên đã nhập.
+
+- **Có thể trùng:** các hồ sơ cùng số điện thoại (0901 234 567 = +84 901 234 567) hoặc cùng email được liệt kê ở
+  trang *Khách hàng* và trong khung *Khách hàng* của hội thoại. Không có gì bị gộp tự động.
+- **Gộp:** quản trị viên bấm *Gộp vào đây*: mọi hội thoại về một hồ sơ, thông tin còn trống được lấy từ hồ sơ kia.
+  Từ đó **AI nhớ khách qua các kênh**: khi trả lời trên Zalo, AI biết khách đã hỏi gì trên web (tóm tắt và vài
+  tin gần nhất), cùng tên, số điện thoại, công ty. Gộp nhầm thì *Tách hội thoại này ra*.
+- **Công ty:** nhóm nhiều người mua của một khách doanh nghiệp. Khai báo tên miền email (vd. `abc.com.vn`) thì khách
+  viết từ `...@abc.com.vn` tự được gắn vào công ty.
+- Nhân viên bán hàng xem và sửa thông tin khách trong Hộp thư, chỉ thấy các kênh mình được xem; trang *Khách hàng*,
+  gộp và tách dành cho quản trị viên.
 
 Nhân viên bán hàng dùng được mọi tính năng trên trong các kênh mình được xem; nhãn, câu mẫu, nhóm và quy tắc do
 quản trị viên khai báo.

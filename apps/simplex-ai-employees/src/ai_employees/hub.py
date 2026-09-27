@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .channels import Channel, ChannelError, InboundMessage, make_channel
+from .crm import CRM
 from .desk import Desk
 from .inbox import EXTERNAL_BASE, Conversation, Inbox, describe
 from .lang import detect
@@ -52,6 +53,7 @@ class ChannelHub:
         state_dir = Path(office.config.state_dir)
         self.inbox = Inbox(office.db or state_dir / "inbox.db")
         self.desk = Desk(office.docs)
+        self.crm = CRM(self.inbox.db)
         old = state_dir / "channel_secrets.json"
         if old.exists():  # tokens kept before they moved into the database
             saved = json.loads(old.read_text(encoding="utf-8"))
@@ -154,6 +156,7 @@ class ChannelHub:
                     conv.id, "customer", m.text, m.customer_name, m.external_id, iso(m.ts), m.attachments
                 ):
                     added += 1
+                    self._observe(conv, m.text, ch.type)
                     if self.triage(conv, m.text):
                         to_answer.discard(conv.id)
                     elif m.ts >= self.answer_from.get(ch.id, self.started):
@@ -233,6 +236,54 @@ class ChannelHub:
                 log.info("inbox: conversation %s handed to staff by a triage rule", conv.id)
             return True
         return False
+
+    def channel_type(self, conv: Conversation) -> str:
+        if conv.is_simplex:
+            return "simplex"
+        ch = self.channels.get(conv.channel)
+        return ch.type if ch else ""
+
+    def _observe(self, conv: Conversation, text: str, channel_type: str) -> None:
+        try:
+            self.crm.observe(conv, text, channel_type)
+        except Exception:  # the customer list must never stop a message from arriving
+            log.exception("crm: could not update the contact of conversation %s", conv.id)
+
+    def crm_context(self, employee: Employee, contact_id: int) -> str:
+        """For the AI: who this customer is, and what was said with them on other channels
+        (after staff merged those conversations into one contact)."""
+        try:
+            return self._crm_context(employee, contact_id)
+        except Exception:  # extra context: never worth failing a reply over
+            log.exception("crm: no cross-channel context for %s/%s", employee.id, contact_id)
+            return ""
+
+    def _crm_context(self, employee: Employee, contact_id: int) -> str:
+        conv = self.inbox.by_contact(employee.id, contact_id)
+        contact = self.crm.contact_of(conv.id) if conv else None
+        if conv is None or contact is None:
+            return ""
+        lines = []
+        profile = [f"{k}: {contact[k]}" for k in ("name", "phone", "email") if contact[k]]
+        if contact["company_id"] and (company := self.crm.company(int(contact["company_id"]))):
+            profile.append(f"company: {company['name']}")
+        if profile:
+            lines.append("Customer profile: " + "; ".join(profile))
+        for other_id in self.crm.conversations(int(contact["id"]))[-6:]:
+            other = self.inbox.conversation(other_id) if other_id != conv.id else None
+            owner = self.employee_for(other) if other else None
+            if other is None or owner is None:
+                continue
+            summary = owner.state.summary(other.contact_id)
+            recent = self.inbox.messages(other.id, limit=6, notes=False)
+            said = " | ".join(f"{m['sender']}: {describe(m['text'], m['attachments'])[:200]}" for m in recent)
+            where = other.channel.split(":")[0] if other.is_simplex else other.channel
+            lines.append(
+                f"The same customer on {where} (last {other.last_ts or '-'}): "
+                + (f"summary: {summary[:1200]} " if summary else "")
+                + (f"recent: {said}" if said else "")
+            )
+        return "\n".join(lines)
 
     def add_note(self, conv_id: int, text: str, author: str) -> int | None:
         """An internal note: staff only, never sent to the customer or shown to the AI."""
@@ -420,6 +471,8 @@ class ChannelHub:
         conv = self.inbox.upsert(f"simplex:{employee.id}", str(contact_id), name, employee.id)
         employee.state.observe_language(contact_id, detect(text))
         mid = self.inbox.add(conv.id, "customer", text, name, attachments=attachments)
+        if mid is not None:
+            self._observe(conv, text, "simplex")
         if mid is not None and self.triage(conv, text):
             conv = self.inbox.conversation(conv.id) or conv
         return conv, mid

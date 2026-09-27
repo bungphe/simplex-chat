@@ -717,6 +717,19 @@ views.inbox = async (arg) => {
     }
   });
 
+  // The customer behind this conversation: details shared by all their channels.
+  const renderContact = async (cid) => {
+    const r = await api("GET", `/api/inbox/${cid}/contact`);
+    if (!thread || thread.id !== cid) return;
+    put(thread.contact, ...contactPanel(r.contact, r.companies, {
+      save: (body) => run(async () => { await api("POST", `/api/inbox/${cid}/contact`, body); await renderContact(cid); thread.contact.open = true; }, "Đã lưu thông tin khách"),
+      merge: (other) => run(async () => { await api("POST", `/api/inbox/${cid}/contact/merge`, { other }); await renderContact(cid); thread.contact.open = true; }, "Đã gộp khách"),
+      split: () => run(async () => { await api("POST", `/api/inbox/${cid}/contact/merge`, { split: true }); await renderContact(cid); thread.contact.open = true; }, "Đã tách hội thoại thành khách riêng"),
+      open: (id) => { inboxSel = id; thread = null; run(openConv).then(() => run(loadList)); },
+      current: cid,
+    }));
+  };
+
   const update = (d) => {
     if (!thread || thread.id !== d.conversation.id) return;
     if (thread.translateWrap) {
@@ -788,15 +801,16 @@ views.inbox = async (arg) => {
         }
       }, "AI đã soạn bản nháp; sửa rồi bấm Gửi"));
       thread = { id: cid, head: h("div", { class: "thread-head" }), mem: h("details", { class: "notes" }), msgs: h("div", { class: "msgs" }),
-        brief: h("div", { class: "brief", hidden: true }), fresh: true, translateWrap, translateLabel, name: d.conversation.customer_name };
+        brief: h("div", { class: "brief", hidden: true }), contact: h("details", { class: "notes" }), fresh: true, translateWrap, translateLabel, name: d.conversation.customer_name };
       renderMemory(d);
+      run(() => renderContact(cid));
       put(composer, text,
         h("div", { class: "row spread" },
           h("div", { class: "row" }, h("span", { class: "muted" }, `Trả lời với tên: ${me ? me.name : ""}`),
             h("label", { class: "check inline" }, takeOver, h("span", {}, "Tiếp quản (AI dừng trả lời)")), translateWrap,
             h("label", { class: "check inline", title: "Chỉ nhân viên thấy" }, noteMode, h("span", {}, "Ghi chú nội bộ"))),
           h("div", { class: "row" }, canned, suggestBtn, sendBtn)));
-      put(pane, thread.head, thread.mem, thread.msgs, composer);
+      put(pane, thread.head, thread.contact, thread.mem, thread.msgs, composer);
       if (d.conversation.unread) api("POST", `/api/inbox/${cid}/read`, {}).then(refreshBadge).catch(() => {});
     }
     update(d);
@@ -819,6 +833,114 @@ views.inbox = async (arg) => {
     run(loadList);
     if (thread) run(openConv);
   }, 5000);
+};
+
+// --------------------------------------------------------------------------
+// Customers (CRM): one contact across channels
+
+// Details of a customer, their channels, and likely duplicates (admins can merge).
+// Used in the inbox (one conversation's customer) and on the customers page.
+function contactPanel(c, companies, act) {
+  const f = {
+    name: h("input", { value: c.name, maxlength: 120 }),
+    phone: h("input", { value: c.phone, maxlength: 40, placeholder: "vd. 0901 234 567" }),
+    email: h("input", { value: c.email, maxlength: 200, type: "email" }),
+    company_id: h("select", {}, h("option", { value: "" }, "— không —"),
+      companies.map((x) => h("option", { value: x.id, selected: x.id === c.company_id }, x.name))),
+    notes: h("textarea", { rows: 2, placeholder: "Ghi chú về khách (chỉ nhân viên thấy)" }, c.notes),
+  };
+  const channels = c.conversations || [];
+  const dupes = (c.duplicates || []).flatMap((g) => g.contacts.filter((x) => x.id !== c.id).map((x) => ({ ...x, reason: g.reason })));
+  const summary = [c.name || "Khách chưa rõ tên", c.phone, c.company].filter(Boolean).join(" · ");
+  return [
+    h("summary", { class: "muted" }, `Khách hàng: ${summary}${channels.length > 1 ? ` · ${channels.length} kênh` : ""}${dupes.length ? " · có thể trùng" : ""}`),
+    h("div", { class: "memory" },
+      h("div", { class: "two" }, h("label", {}, "Tên", f.name), h("label", {}, "Công ty", f.company_id),
+        h("label", {}, "Số điện thoại", f.phone), h("label", {}, "Email", f.email)),
+      h("label", {}, "Ghi chú", f.notes),
+      h("div", { class: "row" }, h("button", { onclick: () => act.save({ name: f.name.value, phone: f.phone.value, email: f.email.value,
+        company_id: f.company_id.value ? parseInt(f.company_id.value, 10) : null, notes: f.notes.value }) }, "Lưu thông tin khách")),
+      h("h3", {}, "Các kênh của khách"),
+      h("div", { class: "row" }, channels.map((x) => h("button", {
+        class: "small" + (x.id === act.current ? " active" : ""), title: x.last_preview,
+        onclick: () => x.id !== act.current && act.open(x.id),
+      }, chBadge(x.channel_info), " ", x.customer_name || x.external_id, x.last_ts ? ` · ${fmtTime(x.last_ts)}` : ""))),
+      act.split && channels.length > 1 && me && me.role === "admin"
+        ? h("button", { class: "small ghost", onclick: () => confirm("Tách hội thoại này thành một khách riêng?") && act.split() }, "Tách hội thoại này ra") : null,
+      dupes.length ? h("div", {}, h("h3", {}, "Có thể là cùng một người"),
+        dupes.map((x) => h("div", { class: "row" },
+          h("span", {}, h("b", {}, x.name || `Khách #${x.id}`), ` — cùng ${x.reason === "phone" ? "số điện thoại" : "email"} ${x.reason === "phone" ? x.phone : x.email}`),
+          h("button", { class: "small", onclick: () => confirm(`Gộp "${x.name || x.id}" vào khách này? Các hội thoại của họ sẽ về một chỗ, AI nhớ chung.`) && act.merge(x.id) }, "Gộp vào đây")))) : null,
+    ),
+  ];
+}
+
+views.customers = async (arg) => {
+  const search = h("input", { type: "search", placeholder: "Tìm tên, số điện thoại, email" });
+  const companySel = h("select", {}, h("option", { value: "" }, "Mọi công ty"));
+  const listBox = h("div", { class: "card table-wrap" });
+  const detail = h("details", { class: "card notes section", open: true }, h("summary", { class: "muted" }, "Chọn một khách để xem"));
+  const dupBox = h("div", { class: "card section" });
+  const coBox = h("div", { class: "card section" });
+  let companies = [];
+  let selected = arg || null;
+
+  const loadDetail = async () => {
+    if (!selected) return;
+    const r = await api("GET", `/api/crm/contacts/${selected}`);
+    put(detail, ...contactPanel(r.contact, companies, {
+      save: (body) => run(async () => { await api("PATCH", `/api/crm/contacts/${selected}`, body); await loadAll(); }, "Đã lưu"),
+      merge: (other) => run(async () => { await api("POST", `/api/crm/contacts/${selected}/merge`, { other }); await loadAll(); }, "Đã gộp khách"),
+      open: (id) => go("inbox", id),
+    }));
+    detail.open = true;
+  };
+  const loadList = async () => {
+    const q = new URLSearchParams({ q: search.value.trim(), company: companySel.value });
+    const r = await api("GET", `/api/crm/contacts?${q}`);
+    companies = r.companies;
+    if (companySel.options.length === 1) companySel.append(...companies.map((x) => h("option", { value: x.id }, x.name)));
+    put(listBox, r.contacts.length ? h("table", {},
+      h("thead", {}, h("tr", {}, ["Khách", "Điện thoại", "Email", "Công ty", "Hội thoại", "Gần nhất"].map((t) => h("th", {}, t)))),
+      h("tbody", {}, r.contacts.map((x) => h("tr", { class: "clickable" + (x.id === selected ? " active" : ""), onclick: () => { selected = x.id; run(loadAll); } },
+        h("td", {}, h("b", {}, x.name || `Khách #${x.id}`)), h("td", {}, x.phone), h("td", {}, x.email), h("td", {}, x.company),
+        h("td", {}, x.conversation_count), h("td", {}, fmtTime(x.last_ts)))))) : h("p", { class: "muted" }, "Chưa có khách nào."));
+  };
+  const loadDupes = async () => {
+    const r = await api("GET", "/api/crm/duplicates");
+    put(dupBox, h("h2", {}, "Có thể trùng"),
+      r.groups.length ? r.groups.map((g) => h("div", { class: "row" },
+        h("span", { class: "muted" }, `${g.reason === "phone" ? "Số điện thoại" : "Email"} ${g.value}:`),
+        g.contacts.map((x) => h("button", { class: "small", onclick: () => { selected = x.id; run(loadAll); } }, x.name || `#${x.id}`)),
+        h("button", { class: "small primary", onclick: () => confirm(`Gộp ${g.contacts.length} khách này thành một?`) && run(async () => {
+          for (const x of g.contacts.slice(1)) await api("POST", `/api/crm/contacts/${g.contacts[0].id}/merge`, { other: x.id });
+          selected = g.contacts[0].id;
+          await loadAll();
+        }, "Đã gộp") }, "Gộp tất cả"))) : h("p", { class: "muted" }, "Không thấy khách trùng số điện thoại hoặc email."));
+  };
+  const loadCompanies = async () => {
+    const f = { name: h("input", { placeholder: "Tên công ty" }), domain: h("input", { placeholder: "tên miền email, vd. abc.com.vn" }),
+      phone: h("input", { placeholder: "Điện thoại" }), address: h("input", { placeholder: "Địa chỉ" }) };
+    const body = () => Object.fromEntries(Object.entries(f).map(([k, el]) => [k, el.value.trim()]));
+    put(coBox, h("h2", {}, "Công ty"),
+      h("p", { class: "muted" }, "Khách viết từ email có tên miền của công ty được tự gắn vào công ty đó."),
+      companies.length ? h("table", {}, h("tbody", {}, companies.map((x) => h("tr", {},
+        h("td", {}, h("b", {}, x.name)), h("td", { class: "mono" }, x.domain), h("td", {}, x.phone), h("td", {}, x.address),
+        h("td", {}, h("a", { href: "#", onclick: (ev) => { ev.preventDefault(); companySel.value = x.id; run(loadList); } }, `${x.contact_count} khách`)),
+        h("td", {}, h("div", { class: "row" },
+          h("button", { class: "small", onclick: () => { const n = prompt("Tên công ty:", x.name); if (n && n.trim()) run(async () => { await api("PATCH", `/api/crm/companies/${x.id}`, { name: n.trim() }); await loadAll(); }, "Đã lưu"); } }, "Đổi tên"),
+          h("button", { class: "small danger", onclick: () => confirm(`Xoá công ty ${x.name}? Khách vẫn giữ nguyên.`) && run(async () => { await api("DELETE", `/api/crm/companies/${x.id}`); await loadAll(); }, "Đã xoá") }, "Xoá"))))))) : h("p", { class: "muted" }, "Chưa có công ty."),
+      h("div", { class: "two section" }, f.name, f.domain, f.phone, f.address),
+      h("button", { class: "primary", onclick: () => f.name.value.trim() && run(async () => { await api("POST", "/api/crm/companies", body()); await loadAll(); }, "Đã thêm công ty") }, "Thêm công ty"));
+  };
+  const loadAll = async () => { await loadList(); await Promise.all([loadDetail(), loadDupes(), loadCompanies()]); };
+
+  let t;
+  search.addEventListener("input", () => { clearTimeout(t); t = setTimeout(() => run(loadList), 300); });
+  companySel.addEventListener("change", () => run(loadList));
+  render(h("div", { class: "row spread" }, h("h1", {}, "Khách hàng"), h("span", { class: "muted" }, "Một khách, mọi kênh: gộp hội thoại của cùng một người")),
+    h("div", { class: "filters row" }, search, companySel), listBox, detail, dupBox, coBox);
+  await run(loadAll);
 };
 
 // --------------------------------------------------------------------------

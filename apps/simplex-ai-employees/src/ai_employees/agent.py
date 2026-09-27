@@ -228,6 +228,9 @@ class Agent:
             parts.append(f"Summary of earlier conversations:\n{summary}")
         if notes := state.notes(contact_id):
             parts.append("Saved facts:\n" + "\n".join(f"- {k}: {v}" for k, v in notes.items()))
+        hub = getattr(self.employee.office, "hub", None)
+        if hub is not None and (linked := hub.crm_context(self.employee, contact_id)):
+            parts.append(linked)
         if not parts:
             return ""
         return (

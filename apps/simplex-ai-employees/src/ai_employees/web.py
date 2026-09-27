@@ -896,6 +896,146 @@ async def desk_save(request: web.Request) -> web.Response:
     return _json(desk)
 
 
+# --------------------------------------------------------------------------- #
+# Customers (CRM): one contact across channels, companies
+
+
+def _crm(request: web.Request):
+    return request.app[OFFICE].hub.crm
+
+
+def _int(value: Any, what: str) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise ApiError(400, f"{what} phải là số") from None
+
+
+def _contact_json(request: web.Request, contact: dict[str, Any], full: bool = False) -> dict[str, Any]:
+    office = request.app[OFFICE]
+    crm = office.hub.crm
+    out = {k: contact[k] for k in ("id", "name", "phone", "email", "company_id", "notes", "created")}
+    for extra in ("last_ts", "conversation_count"):
+        if extra in contact:
+            out[extra] = contact[extra]
+    company = crm.company(int(contact["company_id"])) if contact.get("company_id") else None
+    out["company"] = company["name"] if company else ""
+    if full:
+        user = _user(request)
+        convs = [office.hub.inbox.conversation(c) for c in crm.conversations(int(contact["id"]))]
+        out["conversations"] = [_conv_json(office, c) for c in convs if c and user.sees(c.channel)]
+        # other customers' details only for admins (agents may be limited to some channels)
+        out["duplicates"] = crm.duplicates(int(contact["id"])) if user.is_admin else []
+    return out
+
+
+async def crm_contacts(request: web.Request) -> web.Response:
+    q = request.query
+    company = _int(q["company"], "company") if q.get("company") else None
+    rows = _crm(request).search(q.get("q", ""), company)
+    return _json(
+        {"contacts": [_contact_json(request, r) for r in rows], "companies": _crm(request).companies()}
+    )
+
+
+def _crm_contact(request: web.Request) -> dict[str, Any]:
+    contact = _crm(request).contact(_int(request.match_info["id"], "id"))
+    if contact is None:
+        raise ApiError(404, "no such contact")
+    return contact
+
+
+async def crm_contact_get(request: web.Request) -> web.Response:
+    return _json({"contact": _contact_json(request, _crm_contact(request), full=True)})
+
+
+async def crm_contact_patch(request: web.Request) -> web.Response:
+    contact = _crm_contact(request)
+    try:
+        _crm(request).update(int(contact["id"]), **(await _body(request)))
+    except ValueError as e:
+        raise ApiError(400, str(e)) from None
+    return await crm_contact_get(request)
+
+
+async def crm_contact_merge(request: web.Request) -> web.Response:
+    contact = _crm_contact(request)
+    other = _int((await _body(request)).get("other"), "other")
+    try:
+        _crm(request).merge(int(contact["id"]), other)
+    except (KeyError, ValueError) as e:
+        raise ApiError(400, f"Không gộp được: {e}") from None
+    log.info("admin UI: %s merged customer %s into %s", _user(request).username, other, contact["id"])
+    return await crm_contact_get(request)
+
+
+async def crm_duplicates(request: web.Request) -> web.Response:
+    return _json({"groups": _crm(request).duplicates()})
+
+
+async def crm_companies(request: web.Request) -> web.Response:
+    return _json({"companies": _crm(request).companies()})
+
+
+async def crm_company_save(request: web.Request) -> web.Response:
+    cid = request.match_info.get("id")
+    try:
+        _crm(request).save_company(_int(cid, "id") if cid else None, **(await _body(request)))
+    except ValueError as e:
+        raise ApiError(400, str(e)) from None
+    except KeyError:
+        raise ApiError(404, "no such company") from None
+    return await crm_companies(request)
+
+
+async def crm_company_delete(request: web.Request) -> web.Response:
+    _crm(request).delete_company(_int(request.match_info["id"], "id"))
+    return await crm_companies(request)
+
+
+def _inbox_contact(request: web.Request) -> tuple[Any, dict[str, Any]]:
+    conv = _inbox_conv(request)
+    crm = _crm(request)
+    contact = crm.contact_of(conv.id) or crm.observe(conv, "", request.app[OFFICE].hub.channel_type(conv))
+    return conv, contact
+
+
+async def inbox_contact(request: web.Request) -> web.Response:
+    """The customer behind this conversation, and their other channels."""
+    _conv, contact = _inbox_contact(request)
+    names = [{"id": c["id"], "name": c["name"]} for c in _crm(request).companies()]
+    return _json({"contact": _contact_json(request, contact, full=True), "companies": names})
+
+
+async def inbox_contact_save(request: web.Request) -> web.Response:
+    _conv, contact = _inbox_contact(request)
+    data = await _body(request)
+    try:
+        _crm(request).update(
+            int(contact["id"]),
+            **{k: v for k, v in data.items() if k in ("name", "phone", "email", "company_id", "notes")},
+        )
+    except ValueError as e:
+        raise ApiError(400, str(e)) from None
+    return await inbox_contact(request)
+
+
+async def inbox_contact_merge(request: web.Request) -> web.Response:
+    """Admins: join another contact into this conversation's customer, or split it off."""
+    if not _user(request).is_admin:
+        raise ApiError(403, "Chỉ quản trị viên gộp hoặc tách khách")
+    conv, contact = _inbox_contact(request)
+    data = await _body(request)
+    try:
+        if data.get("split"):
+            _crm(request).split(conv)
+        else:
+            _crm(request).merge(int(contact["id"]), _int(data.get("other"), "other"))
+    except (KeyError, ValueError) as e:
+        raise ApiError(400, f"Không gộp được: {e}") from None
+    return await inbox_contact(request)
+
+
 async def inbox_read(request: web.Request) -> web.Response:
     conv = _inbox_conv(request)
     _hub(request).inbox.mark_read(conv.id)
@@ -1273,6 +1413,18 @@ def create_app(office: Office, password: str) -> web.Application:
     r.add_post("/api/inbox/{cid}/assignee", inbox_assignee)
     r.add_post("/api/inbox/{cid}/labels", inbox_labels)
     r.add_post("/api/inbox/{cid}/summary", inbox_summary)
+    r.add_get("/api/inbox/{cid}/contact", inbox_contact)
+    r.add_post("/api/inbox/{cid}/contact", inbox_contact_save)
+    r.add_post("/api/inbox/{cid}/contact/merge", inbox_contact_merge)
+    r.add_get("/api/crm/contacts", crm_contacts)
+    r.add_get("/api/crm/contacts/{id}", crm_contact_get)
+    r.add_patch("/api/crm/contacts/{id}", crm_contact_patch)
+    r.add_post("/api/crm/contacts/{id}/merge", crm_contact_merge)
+    r.add_get("/api/crm/duplicates", crm_duplicates)
+    r.add_get("/api/crm/companies", crm_companies)
+    r.add_post("/api/crm/companies", crm_company_save)
+    r.add_patch("/api/crm/companies/{id}", crm_company_save)
+    r.add_delete("/api/crm/companies/{id}", crm_company_delete)
     r.add_post("/api/inbox/{cid}/suggest", inbox_suggest)
     r.add_post("/api/inbox/{cid}/memory", inbox_memory)
     r.add_post(r"/api/inbox/{cid:\d+}/messages/{mid:\d+}/translate", inbox_translate)
