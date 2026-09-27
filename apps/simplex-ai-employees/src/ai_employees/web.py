@@ -14,6 +14,7 @@ Security model:
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import logging
 import os
@@ -39,6 +40,9 @@ log = logging.getLogger(__name__)
 
 COOKIE = "aie_session"
 SESSION_TTL = 12 * 3600
+LOGIN_DELAY = 1.0  # seconds after a wrong password: slows down guessing
+LOGIN_MAX_FAILURES = 10  # wrong passwords per address, and per account, within LOGIN_WINDOW
+LOGIN_WINDOW = 15 * 60
 CSRF_HEADER = "X-Requested-With"
 CSRF_VALUE = "ai-employees"
 STATIC = (
@@ -75,6 +79,7 @@ PASSWORD: web.AppKey[str] = web.AppKey("password")
 SESSIONS: web.AppKey[Sessions] = web.AppKey("sessions")
 USERS: web.AppKey[Users] = web.AppKey("users")
 USER: web.RequestKey[User] = web.RequestKey("user")
+LOGIN_FAILURES: web.AppKey[dict[str, list[float]]] = web.AppKey("login_failures")
 
 
 # What each staff role may call besides its own account (admins: everything).
@@ -102,17 +107,15 @@ def _may(user: User, method: str, path: str) -> bool:
         return True
     if method == "GET" and path == "/api/channels":
         return True
+    # settings, the marketplace and mail credentials stay with admins (store managers may look)
+    if path.startswith(("/api/inventory/settings", "/api/inventory/marketplaces", "/api/inventory/mail")):
+        return method == "GET" and user.role == "manager"
     areas = ROLE_AREAS.get(user.role, ())
     for area in areas:
         if area.endswith("-read"):
             if method == "GET" and any(path.startswith(p) for p in _AREA_PREFIXES[area[:-5]]):
                 return True
         elif any(path == p or path.startswith(p + "/") for p in _AREA_PREFIXES[area]):
-            # settings and the marketplace credentials stay with admins
-            if area == "inventory" and path.startswith(
-                ("/api/inventory/settings", "/api/inventory/marketplaces", "/api/inventory/mail")
-            ):
-                return method == "GET" and user.role == "manager"
             return True
     return False
 
@@ -217,22 +220,70 @@ async def no_content(request: web.Request) -> web.Response:
     return web.Response(status=204)
 
 
-async def login(request: web.Request) -> web.Response:
-    data = await _body(request)
-    username, password = str(data.get("username", "")), str(data.get("password", ""))
-    user = await asyncio.to_thread(request.app[USERS].authenticate, username, password)
-    if user is None:
-        await asyncio.sleep(1.0)  # slow down guessing
-        log.warning("admin UI: failed login for %r from %s", username[:40], request.remote)
-        raise ApiError(401, tr("Sai tên đăng nhập hoặc mật khẩu"))
+def _behind_proxy(request: web.Request) -> bool:
+    """The request came from our own reverse proxy (a loopback or private address, e.g. Docker's)."""
+    try:
+        return ipaddress.ip_address(request.remote or "").is_private
+    except ValueError:
+        return False
+
+
+def _client_ip(request: web.Request) -> str:
+    """The visitor's address; behind our reverse proxy, the X-Forwarded-For entry it added."""
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    if forwarded and _behind_proxy(request):
+        return forwarded.split(",")[-1].strip()
+    return request.remote or ""
+
+
+def _https(request: web.Request) -> bool:
+    """Served over TLS: directly, or by the TLS reverse proxy in front (X-Forwarded-Proto)."""
+    proto = request.headers.get("X-Forwarded-Proto", "").split(",")[-1].strip().lower()
+    return request.secure or (proto == "https" and _behind_proxy(request))
+
+
+def _start_session(request: web.Request, resp: web.Response, user: User) -> None:
     token = secrets.token_urlsafe(32)
     request.app[SESSIONS].purge(time.time())
     request.app[SESSIONS].add(token, user.username, time.time() + SESSION_TTL)
+    resp.set_cookie(
+        COOKIE, token, httponly=True, samesite="Strict", secure=_https(request), max_age=SESSION_TTL, path="/"
+    )
+
+
+def _login_keys(request: web.Request, username: str) -> tuple[str, str]:
+    return "ip:" + _client_ip(request), "user:" + (username.strip().lower() or "admin")[:64]
+
+
+def _login_blocked(request: web.Request, keys: tuple[str, ...]) -> bool:
+    failures = request.app[LOGIN_FAILURES]
+    since = time.monotonic() - LOGIN_WINDOW
+    for key in [k for k, times in failures.items() if not times or times[-1] < since]:
+        del failures[key]  # forget old failures (keeps the table small)
+    return any(sum(1 for t in failures.get(k, ()) if t >= since) >= LOGIN_MAX_FAILURES for k in keys)
+
+
+async def login(request: web.Request) -> web.Response:
+    data = await _body(request)
+    username, password = str(data.get("username", "")), str(data.get("password", ""))
+    keys = _login_keys(request, username)
+    failures = request.app[LOGIN_FAILURES]
+    if _login_blocked(request, keys):
+        log.warning("admin UI: login for %r from %s refused: too many failures", username[:40], keys[0][3:])
+        raise ApiError(
+            429, tr("Đăng nhập sai quá nhiều lần; vui lòng thử lại sau {0} phút", LOGIN_WINDOW // 60)
+        )
+    user = await asyncio.to_thread(request.app[USERS].authenticate, username, password)
+    if user is None:
+        for key in keys:
+            failures.setdefault(key, []).append(time.monotonic())
+        await asyncio.sleep(LOGIN_DELAY)  # slow down guessing
+        log.warning("admin UI: failed login for %r from %s", username[:40], keys[0][3:])
+        raise ApiError(401, tr("Sai tên đăng nhập hoặc mật khẩu"))
+    failures.pop(keys[1], None)  # the address keeps its count: one's own account cannot reset it
     log.info("admin UI: %s logged in", user.username)
     resp = _json({"ok": True, "user": user.to_dict()})
-    resp.set_cookie(
-        COOKIE, token, httponly=True, samesite="Strict", secure=request.secure, max_age=SESSION_TTL, path="/"
-    )
+    _start_session(request, resp, user)
     return resp
 
 
@@ -304,7 +355,10 @@ async def me_password(request: web.Request) -> web.Response:
         await asyncio.to_thread(users.update, user.username, password=str(data.get("new", "")))
     except ValueError as e:
         raise ApiError(400, str(e)) from None
-    return _json({"ok": True})
+    _drop_sessions(request.app, user.username)  # logged in elsewhere (a lost phone?): not any more
+    resp = _json({"ok": True})
+    _start_session(request, resp, user)  # this browser stays logged in
+    return resp
 
 
 def _channel_ids(office: Office) -> set[str]:
@@ -317,11 +371,17 @@ async def users_list(request: web.Request) -> web.Response:
     return _json({"users": request.app[USERS].list(), "channels": channels})
 
 
+def _check_channels(request: web.Request, channels: Any) -> None:
+    if not isinstance(channels, list) or not all(isinstance(c, str) for c in channels):
+        raise ApiError(400, tr("channels phải là danh sách id kênh"))
+    if set(channels) - _channel_ids(request.app[OFFICE]):
+        raise ApiError(400, tr("Có kênh không tồn tại"))
+
+
 async def users_add(request: web.Request) -> web.Response:
     data = await _body(request)
     channels = data.get("channels") or []
-    if set(channels) - _channel_ids(request.app[OFFICE]):
-        raise ApiError(400, tr("Có kênh không tồn tại"))
+    _check_channels(request, channels)
     try:
         user = await asyncio.to_thread(
             request.app[USERS].add,
@@ -340,8 +400,8 @@ async def users_add(request: web.Request) -> web.Response:
 async def users_patch(request: web.Request) -> web.Response:
     username = request.match_info["username"]
     data = await _body(request)
-    if data.get("channels") is not None and set(data["channels"]) - _channel_ids(request.app[OFFICE]):
-        raise ApiError(400, tr("Có kênh không tồn tại"))
+    if data.get("channels") is not None:
+        _check_channels(request, data["channels"])
     fields = {k: data.get(k) for k in ("name", "role", "channels", "disabled", "password")}
     if fields["password"] is not None:
         fields["password"] = str(fields["password"])
@@ -544,7 +604,7 @@ async def correction_delete(request: web.Request) -> web.Response:
 
 async def admin_remove(request: web.Request) -> web.Response:
     e = _employee(request)
-    e.state.remove_admin(int(request.match_info["cid"]))
+    e.state.remove_admin(_int(request.match_info["cid"], "cid"))
     return _json(_detail(e))
 
 
@@ -594,7 +654,7 @@ async def approvals(request: web.Request) -> web.Response:
 
 async def approval_decide(request: web.Request) -> web.Response:
     e = _employee(request)
-    n = int(request.match_info["n"])
+    n = _int(request.match_info["n"], "n")
     decision = request.match_info["decision"]
     by = "web admin"
     if decision == "approve":
@@ -701,7 +761,7 @@ async def conversations(request: web.Request) -> web.Response:
 
 async def conversation_get(request: web.Request) -> web.Response:
     e = _employee(request)
-    cid = int(request.match_info["cid"])
+    cid = _int(request.match_info["cid"], "cid")
     return _json(
         {
             "id": cid,
@@ -715,14 +775,14 @@ async def conversation_get(request: web.Request) -> web.Response:
 
 async def conversation_forget(request: web.Request) -> web.Response:
     e = _employee(request)
-    e.state.forget(int(request.match_info["cid"]))
+    e.state.forget(_int(request.match_info["cid"], "cid"))
     return _json({"ok": True})
 
 
 async def runlog(request: web.Request) -> web.Response:
     office = request.app[OFFICE]
     q = request.query
-    limit = max(1, min(int(q.get("limit", "200")), 2000))
+    limit = max(1, min(_int(q.get("limit", "200"), "limit"), 2000))
     rows = office.runlog.tail(limit=limit, employee=q.get("employee") or None, kind=q.get("kind") or None)
     return _json({"records": list(reversed(rows))})
 
@@ -766,7 +826,7 @@ def _conv_json(office: Office, conv: Any, labels: list[str] | None = None) -> di
         "channel_info": _channel_label(office, conv.channel),
         "employee_name": e.settings.display_name if e else conv.employee,
         "lang": code,
-        "lang_name": lang.name(code, "vi"),
+        "lang_name": tr(lang.name(code, "vi")) if code else "",  # the table's Vietnamese names
         "lang_source": language.get("source", ""),
         "country": language.get("country", ""),
         "staff_language": office.config.staff_language,
@@ -908,7 +968,11 @@ async def inbox_labels(request: web.Request) -> web.Response:
     conv = _inbox_conv(request)
     labels = (await _body(request)).get("labels")
     known = {lb["name"] for lb in _hub(request).desk.labels}
-    if not isinstance(labels, list) or not set(labels) <= known:
+    if (
+        not isinstance(labels, list)
+        or not all(isinstance(x, str) for x in labels)
+        or not set(labels) <= known
+    ):
         raise ApiError(400, tr("Nhãn chưa được khai báo trong cài đặt hộp thư"))
     _hub(request).inbox.set_labels(conv.id, labels)
     return await inbox_get(request)
@@ -976,9 +1040,13 @@ async def desk_save(request: web.Request) -> web.Response:
     usernames = {u["username"] for u in request.app[USERS].list()}
     before = {lb["name"] for lb in hub.desk.labels}
     renames = {}
+    if isinstance(value, list) and not all(isinstance(x, dict) for x in value):
+        raise ApiError(400, tr("Mỗi mục phải là một đối tượng JSON"))
     if section == "labels" and isinstance(value, list):
         # {"name": new, "was": old}: a renamed label follows its conversations
-        renames = {x["was"]: x.get("name") for x in value if isinstance(x, dict) and x.get("was") in before}
+        renames = {
+            x["was"]: x.get("name") for x in value if isinstance(x.get("was"), str) and x["was"] in before
+        }
     try:
         desk = hub.desk.save(section, value, usernames, _channel_ids(office))
     except ValueError as e:
@@ -1055,14 +1123,19 @@ async def crm_contact_get(request: web.Request) -> web.Response:
 
 async def crm_contact_patch(request: web.Request) -> web.Response:
     contact = _crm_contact(request)
+    data = await _body(request)
+    if not _user(request).is_admin:
+        data.pop("vip", None)  # VIP status changes prices: only admins set it
     try:
-        _crm(request).update(int(contact["id"]), **(await _body(request)))
-    except ValueError as e:
+        _crm(request).update(int(contact["id"]), **data)
+    except (TypeError, ValueError) as e:
         raise ApiError(400, str(e)) from None
     return await crm_contact_get(request)
 
 
 async def crm_contact_merge(request: web.Request) -> web.Response:
+    if not _user(request).is_admin:
+        raise ApiError(403, tr("Chỉ quản trị viên gộp hoặc tách khách"))
     contact = _crm_contact(request)
     other = _int((await _body(request)).get("other"), "other")
     try:
@@ -1367,7 +1440,10 @@ async def inv_transfer_step(request: web.Request) -> web.Response:
     if step == "ship":
         return await _inv_call(inv.ship_transfer, tid, _user(request).name)
     if step == "receive":
-        got = {int(k): v for k, v in (d.get("received") or {}).items()} or None
+        received = d.get("received") or {}
+        if not isinstance(received, dict):
+            raise ApiError(400, tr("received phải là một đối tượng JSON"))
+        got = {_int(k, "received"): v for k, v in received.items()} or None
         return await _inv_call(inv.receive_transfer, tid, got, _user(request).name)
     if step == "cancel":
         return await _inv_call(inv.cancel_transfer, tid, _user(request).name)
@@ -1383,9 +1459,18 @@ async def inv_order_get(request: web.Request) -> web.Response:
 
 
 async def inv_order_create(request: web.Request) -> web.Response:
+    from .inventory import InventoryError
+    from .web_business import check_staff_discount
+
     d = await _body(request)
     crm = _crm(request)
     contact = crm.contact(_int(d["contact_id"], "contact_id")) if d.get("contact_id") else None
+    try:
+        check_staff_discount(
+            request, d.get("items"), d.get("discount", 0), bool(contact and contact.get("vip"))
+        )
+    except InventoryError as e:
+        raise ApiError(400, str(e)) from None
     return await _inv_call(
         _inv(request).create_order,
         d.get("items") or [],
@@ -1561,8 +1646,9 @@ async def languages(request: web.Request) -> web.Response:
 
     return _json(
         {
-            "languages": [{"code": c, "name": v[1], "native": v[2]} for c, v in lang.LANGUAGES.items()],
-            "countries": [{"code": c, "name": v[0], "lang": v[1]} for c, v in lang.COUNTRIES.items()],
+            # names in the staff member's language (tr: the tables are in Vietnamese)
+            "languages": [{"code": c, "name": tr(v[1]), "native": v[2]} for c, v in lang.LANGUAGES.items()],
+            "countries": [{"code": c, "name": tr(v[0]), "lang": v[1]} for c, v in lang.COUNTRIES.items()],
             "staff_language": request.app[OFFICE].config.staff_language,
         }
     )
@@ -1809,6 +1895,7 @@ def create_app(office: Office, password: str) -> web.Application:
     app = web.Application(middlewares=[guard], client_max_size=256 * 1024)
     app[OFFICE] = office
     app[PASSWORD] = password
+    app[LOGIN_FAILURES] = {}
     app[SESSIONS] = Sessions(office.office_db)
     app[USERS] = Users(office.docs, password, legacy_path=os.path.join(office.config.state_dir, "users.json"))
     r = app.router

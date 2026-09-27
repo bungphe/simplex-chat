@@ -49,8 +49,10 @@ class Database:
     def ddl(self, sql: str) -> str:
         if self.postgres:
             sql = sql.replace("{id}", "BIGSERIAL PRIMARY KEY").replace("{int}", "BIGINT")
+            sql = sql.replace("{real}", "DOUBLE PRECISION")  # PostgreSQL's REAL is only 4 bytes
         else:
             sql = sql.replace("{id}", "INTEGER PRIMARY KEY").replace("{int}", "INTEGER")
+            sql = sql.replace("{real}", "REAL")
         return sql
 
     def script(self, sql: str) -> None:

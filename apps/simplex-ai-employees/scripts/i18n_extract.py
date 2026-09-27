@@ -38,6 +38,8 @@ TABLES = {
     "ATTACHMENT_KINDS",
     "CONGRATS",
     "SENT",
+    "LANGUAGES",  # lang.py: language names shown to staff
+    "COUNTRIES",  # lang.py: country names shown to staff
 }
 
 

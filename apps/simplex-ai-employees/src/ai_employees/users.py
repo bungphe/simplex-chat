@@ -12,7 +12,7 @@
     cashier    the point of sale only;
     warehouse  inventory: products, purchasing, transfers, stock counts;
     delivery   delivery bookings, trips and drivers;
-    marketing  promotions, vouchers, combos, advertising, customer segments, reports.
+    marketing  promotions, vouchers, combos, advertising, customer segments; reads reports.
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ ROLE_AREAS: dict[str, tuple[str, ...]] = {
     "cashier": ("pos",),
     "warehouse": ("inventory",),
     "delivery": ("delivery",),
-    "marketing": ("marketing", "reports", "crm-read", "inventory-read"),
+    "marketing": ("marketing", "reports-read", "crm-read", "inventory-read"),
 }
 MIN_PASSWORD = 10
 _USERNAME = re.compile(r"^[a-z0-9][a-z0-9._-]{1,31}$")
@@ -220,8 +220,15 @@ class Sessions:
     def __init__(self, db: Database):
         self.db = db
         db.script(
-            "CREATE TABLE IF NOT EXISTS web_sessions (token TEXT PRIMARY KEY, username TEXT NOT NULL, expiry REAL NOT NULL)"
+            "CREATE TABLE IF NOT EXISTS web_sessions (token TEXT PRIMARY KEY, username TEXT NOT NULL, expiry {real} NOT NULL)"
         )
+        if db.postgres:  # created as REAL (float4) before: expiry times rounded to minutes
+            col = db.row(
+                "SELECT data_type FROM information_schema.columns "
+                "WHERE table_schema=current_schema() AND table_name='web_sessions' AND column_name='expiry'"
+            )
+            if col and col["data_type"] == "real":
+                db.execute("ALTER TABLE web_sessions ALTER COLUMN expiry TYPE DOUBLE PRECISION")
 
     @staticmethod
     def _key(token: str) -> str:

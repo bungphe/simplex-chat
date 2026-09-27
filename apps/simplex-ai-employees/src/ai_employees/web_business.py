@@ -7,6 +7,7 @@ from __future__ import annotations
 import hmac
 import os
 from datetime import datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from aiohttp import web
@@ -48,7 +49,7 @@ def _period(request: web.Request, days: int = 30) -> tuple[str, str]:
 
 
 def handler(fn: Any) -> Any:
-    """fn(request, data) -> result; JSON out, InventoryError/ValueError -> 400."""
+    """fn(request, data) -> result; JSON out, InventoryError/ValueError/TypeError -> 400."""
 
     async def run(request: web.Request) -> web.StreamResponse:
         w = _w()
@@ -61,7 +62,7 @@ def handler(fn: Any) -> Any:
             result = fn(request, data)
             if hasattr(result, "__await__"):
                 result = await result
-        except (InventoryError, ValueError) as e:
+        except (InventoryError, ValueError, TypeError) as e:
             raise w.ApiError(400, str(e)) from None
         except KeyError as e:
             raise w.ApiError(404, tr("không tìm thấy {0}", e)) from None
@@ -137,10 +138,64 @@ def pos_products(request: web.Request, _d: dict[str, Any]) -> Any:
     }
 
 
+# The most off the usual prices (special prices, line discounts and the order discount
+# together) that cashiers and sales staff may give; more needs a store manager.
+STAFF_DISCOUNT_PCT = 10
+
+
+def check_staff_discount(request: web.Request, items: Any, discount: Any, vip: bool) -> None:
+    """Refuse (403) a sale whose own prices or discounts take more than STAFF_DISCOUNT_PCT
+    off the usual prices, unless a store manager makes it. Combo lines keep their package
+    price and are not counted; malformed lines are left to create_order to refuse."""
+    if _manager(request) or not isinstance(items, list):
+        return
+    inv = _office(request).inventory
+    usual = given = 0
+    too_much = False
+    for it in items:
+        if not isinstance(it, dict) or it.get("combo"):
+            continue
+        try:
+            p = (
+                inv.product_row(int(it["product_id"]))
+                if it.get("product_id")
+                else inv.by_sku(str(it.get("sku", "")))
+            )
+            qty = max(1, int(str(it.get("qty"))))
+            pct = Decimal(str(it.get("discount_pct") or 0).strip().replace(",", ""))
+        except (InventoryError, KeyError, TypeError, ValueError, InvalidOperation):
+            continue
+        if p is None:
+            continue
+        price = inv.current_price(int(p["id"]), vip)
+        normal = int(price["price"]) if price else None
+        unit = (
+            inv.minor(it["unit_price"], tr("Giá bán")) if it.get("unit_price") not in (None, "") else normal
+        )
+        if normal is None:
+            too_much |= unit is not None  # no usual price to compare with: a manager sets it
+            continue
+        if unit is None:
+            continue
+        if pct:
+            unit = inv._round_price(Decimal(unit) * (1 - pct / 100))  # as create_order does
+        usual, given = usual + normal * qty, given + unit * qty
+    off = usual - given + (inv.minor(discount, tr("Giảm giá")) if discount not in (None, "", 0) else 0)
+    if too_much or off * 100 > usual * STAFF_DISCOUNT_PCT:
+        raise _w().ApiError(
+            403,
+            tr(
+                "Nhân viên chỉ được giảm tối đa {0}% so với giá bán; giảm nhiều hơn cần quản lý cửa hàng",
+                STAFF_DISCOUNT_PCT,
+            ),
+        )
+
+
 def pos_order_create(request: web.Request, d: dict[str, Any]) -> Any:
     office = _office(request)
     user = _user(request)
     contact = office.hub.crm.contact(int(d["contact_id"])) if d.get("contact_id") else None
+    check_staff_discount(request, d.get("items"), d.get("discount", 0), bool(contact and contact.get("vip")))
     return office.inventory.create_order(
         d.get("items") or [],
         warehouse_id=d.get("warehouse_id") or None,
@@ -286,8 +341,27 @@ async def pos_send_receipt(request: web.Request, _d: dict[str, Any]) -> Any:
 
 
 def pos_customers(request: web.Request, _d: dict[str, Any]) -> Any:
+    """Find the customer at the counter. Staff limited to some channels may not browse the
+    customer list: only the one with this exact phone number or email address."""
+    from .crm import phone_key
+
     crm = _office(request).hub.crm
-    rows = crm.search(request.query.get("q", ""), limit=20)
+    q = request.query.get("q", "").strip()
+    user = _user(request)
+    if _manager(request) or not user.channels:
+        rows = crm.search(q, limit=20)
+    elif key := phone_key(q):
+        rows = crm.db.rows(
+            "SELECT id, name, phone, email, vip FROM crm_contacts WHERE phone_key=? ORDER BY id DESC LIMIT 3",
+            (key,),
+        )
+    elif "@" in q:
+        rows = crm.db.rows(
+            "SELECT id, name, phone, email, vip FROM crm_contacts WHERE email=? ORDER BY id DESC LIMIT 3",
+            (q.lower(),),
+        )
+    else:
+        rows = []
     return {
         "customers": [
             {k: r.get(k) for k in ("id", "name", "phone", "email", "vip")}
@@ -676,7 +750,8 @@ async def catalog(request: web.Request) -> web.Response:
     if not key or not hmac.compare_digest(given.encode(), key.encode()):
         raise web.HTTPNotFound()
     inv = _office(request).inventory
-    rows = inv.lookup(request.query.get("q", ""), limit=min(int(request.query.get("limit") or 100), 500))
+    limit = _w()._int(request.query.get("limit") or 100, "limit")
+    rows = inv.lookup(request.query.get("q", ""), limit=max(1, min(limit, 500)))
     return _w()._json({"products": rows, "currency": inv.settings()["currency"]})
 
 
