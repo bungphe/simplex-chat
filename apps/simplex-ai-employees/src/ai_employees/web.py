@@ -181,6 +181,19 @@ def _drop_sessions(app: web.Application, username: str) -> None:
     app[SESSIONS].drop_user(username)
 
 
+async def _staff_chats_changed(app: web.Application, username: str, unlink: bool) -> None:
+    """The account's linked SimpleX chats: unlinked (account removed, password reset by an
+    admin: the phone may be lost) or kept; either way their command menus follow."""
+    links = getattr(app[OFFICE], "staff_links", None)
+    if links is None:
+        return
+    chats = links.drop_user(username) if unlink else []
+    try:
+        await links.resync(username, chats)
+    except Exception:  # a menu is a convenience: the commands themselves check the rights
+        log.exception("admin UI: staff menus not synced for %s", username)
+
+
 async def _body(request: web.Request) -> dict[str, Any]:
     try:
         data = await request.json()
@@ -413,6 +426,7 @@ async def users_patch(request: web.Request) -> web.Response:
         raise ApiError(400, str(e)) from None
     if any(fields[k] is not None for k in ("role", "channels", "disabled", "password")):
         _drop_sessions(request.app, username)  # new rights or password: log in again
+        await _staff_chats_changed(request.app, username, unlink=fields["password"] is not None)
     return await users_list(request)
 
 
@@ -423,6 +437,7 @@ async def users_delete(request: web.Request) -> web.Response:
     except KeyError:
         raise ApiError(404, tr("Không có tài khoản này")) from None
     _drop_sessions(request.app, username)
+    await _staff_chats_changed(request.app, username, unlink=True)
     return await users_list(request)
 
 
@@ -604,7 +619,14 @@ async def correction_delete(request: web.Request) -> web.Response:
 
 async def admin_remove(request: web.Request) -> web.Response:
     e = _employee(request)
-    e.state.remove_admin(_int(request.match_info["cid"], "cid"))
+    cid = _int(request.match_info["cid"], "cid")
+    e.state.remove_admin(cid)
+    staff = getattr(e, "staff", None)
+    if staff is not None:  # the admin menu goes too
+        try:
+            await staff.sync_menu(cid)
+        except Exception:
+            log.exception("admin UI: menu not synced for contact %s", cid)
     return _json(_detail(e))
 
 

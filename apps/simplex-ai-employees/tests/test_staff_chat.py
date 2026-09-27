@@ -239,3 +239,28 @@ async def test_the_customer_menu_and_replies_in_the_customer_language(office, mo
     sales.state.set_language(50, "ja")
     await sales.staff.localize_menu(50)
     assert chat.prefs[50]["commands"][1]["label"] == "🎁 お得なセット"
+
+
+async def test_removed_or_reset_accounts_lose_their_chats(office):
+    office, _llm, _p, _chat, _users = office
+    links = office.staff_links
+    await link(office, 40, "lan")
+    await link(office, 41, "quan")
+    assert links.user("sales", 40).username == "lan"
+    client = TestClient(TestServer(create_app(office, PASSWORD)))
+    await client.start_server()
+    try:
+        await client.post("/api/login", json={"password": PASSWORD}, headers=H)
+        # an admin resets a password (a lost phone?): the chat is unlinked
+        r = await client.patch("/api/users/quan", json={"password": "9876543210"}, headers=H)
+        assert r.status == 200 and links.user("sales", 41) is None
+        # a removed account's chat does not come back with a new account of that name
+        assert (await client.delete("/api/users/lan", headers=H)).status == 200
+        r = await client.post(
+            "/api/users",
+            json={"username": "lan", "name": "Lan 2", "role": "manager", "password": "0123456789"},
+            headers=H,
+        )
+        assert r.status == 200 and links.user("sales", 40) is None
+    finally:
+        await client.close()

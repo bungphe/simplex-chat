@@ -397,6 +397,8 @@ class Storefront:
     def open_orders(self, phone: str) -> int:
         """Unpaid web orders with this phone number still waiting for the shop."""
         key = phone_key(phone)
+        if not key:
+            return 0
         n = 0
         for row in self.db.rows(
             "SELECT phone FROM inv_orders WHERE source='storefront' AND status='confirmed' AND paid=0 "
