@@ -19,16 +19,19 @@ from pathlib import Path
 LOCALES = Path(__file__).resolve().parents[1] / "src" / "ai_employees" / "locales"
 WORK = LOCALES / ".work"
 _PLACE = re.compile(r"\{[^{}]*\}")
-_CMD = re.compile(r"(?<![\w/:.])/'?[a-z][a-z_]*")
-_TAG = re.compile(r"</?([a-z][a-z0-9]*)\b")
+# a chat command: the keyword is ASCII and not the start of a longer word ("/chuyến" is not one)
+_CMD = re.compile(r"(?<![\w/:.])/'?[a-z][a-z_]*(?![^\W\d_])")
+_TAGS = "a|b|br|button|div|em|form|h1|h2|h3|img|input|label|li|p|s|small|span|strong|table|td|th|tr|ul"
+_TAG = re.compile(rf"</?({_TAGS})(?=[\s>/])")
 
 
 def problems(source: str, text: str) -> list[str]:
     out = []
     if sorted(_PLACE.findall(source)) != sorted(_PLACE.findall(text)):
         out.append(f"placeholders {sorted(_PLACE.findall(source))} -> {sorted(_PLACE.findall(text))}")
-    if sorted(_CMD.findall(source)) != sorted(_CMD.findall(text)):
-        out.append(f"commands {sorted(_CMD.findall(source))} -> {sorted(_CMD.findall(text))}")
+    missing = [c for c in _CMD.findall(source) if _CMD.findall(text).count(c) < _CMD.findall(source).count(c)]
+    if missing:
+        out.append(f"commands lost: {sorted(set(missing))}")
     if sorted(_TAG.findall(source)) != sorted(_TAG.findall(text)):
         out.append("markup tags differ")
     if source.count("\n") != text.count("\n"):
