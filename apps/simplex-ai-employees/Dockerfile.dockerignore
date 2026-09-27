@@ -2,9 +2,19 @@
 *
 !packages/simplex-chat-python/
 !apps/simplex-ai-employees/
+# secrets: the filled-in .env is read by compose at run time, never baked into the image
+**/.env
+**/.env.*
+**/data
 **/.venv
+**/venv
 **/__pycache__
+**/*.py[co]
 **/.pytest_cache
 **/.ruff_cache
-**/data
+**/.mypy_cache
+**/*.egg-info
+**/build
+**/dist
+**/locales/.work
 **/zalo-gateway

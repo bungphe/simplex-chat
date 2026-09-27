@@ -50,12 +50,16 @@ Trên máy chủ (Linux, có Docker), từ thư mục gốc của repo:
 ```bash
 cd apps/simplex-ai-employees
 mkdir -p data && cp examples/employees.yaml data/ && cp -r examples/knowledge examples/plugins data/
+sudo chown -R 10001:10001 data  # container chạy với uid 10001 và cần ghi vào data/
 cp .env.example .env          # điền AI_ADMIN_PASSWORD, AI_ADMIN_TOKEN và API key của model
 docker compose up -d --build  # thêm --profile local-ai để chạy kèm Ollama
 docker compose logs -f        # xem địa chỉ SimpleX của từng nhân viên
 ```
 
-- `data/` chứa cấu hình, tài liệu, cơ sở dữ liệu SimpleX và trạng thái; hãy sao lưu thư mục này.
+- `data/` chứa cấu hình, tài liệu, cơ sở dữ liệu SimpleX và trạng thái; hãy sao lưu thư mục này. Thư mục thuộc
+  uid 10001 (người dùng trong container): sửa `employees.yaml` bằng `sudo`, và sau khi chép thêm tệp vào `data/`
+  thì chạy lại `sudo chown -R 10001:10001 data`.
+- `.env` không được đưa vào image (xem `Dockerfile.dockerignore`); compose đọc nó khi chạy.
 - Giao diện quản trị chỉ mở ở `127.0.0.1:8080` của máy chủ. Truy cập từ xa bằng SSH tunnel
   (`ssh -L 8080:127.0.0.1:8080 <máy chủ>`) hoặc reverse proxy có HTTPS.
 - Mặc định image tải `libsimplex` bản phát hành của SimpleX. Muốn dùng bản tự build từ repo này
@@ -688,12 +692,16 @@ phím tắt Hộp thư / Bán hàng / Giao hàng, đủ mọi chức năng. Tệ
 trực tiếp, không lưu trên máy. Cần HTTPS (reverse proxy) để trình duyệt cho cài.
 
 **3. Màn hình "Quản lý cửa hàng" trong ứng dụng SimpleX** (bản ứng dụng build từ repo này: `apps/multiplatform` cho
-Android và máy tính, `apps/ios` cho iPhone). Cài đặt → *Quản lý cửa hàng*: nhập địa chỉ trang quản trị (https, hoặc
-http trong mạng nội bộ), rồi mở ngay trong SimpleX (Android, iPhone: trình duyệt nhúng giữ phiên đăng nhập; máy tính:
-mở trình duyệt). Trong thông tin liên hệ của một bot (nhân viên AI) cũng có nút *Quản lý cửa hàng*. Màn hình này có
+Android và máy tính, `apps/ios` cho iPhone). Cài đặt → *Quản lý cửa hàng*: nhập địa chỉ trang quản trị (iPhone: bấm
+*Lưu*), rồi mở ngay trong SimpleX (Android, iPhone: trình duyệt nhúng giữ phiên đăng nhập; máy tính: mở trình duyệt).
+Địa chỉ phải là **https** (ứng dụng chặn http không mã hoá), vd. qua reverse proxy có HTTPS hoặc một tunnel HTTPS tới
+`127.0.0.1:8080`; địa chỉ http trong mạng nội bộ không dùng được. Trong thông tin liên hệ của một bot (nhân viên AI)
+cũng có nút *Quản lý cửa hàng*. Màn hình này có
 chữ theo ngôn ngữ của ứng dụng: mọi ngôn ngữ ứng dụng SimpleX có (39 trên Android và máy tính, 17 trên iPhone, và thêm
 tiếng Việt cho iPhone). Liên kết tới trang
-khác (bản đồ, link khách gửi), hoá đơn in và tệp CSV mở bằng trình duyệt ngoài. Ứng dụng SimpleX gốc từ cửa hàng ứng
+khác (bản đồ, link khách gửi) mở bằng trình duyệt ngoài; hoá đơn in mở ngay trong màn hình này, tệp CSV được tải về
+cùng phiên đăng nhập (Android: thư mục Download, Android 9 trở xuống: qua trình duyệt, cần đăng nhập lại ở đó;
+iPhone: bảng chia sẻ để lưu vào Tệp). Ứng dụng SimpleX gốc từ cửa hàng ứng
 dụng không có màn hình này, nhưng vẫn dùng được cách 1 và 2.
 
 ## Ngôn ngữ giao diện (cho SaaS)

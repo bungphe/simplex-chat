@@ -12,3 +12,6 @@
 
 /* Shop management (SimpleX AI employees) */
 "In the chat with the shop's AI employee, type / to see your commands. First link your chat to your staff account: in the admin app, open your account, get a link code and send /link with the code." = "Trong chat với nhân viên AI của cửa hàng, gõ / để xem các lệnh của bạn. Trước hết hãy liên kết chat với tài khoản nhân viên: trong trang quản trị, mở tài khoản của bạn, lấy mã liên kết rồi gửi /link kèm mã.";
+
+/* Shop management (SimpleX AI employees) */
+"Save" = "Lưu";

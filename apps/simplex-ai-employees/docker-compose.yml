@@ -1,6 +1,7 @@
 # Run the AI employees office, optionally with a local model server.
 #
 #   cp examples/employees.yaml data/employees.yaml   # then edit it (see README)
+#   sudo chown -R 10001:10001 data                   # the container runs as uid 10001
 #   cp .env.example .env                             # then fill in keys and passwords
 #   docker compose up -d --build                     # add "--profile local-ai" for Ollama
 #
@@ -35,8 +36,8 @@ services:
     profiles: [zalo]
     restart: unless-stopped
     environment:
-      API_SECRET: ${ZALO_GATEWAY_KEY:?set ZALO_GATEWAY_KEY in .env}
-      WEBHOOK_SECRET: ${ZALO_GATEWAY_HOOK_SECRET:?set ZALO_GATEWAY_HOOK_SECRET in .env}
+      API_SECRET: ${ZALO_GATEWAY_KEY:-}   # server.js refuses to start if unset
+      WEBHOOK_SECRET: ${ZALO_GATEWAY_HOOK_SECRET:-}
       WEBHOOK_URL: http://ai-employees:8080/hooks
     volumes:
       - zalo-sessions:/app/sessions   # Zalo login sessions: treat like passwords
@@ -52,7 +53,7 @@ services:
     environment:
       POSTGRES_DB: aie
       POSTGRES_USER: aie
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}   # postgres refuses to start if unset
     volumes:
       - postgres:/var/lib/postgresql/data
 

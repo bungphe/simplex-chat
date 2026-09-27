@@ -343,7 +343,7 @@ struct SettingsView: View {
                 }
 
                 NavigationLink {
-                    ShopAdminEntry()
+                    ShopAdminSettings()
                 } label: {
                     settingsRow("bag", color: theme.colors.secondary) { Text("Shop management") }
                 }

@@ -24,12 +24,11 @@ import dev.icerock.moko.resources.compose.stringResource
 * staff account; the page itself stays on the shop's server.
 * */
 
-// https, or http on this device / the local network (a shop server in the back office)
-private val LOCAL_HTTP = Regex("""^http://(localhost|127\.0\.0\.1|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)(:\d+)?(/.*)?$""")
-
+// https only: the app does not allow cleartext traffic (a back-office server goes through
+// the shop's HTTPS reverse proxy or tunnel)
 fun validShopAdminUrl(url: String): Boolean {
   val u = url.trim()
-  return (u.startsWith("https://") && u.length > "https://".length && !u.contains(' ')) || LOCAL_HTTP.matches(u)
+  return u.startsWith("https://") && u.length > "https://".length && !u.contains(' ')
 }
 
 fun openShopAdmin() {

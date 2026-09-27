@@ -1,8 +1,12 @@
 package chat.simplex.common.views.usersettings
 
 import android.annotation.SuppressLint
+import android.app.DownloadManager
+import android.content.Context
 import android.graphics.Bitmap
 import android.net.Uri
+import android.os.Build
+import android.os.Environment
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.*
@@ -45,7 +49,8 @@ actual fun ShopAdminWebView(url: String, close: () -> Unit) {
             webViewClient = object : WebViewClient() {
               override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 val target = request.url
-                if (target.scheme == home.scheme && target.host == home.host && target.port == home.port) return false
+                // same site, also target=_blank links (printed receipts): inside the web view, with the session
+                if (sameOrigin(target, home)) return false
                 // other sites (links in messages, maps): in the browser, never inside the admin app
                 uriHandler.openUriCatching(target.toString())
                 return true
@@ -64,8 +69,16 @@ actual fun ShopAdminWebView(url: String, close: () -> Unit) {
                 canGoBack = view.canGoBack()
               }
             }
-            // receipts to print, CSV exports: the browser handles files
-            setDownloadListener { downloadUrl, _, _, _, _ -> uriHandler.openUriCatching(downloadUrl) }
+            // CSV exports need the staff session cookie, which the browser does not have:
+            // the system download manager fetches them with it (into Downloads, no permission needed on Android 10+)
+            setDownloadListener { downloadUrl, userAgent, contentDisposition, mimeType, _ ->
+              val target = Uri.parse(downloadUrl)
+              if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && sameOrigin(target, home)) {
+                downloadWithSession(downloadUrl, userAgent, contentDisposition, mimeType)
+              } else {
+                uriHandler.openUriCatching(downloadUrl)
+              }
+            }
             loadUrl(url)
             webView = this
           }
@@ -83,6 +96,26 @@ actual fun ShopAdminWebView(url: String, close: () -> Unit) {
       webView?.destroy()
       webView = null
     }
+  }
+}
+
+private fun sameOrigin(a: Uri, b: Uri): Boolean =
+  a.scheme == b.scheme && a.host == b.host && a.port == b.port
+
+private fun downloadWithSession(url: String, userAgent: String?, contentDisposition: String?, mimeType: String?) {
+  try {
+    val name = URLUtil.guessFileName(url, contentDisposition, mimeType)
+    val request = DownloadManager.Request(Uri.parse(url))
+      .setTitle(name)
+      .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+      .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, name)
+    if (!mimeType.isNullOrBlank()) request.setMimeType(mimeType)
+    CookieManager.getInstance().getCookie(url)?.let { request.addRequestHeader("Cookie", it) }
+    if (!userAgent.isNullOrBlank()) request.addRequestHeader("User-Agent", userAgent)
+    (androidAppContext.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager).enqueue(request)
+  } catch (e: Exception) {
+    Log.e(TAG, "ShopAdminWebView download: ${e.stackTraceToString()}")
+    AlertManager.shared.showAlertMsg(generalGetString(MR.strings.error), e.message)
   }
 }
 

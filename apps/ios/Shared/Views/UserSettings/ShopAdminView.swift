@@ -13,27 +13,23 @@ import SimpleXChat
 
 let DEFAULT_SHOP_ADMIN_URL = "shopAdminUrl"
 
-/// https, or http on this device / the local network (a shop server in the back office)
+/// https only: App Transport Security blocks cleartext http (a back-office server goes
+/// through the shop's HTTPS reverse proxy or tunnel)
 func validShopAdminUrl(_ s: String) -> Bool {
     let u = s.trimmingCharacters(in: .whitespaces)
-    if u.hasPrefix("https://") && u.count > 8 && !u.contains(" ") && URL(string: u) != nil { return true }
-    return u.range(
-        of: #"^http://(localhost|127\.0\.0\.1|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)(:\d+)?(/.*)?$"#,
-        options: .regularExpression
-    ) != nil
+    return u.hasPrefix("https://") && u.count > 8 && !u.contains(" ") && URL(string: u) != nil
 }
 
-/// Settings when there is no address yet, else the admin app itself.
+/// From a chat: the admin app when its address is saved, else the settings to enter it.
 struct ShopAdminEntry: View {
     @AppStorage(DEFAULT_SHOP_ADMIN_URL) private var shopAdminUrl = ""
 
     var body: some View {
         if validShopAdminUrl(shopAdminUrl), let url = URL(string: shopAdminUrl.trimmingCharacters(in: .whitespaces)) {
-            ShopAdminWebScreen(url: url)
+            // a new address (edited from the web screen) reloads the web view
+            ShopAdminWebScreen(url: url).id(url)
         } else {
             ShopAdminSettings()
-                .navigationTitle("Shop management")
-                .modifier(ThemedBackground(grouped: true))
         }
     }
 }
@@ -42,6 +38,8 @@ struct ShopAdminSettings: View {
     @EnvironmentObject var theme: AppTheme
     @AppStorage(DEFAULT_SHOP_ADMIN_URL) private var shopAdminUrl = ""
     @State private var address = ""
+    /// false when opened from the admin app itself (back returns to it)
+    var showOpen = true
 
     var body: some View {
         List {
@@ -51,10 +49,10 @@ struct ShopAdminSettings: View {
                     .autocapitalization(.none)
                     .disableAutocorrection(true)
                     .foregroundColor(address.isEmpty || validShopAdminUrl(address) ? theme.colors.onBackground : .red)
-                    .onChange(of: address) { a in
-                        let text = a.trimmingCharacters(in: .whitespaces)
-                        if text.isEmpty || validShopAdminUrl(text) { shopAdminUrl = text }
-                    }
+                    .onSubmit { save() }
+                // saved only when done typing: a partial address is not a new admin app
+                Button("Save") { save() }
+                    .disabled(!canSave)
             } header: {
                 Text("Admin app address").foregroundColor(theme.colors.secondary)
             } footer: {
@@ -63,9 +61,9 @@ struct ShopAdminSettings: View {
             }
 
             Section {
-                if validShopAdminUrl(shopAdminUrl), let url = URL(string: shopAdminUrl) {
+                if showOpen, validShopAdminUrl(shopAdminUrl), let url = URL(string: shopAdminUrl) {
                     NavigationLink {
-                        ShopAdminWebScreen(url: url)
+                        ShopAdminWebScreen(url: url, canEdit: false)
                     } label: {
                         settingsRow("bag", color: theme.colors.primary) { Text("Open shop management").foregroundColor(theme.colors.primary) }
                     }
@@ -76,20 +74,53 @@ struct ShopAdminSettings: View {
             }
         }
         .onAppear { address = shopAdminUrl }
+        .navigationTitle("Shop management")
+        .modifier(ThemedBackground(grouped: true))
+    }
+
+    private var canSave: Bool {
+        let text = address.trimmingCharacters(in: .whitespaces)
+        return text != shopAdminUrl && (text.isEmpty || validShopAdminUrl(text))
+    }
+
+    private func save() {
+        if canSave { shopAdminUrl = address.trimmingCharacters(in: .whitespaces) }
     }
 }
 
 struct ShopAdminWebScreen: View {
     let url: URL
+    /// the address can be edited from here (false when opened from its settings)
+    var canEdit = true
     @State private var loading = true
+    @State private var showSettings = false
 
     var body: some View {
         ZStack(alignment: .top) {
+            NavigationLink(isActive: $showSettings) {
+                ShopAdminSettings(showOpen: false)
+            } label: {
+                EmptyView()
+            }
+            .frame(width: 1, height: 1)
+            .hidden()
             ShopAdminWebView(url: url, loading: $loading)
             if loading { ProgressView().padding() }
         }
         .navigationTitle("Shop management")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                if canEdit {
+                    Button {
+                        showSettings = true
+                    } label: {
+                        Image(systemName: "gearshape")
+                    }
+                    .accessibilityLabel(Text("Admin app address"))
+                }
+            }
+        }
     }
 }
 
@@ -114,9 +145,10 @@ struct ShopAdminWebView: UIViewRepresentable {
         Coordinator(home: url, loading: $loading)
     }
 
-    class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
+    class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate {
         let home: URL
         @Binding var loading: Bool
+        private var downloads: [WKDownload: URL] = [:]
 
         init(home: URL, loading: Binding<Bool>) {
             self.home = home
@@ -137,11 +169,61 @@ struct ShopAdminWebView: UIViewRepresentable {
             UIApplication.shared.open(url)
         }
 
-        // links opening a new window (receipts to print, CSV exports): in Safari
+        // links opening a new window: the admin app's own pages (receipts to print) here, with the
+        // staff session (Safari does not have it); other sites in Safari
         func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                      for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-            if let url = navigationAction.request.url { UIApplication.shared.open(url) }
+            if let url = navigationAction.request.url {
+                if sameSite(url) {
+                    webView.load(navigationAction.request)
+                } else {
+                    UIApplication.shared.open(url)
+                }
+            }
             return nil
+        }
+
+        // files (CSV exports) are downloaded with the staff session, then shared/saved from the share sheet
+        func webView(_ webView: WKWebView,
+                     decidePolicyFor navigationResponse: WKNavigationResponse,
+                     decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+            let disposition = (navigationResponse.response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Disposition") ?? ""
+            if disposition.lowercased().hasPrefix("attachment") || !navigationResponse.canShowMIMEType {
+                decisionHandler(.download)
+            } else {
+                decisionHandler(.allow)
+            }
+        }
+
+        func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
+            download.delegate = self
+        }
+
+        func download(_ download: WKDownload, decideDestinationUsing response: URLResponse,
+                      suggestedFilename: String, completionHandler: @escaping (URL?) -> Void) {
+            let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+            do {
+                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                let file = dir.appendingPathComponent(suggestedFilename)
+                downloads[download] = file
+                completionHandler(file)
+            } catch {
+                logger.error("ShopAdminWebView download: \(error.localizedDescription)")
+                completionHandler(nil)
+            }
+        }
+
+        func downloadDidFinish(_ download: WKDownload) {
+            loading = false
+            if let file = downloads.removeValue(forKey: download) {
+                showShareSheet(items: [file])
+            }
+        }
+
+        func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
+            loading = false
+            downloads.removeValue(forKey: download)
+            logger.error("ShopAdminWebView download: \(error.localizedDescription)")
         }
 
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
