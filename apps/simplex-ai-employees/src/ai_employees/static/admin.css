@@ -198,3 +198,21 @@ a.button { display: inline-block; border: 1px solid var(--border); border-radius
 .product-picker { position: relative; }
 .product-picker .results { position: absolute; bottom: 110%; left: 0; z-index: 6; width: min(560px, 90vw); max-height: 320px; overflow-y: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px; box-shadow: var(--shadow); }
 .product-picker .results button { display: block; width: 100%; text-align: left; margin-bottom: 4px; }
+.modal { position: fixed; inset: 0; background: rgba(15, 23, 42, .45); display: flex; align-items: center; justify-content: center; z-index: 50; padding: 16px; }
+.modal-card { max-width: 560px; width: 100%; }
+.pos { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 14px; align-items: start; }
+.pos-results { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 8px; margin-top: 8px; max-height: 60vh; overflow-y: auto; }
+.pos-item { text-align: left; display: flex; flex-direction: column; gap: 3px; padding: 8px 10px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; }
+.pos-item:hover { border-color: var(--accent); }
+.pos-combos { grid-column: 1 / -1; }
+.pos-cart { position: sticky; top: 90px; }
+.pos-total { font-size: 18px; font-weight: 700; }
+.cal { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
+.cal-head { text-align: center; font-weight: 600; color: var(--muted); font-size: 12px; }
+.cal-cell { min-height: 64px; text-align: left; padding: 4px 6px; font-size: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; display: flex; flex-direction: column; gap: 2px; }
+.cal-cell.empty { border: 0; background: none; }
+.cal-cell.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+@media (max-width: 820px) { .pos { grid-template-columns: minmax(0, 1fr); } .pos-cart { position: static; } .cal-cell { min-height: 48px; font-size: 11px; } }
+.row > input:not([type=checkbox]):not(.narrow):not(.price) { width: auto; flex: 1 1 150px; min-width: 0; }
+.row > input[type=date] { flex: 0 1 170px; }
+td.mono { white-space: nowrap; }

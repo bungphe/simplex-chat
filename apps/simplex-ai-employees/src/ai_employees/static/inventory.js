@@ -18,7 +18,7 @@ const MOVE = {
 };
 const TRIGGER = { system: "tự động", admin: "cập nhật ngay", manual: "sửa tay", activate: "lô mới" };
 const INV_TABS = [["products", "Sản phẩm"], ["purchase", "Nhập hàng"], ["orders", "Đơn bán"], ["transfers", "Chuyển kho"],
-  ["reorder", "Đặt hàng lại"], ["pricing", "Định giá"], ["setup", "Kho & nhà cung cấp"]];
+  ["reorder", "Đặt hàng lại"], ["pricing", "Định giá"], ["setup", "Kho & nhà cung cấp"], ["shop", "Cửa hàng & tích điểm"], ["marketplaces", "Sàn TMĐT"]];
 
 let invMeta = { settings: { currency: "VND" }, warehouses: [], suppliers: [] };
 let invTab = "products";
@@ -168,6 +168,13 @@ async function showProduct(box, id, reload) {
       h("label", { class: "check" }, e.auto_pricing, h("span", {}, "Tự động định giá (giảm dần theo tồn và thời gian)")),
       h("label", { class: "check" }, e.active, h("span", {}, "Đang bán")),
       h("button", { class: "primary", onclick: save }, "Lưu")),
+    h("details", {}, h("summary", {}, "SKU trên các sàn"), (() => {
+      const mk = h("input", { placeholder: "mã sàn, vd. amazon-au" });
+      const sku = h("input", { placeholder: "SKU trên sàn, hoặc - để không bán" });
+      return h("div", { class: "row section" }, mk, sku, h("button", { onclick: () => run(async () => {
+        await api("POST", `/api/inventory/products/${id}/external-sku`, { marketplace: mk.value.trim(), sku: sku.value });
+      }, "Đã lưu SKU sàn") }, "Lưu"));
+    })()),
     h("details", {}, h("summary", {}, "Tồn đầu kỳ (hàng có sẵn trước khi dùng hệ thống)"),
       h("div", { class: "row section" }, op.wh, op.qty, op.cost, op.margin,
         h("button", { onclick: () => post("opening", { warehouse_id: Number(op.wh.value), qty: op.qty.value, unit_cost: op.cost.value, margin_pct: op.margin.value || null }, "Đã thêm tồn đầu kỳ") }, "Thêm"))),
@@ -473,4 +480,65 @@ INV_VIEWS.setup = async (box) => {
           h("button", { class: "small", onclick: () => run(async () => { await api("PATCH", `/api/inventory/suppliers/${x.id}`, { active: !x.active }); reload(); }) }, x.active ? "Ngừng" : "Dùng lại"))))))) : null,
       h("div", { class: "two section" }, s.name, s.country, s.contact_name, s.phone, s.email, s.payment_terms, field("Thời gian giao hàng (ngày)", s.lead_time_days)),
       h("button", { class: "primary", onclick: () => run(async () => { await api("POST", "/api/inventory/suppliers", vals(s)); reload(); }, "Đã thêm nhà cung cấp") }, "Thêm nhà cung cấp")));
+};
+
+// ---------------------------------------------------------------- shop details, receipts, loyalty
+
+INV_VIEWS.shop = async (box) => {
+  const s = invMeta.settings;
+  const f = Object.fromEntries(["shop_name", "shop_address", "shop_phone", "tax_code", "bank_info", "receipt_footer"].map((k) => [k, h("input", { value: s[k] || "" })]));
+  const n = Object.fromEntries(["vat_pct", "undo_hours", "points_per", "vip_points", "set_eta_days"].map((k) => [k, h("input", { value: s[k], class: "price" })]));
+  put(box, h("div", { class: "card section" }, h("h2", {}, "Thông tin trên hoá đơn"),
+    h("div", { class: "two" }, field("Tên cửa hàng", f.shop_name), field("Địa chỉ", f.shop_address), field("Điện thoại", f.shop_phone), field("Mã số thuế", f.tax_code),
+      field("Tài khoản ngân hàng (in trên hoá đơn còn nợ)", f.bank_info), field("Lời cảm ơn cuối hoá đơn", f.receipt_footer), field("VAT đã gồm trong giá (%)", n.vat_pct),
+      field("Được hoàn tác đơn đã giao trong (giờ)", n.undo_hours)),
+    h("h2", {}, "Tích điểm và VIP tự động"),
+    h("div", { class: "two" }, field(`Mỗi điểm = số tiền mua (${s.currency})`, n.points_per), field("Đủ số điểm này thì lên VIP (0: không tự động)", n.vip_points),
+      field("Gợi ý bộ: hàng về trong (ngày)", n.set_eta_days)),
+    h("p", { class: "muted" }, "Điểm được cộng khi đơn đã giao; trả hàng thì trừ lại. Lên VIP: khách nhận lời chúc mừng kèm số thẻ trên kênh chat, quản lý được báo, và từ đơn sau được giá VIP."),
+    h("button", { class: "primary", onclick: () => run(async () => {
+      invMeta.settings = await api("PUT", "/api/inventory/settings", { ...Object.fromEntries(Object.entries(f).map(([k, el]) => [k, el.value])),
+        ...Object.fromEntries(Object.entries(n).map(([k, el]) => [k, Number(el.value || 0)])) });
+    }, "Đã lưu") }, "Lưu")));
+};
+
+// ---------------------------------------------------------------- marketplaces
+
+INV_VIEWS.marketplaces = async (box) => {
+  const r = await api("GET", "/api/inventory/marketplaces");
+  const reload = () => go("inventory", "marketplaces");
+  const kind = h("select", {}, h("option", { value: "amazon" }, "Amazon (SP-API)"), h("option", { value: "webhook" }, "Webhook (website của bạn, n8n…)"));
+  const f = { id: h("input", { placeholder: "mã, vd. amazon-au" }), name: h("input", { placeholder: "tên" }), seller_id: h("input", { placeholder: "Seller ID" }),
+    marketplace_id: h("input", { placeholder: "Marketplace ID, vd. A39IBJ37TRP1C6 (AU)" }), region: h("select", {}, ["fe", "eu", "na"].map((x) => h("option", { value: x }, x))),
+    currency: h("input", { value: "AUD", class: "narrow" }), price_rate: h("input", { placeholder: `1 ${invMeta.settings.currency} = ? ngoại tệ` }),
+    client_id_env: h("input", { value: "AMAZON_LWA_CLIENT_ID" }), client_secret_env: h("input", { value: "AMAZON_LWA_CLIENT_SECRET" }), refresh_token_env: h("input", { value: "AMAZON_REFRESH_TOKEN" }),
+    pull_orders: h("input", { type: "checkbox", checked: true }), warehouse_id: h("select", {}, invMeta.warehouses.map((w) => h("option", { value: w.id }, w.name))),
+    url: h("input", { placeholder: "https://…" }), secret_env: h("input", { placeholder: "tên biến môi trường chứa khoá ký" }) };
+  const amazonFields = h("div", { class: "two" }, field("Seller ID", f.seller_id), field("Marketplace ID", f.marketplace_id), field("Vùng", f.region), field("Tiền tệ trên Amazon", f.currency),
+    field("Tỷ giá quy đổi", f.price_rate), field("Kho giao đơn Amazon", f.warehouse_id), field("Biến môi trường: LWA client id", f.client_id_env),
+    field("Biến môi trường: LWA client secret", f.client_secret_env), field("Biến môi trường: refresh token", f.refresh_token_env),
+    h("label", { class: "check" }, f.pull_orders, h("span", {}, "Lấy đơn Amazon về (giữ hàng, giao xong thì trừ kho)")));
+  const hookFields = h("div", { class: "two", hidden: true }, field("URL nhận dữ liệu", f.url), field("Biến môi trường chứa khoá ký HMAC", f.secret_env));
+  kind.addEventListener("change", () => { amazonFields.hidden = kind.value !== "amazon"; hookFields.hidden = kind.value !== "webhook"; });
+  const save = () => run(async () => {
+    const v = (el) => (el.type === "checkbox" ? el.checked : el.value);
+    await api("POST", "/api/inventory/marketplaces", { type: kind.value, ...Object.fromEntries(Object.entries(f).map(([k, el]) => [k, v(el)])) });
+    reload();
+  }, "Đã lưu sàn");
+  put(box,
+    h("div", { class: "card section" }, h("h2", {}, "Sàn đã kết nối"),
+      h("p", { class: "muted" }, "Mỗi khi giá (định giá tự động, khuyến mại) hoặc tồn kho thay đổi, sản phẩm được đẩy lên các sàn trong vòng 1 phút. Khoá bí mật chỉ đặt trong biến môi trường; ở đây chỉ lưu tên biến."),
+      r.marketplaces.length ? h("table", {}, h("tbody", {}, r.marketplaces.map((x) => h("tr", {},
+        h("td", {}, h("b", {}, x.name), ` ${x.type}`, h("div", { class: "muted" }, x.type === "amazon" ? `${x.seller_id} · ${x.marketplace_id} · ${x.currency}` : x.url)),
+        h("td", {}, Object.entries(x.env_set).map(([k, ok]) => h("span", { class: `pill ${ok ? "ok" : "bad"}` }, `${x[k]} ${ok ? "✓" : "chưa đặt"}`))),
+        h("td", {}, `${x.queued} chờ đẩy`, x.last ? h("div", { class: "muted" }, `${fmtTime(x.last.ts)} · ${x.last.ok ? "ổn" : "lỗi"}: ${x.last.detail}`) : null),
+        h("td", {}, h("div", { class: "row" },
+          h("button", { class: "small", onclick: () => run(async () => { const s = await api("POST", `/api/inventory/marketplaces/${x.id}/sync`, {}); toast(`Đã đẩy ${s.pushed}/${s.queued}`); reload(); }) }, "Đồng bộ tất cả"),
+          h("button", { class: "small danger", onclick: () => confirm("Gỡ sàn này?") && run(async () => { await api("DELETE", `/api/inventory/marketplaces/${x.id}`); reload(); }) }, "Gỡ"))))))) : h("p", { class: "muted" }, "Chưa kết nối sàn nào.")),
+    h("div", { class: "card section" }, h("h2", {}, "Kết nối sàn"), h("div", { class: "two" }, field("Loại", kind), field("Mã", f.id), field("Tên", f.name)), amazonFields, hookFields,
+      h("p", { class: "muted" }, "Amazon: tạo ứng dụng SP-API trong Seller Central, lấy LWA client id/secret và refresh token của người bán, đặt vào biến môi trường. Mỗi sản phẩm có thể dùng SKU khác trên sàn, hoặc '-' để không bán trên sàn đó (trong trang sản phẩm)."),
+      h("button", { class: "primary", onclick: save }, "Lưu")),
+    h("div", { class: "card section table-wrap" }, h("h2", {}, "Nhật ký đồng bộ"),
+      r.log.length ? h("table", {}, h("tbody", {}, r.log.map((x) => h("tr", {}, h("td", {}, fmtTime(x.ts)), h("td", {}, x.marketplace), h("td", { class: "mono" }, x.sku),
+        h("td", {}, x.ok ? pillOf({ 1: ["ok", "ổn"] }, 1) : pillOf({ 0: ["bad", "lỗi"] }, 0)), h("td", {}, x.detail))))) : h("p", { class: "muted" }, "Chưa có.")));
 };

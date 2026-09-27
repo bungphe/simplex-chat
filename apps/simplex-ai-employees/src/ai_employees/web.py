@@ -39,7 +39,7 @@ COOKIE = "aie_session"
 SESSION_TTL = 12 * 3600
 CSRF_HEADER = "X-Requested-With"
 CSRF_VALUE = "ai-employees"
-STATIC = ("admin.html", "admin.js", "admin.css", "inventory.js")
+STATIC = ("admin.html", "admin.js", "admin.css", "inventory.js", "business.js")
 SECURITY_HEADERS = {
     "Content-Security-Policy": "default-src 'self'; img-src 'self' data:; frame-ancestors 'none'",
     "X-Content-Type-Options": "nosniff",

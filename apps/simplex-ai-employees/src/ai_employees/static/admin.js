@@ -125,7 +125,8 @@ setInterval(() => !$("#app").hidden && refreshBadge(), 20000);
 
 // The logged-in account: {username, name, role: admin|agent, channels}
 let me = null;
-const ROLE = { admin: "Quản trị", agent: "Nhân viên bán hàng" };
+const ROLE = { admin: "Quản trị", manager: "Quản lý cửa hàng", agent: "Nhân viên bán hàng", cashier: "Thu ngân",
+  warehouse: "Thủ kho", delivery: "Điều phối giao hàng", marketing: "Marketing" };
 $("#me").addEventListener("click", () => go("me"));
 
 // replaceChildren would print "null" for a skipped optional node, so drop them first.
@@ -910,12 +911,16 @@ views.customers = async (arg) => {
 
   const loadDetail = async () => {
     if (!selected) return;
-    const r = await api("GET", `/api/crm/contacts/${selected}`);
+    const [r, pts] = await Promise.all([api("GET", `/api/crm/contacts/${selected}`), api("GET", `/api/crm/contacts/${selected}/points`)]);
+    const loyalty = h("div", { class: "memory" }, h("h3", {}, "Tích điểm & đơn hàng"),
+      h("p", {}, `${pts.points} điểm · đã mua ${Number(pts.total_spent).toLocaleString("vi-VN")} · ${pts.orders} đơn`, pts.vip ? ` · ⭐ VIP (thẻ ${pts.card}) từ ${fmtTime(pts.vip_since)}` : ""),
+      h("div", { class: "row" }, h("button", { class: "small", onclick: () => { const d = prompt("Cộng (hoặc trừ, số âm) bao nhiêu điểm?"); if (d) run(async () => { await api("POST", `/api/crm/contacts/${selected}/points`, { delta: Number(d), reason: prompt("Lý do:") || "" }); await loadDetail(); }, "Đã điều chỉnh điểm"); } }, "Điều chỉnh điểm")),
+      pts.orders_list.length ? h("table", {}, h("tbody", {}, pts.orders_list.map((o) => h("tr", {}, h("td", { class: "mono" }, o.code), h("td", {}, fmtTime(o.created)), h("td", {}, Number(o.total).toLocaleString("vi-VN")), h("td", {}, o.status))))) : null);
     put(detail, ...contactPanel(r.contact, companies, {
       save: (body) => run(async () => { await api("PATCH", `/api/crm/contacts/${selected}`, body); await loadAll(); }, "Đã lưu"),
       merge: (other) => run(async () => { await api("POST", `/api/crm/contacts/${selected}/merge`, { other }); await loadAll(); }, "Đã gộp khách"),
       open: (id) => go("inbox", id),
-    }));
+    }), loyalty);
     detail.open = true;
   };
   const loadList = async () => {
@@ -1320,9 +1325,15 @@ async function start() {
   ({ user: me } = await api("GET", "/api/me"));
   $("#login").hidden = true;
   $("#app").hidden = false;
-  for (const b of document.querySelectorAll("#nav button[data-admin]")) b.hidden = me.role !== "admin";
+  // nav: data-admin = admins only; data-roles = those roles (and admins)
+  for (const b of document.querySelectorAll("#nav button")) {
+    if (b.dataset.roles) b.hidden = !(me.role === "admin" || b.dataset.roles.split(",").includes(me.role));
+    else if (b.dataset.admin !== undefined) b.hidden = me.role !== "admin";
+  }
   $("#me").textContent = `${me.name} · ${ROLE[me.role] || me.role}`;
-  go(me.role === "admin" ? "overview" : "inbox");
+  const first = { admin: "overview", manager: "pos", agent: "inbox", cashier: "pos", warehouse: "inventory", delivery: "delivery", marketing: "marketing" };
+  go(first[me.role] || "inbox");
+  if (typeof showNotices === "function") showNotices();
 }
 
 (async () => {

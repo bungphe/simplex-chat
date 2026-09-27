@@ -308,6 +308,10 @@ Mở `http://127.0.0.1:8080`. Chủ đăng nhập với tên `admin` và mật k
 | Tổng quan | Trạng thái từng nhân viên, số việc 24 giờ, yêu cầu chờ duyệt, lịch tiếp theo, địa chỉ SimpleX |
 | Hộp thư | **Mọi kênh chat trong một màn hình**: SimpleX, Zalo OA, Zalo cá nhân, Messenger, Telegram, WhatsApp, email, webhook. Trả lời khách, AI gợi ý câu trả lời, tiếp quản / giao lại cho AI; nhãn, ghi chú nội bộ, câu trả lời mẫu, đóng/mở, giao cho người hoặc nhóm, AI tóm tắt hội thoại |
 | Kho hàng | Sản phẩm, tồn theo kho, đơn nhập (container) tính giá vốn, lô FIFO, tự động định giá 5 giai đoạn, đơn bán, đặt trước, chuyển kho, kiểm kho, gợi ý đặt hàng lại, nhập/xuất CSV |
+| Bán hàng | Bán tại quầy: nhiều đơn cùng lúc, tìm nhanh (F2), giảm % hoặc giá riêng, voucher, combo, gợi ý bộ theo ngân sách, thu tiền (cọc, tiền thối), in / gửi hoá đơn |
+| Giao hàng | Lịch giao theo tháng, phụ phí lắp ráp / vác lầu, xếp chuyến, tối ưu lộ trình, tài xế, phiếu giao hàng |
+| Marketing | Khuyến mại, voucher, combo, chi phí quảng cáo, tập khách remarketing, biến động giá tuần |
+| Báo cáo | Lãi lỗ (P&L), hoa hồng, ca làm việc, chi phí, thông báo đầu ngày |
 | Khách hàng | Danh bạ khách qua mọi kênh (tên, điện thoại, email, công ty, ghi chú), khách có thể trùng, gộp khách, công ty |
 | SLA | Khách đang chờ, chờ quá hạn, thời gian trả lời của AI và từng nhân viên, việc của từng người/nhóm |
 | Cài đặt hộp thư | Nhãn, câu trả lời mẫu, nhóm, quy tắc tự phân loại, mục tiêu thời gian trả lời |
@@ -543,8 +547,59 @@ trên cơ sở dữ liệu của văn phòng (SQLite hoặc PostgreSQL). Trang *
 được giữ, gắn với hội thoại và hồ sơ khách. Trong Hộp thư, nhân viên gõ tên sản phẩm ở ô *Tìm sản phẩm* để chèn
 giá và tồn vào câu trả lời.
 
-Chưa làm (có trong sale-management): POS thanh toán tại quầy, giao hàng, hoa hồng marketing, đồng bộ Amazon, gợi ý
-bộ sản phẩm, tích điểm tự động lên VIP.
+## Bán hàng, giao hàng, marketing và báo cáo
+
+Phần còn lại của sale-management (module 1, 3, 4, 5), cùng cơ sở dữ liệu với kho hàng.
+
+**Vai trò nhân viên** (trang Tài khoản): *Quản lý cửa hàng* (mọi trang vận hành, huỷ và hoàn tác đơn, không đụng
+tài khoản, model, cấu hình AI), *Nhân viên bán hàng* (hộp thư và bán hàng), *Thu ngân* (bán hàng), *Thủ kho* (kho
+hàng), *Điều phối giao hàng*, *Marketing* (marketing, báo cáo, xem sản phẩm và khách).
+
+**Bán tại quầy (POS).** Mở nhiều đơn cùng lúc (giữ trong trình duyệt đến khi xong), tìm sản phẩm thấy ngay giá hôm
+nay cho khách đó (VIP, khuyến mại), tồn từng kho, hàng sắp về và ngày về. Mỗi dòng giảm theo % hoặc nhập giá riêng
+(ra % giảm tương ứng); voucher; combo. Đơn *lấy ngay* giữ hàng trong kho; *đặt trước* giữ chỗ trên container sắp về.
+Thu tiền nhiều lần (cọc rồi trả nốt) bằng tiền mặt (gợi ý tiền khách đưa, tính tiền thối), thẻ, chuyển khoản, ví,
+COD; mỗi lần thu có mã chống ghi trùng. *Đã giao (xuất kho)* trừ kho và ghi lãi thực tế theo lô FIFO. In hoá đơn (tên
+cửa hàng, MST, VAT đã gồm, tài khoản ngân hàng khi còn nợ) hoặc gửi hoá đơn qua kênh chat của khách. Nhân viên chỉ
+thấy đơn mình tạo trong ngày; quản lý thấy tất cả, huỷ đơn chưa giao (trả hàng giữ, hoàn tiền) và nhận trả hàng
+trong số giờ cho phép (quản trị viên: bất cứ lúc nào).
+
+**Tích điểm và VIP tự động** (Kho hàng → Cửa hàng & tích điểm): mỗi đơn đã giao của khách có hồ sơ được cộng điểm
+(mặc định 1 điểm / 100.000 đ); đủ số điểm cài đặt thì khách tự lên VIP, nhận lời chúc mừng kèm số thẻ VIP trên kênh
+chat họ dùng, quản lý được báo, và từ đơn sau được giá VIP. Trả hàng thì trừ lại điểm; quản lý cộng/trừ điểm tay được.
+
+**Khuyến mại.** Giảm % (đi theo giá tự động theo giai đoạn: giá gốc đổi thì giá sale đổi theo) hoặc số tiền, cho sản
+phẩm, danh mục hoặc mọi sản phẩm, có ngày bắt đầu/kết thúc và nhãn (Hot Deal, Xả kho…). Khách luôn được mức tốt nhất
+trong giá giai đoạn, khuyến mại và giá VIP, không cộng dồn. **Voucher** có đơn tối thiểu, giảm tối đa, số lượt.
+**Combo** bán nhiều sản phẩm một giá (phần tiết kiệm trừ vào đơn), hiện số bộ còn bán được.
+
+**Gợi ý bộ sản phẩm** (phòng khách, phòng ngủ, phòng ăn…; sửa trong Marketing): các bộ vừa ngân sách, mọi món có sẵn
+hoặc về trong 30 ngày, dùng ngân sách tốt nhất trước. Có ở màn hình bán hàng và cho nhân viên AI (skill `suggest_set`).
+
+**Giao hàng.** Đặt lịch cho đơn đã xác nhận: ngày, khung giờ hoặc giờ cố định, địa chỉ, lắp ráp, vác lầu (phụ phí cộng
+vào đơn). Lịch tháng hiện số đơn, số kiện, đơn đặc biệt mỗi ngày. Xếp chuyến theo xe (đơn vị vận chuyển, tài xế), *Tối
+ưu lộ trình* (đường ngắn nhất rồi quay về kho; có `GOOGLE_MAPS_API_KEY` thì tìm toạ độ và thời gian chạy xe qua Google
+Maps, không thì theo toạ độ nhập tay), kéo thứ tự bằng tay, giờ đến dự kiến từng điểm. *Xuất phát*: khách được nhắn
+"đơn đang được giao" kèm giờ và tài xế. *Đã giao*: đơn hoàn tất, trừ kho, ghi lãi; *Quay về*: hàng vẫn giữ, đặt lịch
+lại. Phiếu giao hàng CSV cho tài xế (khách, hàng và số kiện theo kho, ô ký nhận, ghi chú); chi phí từng đơn vị vận
+chuyển theo kỳ.
+
+**Báo cáo.** Lãi lỗ theo kỳ: doanh thu và giá vốn FIFO của hàng đã giao, quảng cáo (chia theo số ngày của chiến dịch
+trong kỳ), chi phí (thuê mặt bằng, điện nước, lương…, bảo hiểm trên lương), hoa hồng đã chốt, chi phí giao hàng.
+**Hoa hồng** = (doanh số đơn đã giao trong kỳ − số giờ làm × định mức / giờ) × % hoa hồng; phần đóng góp của chủ
+(bảo hiểm) là chi phí thêm, không trừ vào hoa hồng. Đơn AI chốt được tính cho nhân viên phụ trách hội thoại, nếu có.
+**Tập khách** (mua nhiều nhất, VIP, theo kênh) xuất CSV; **biến động giá tuần** (giá đầu tuần, giá nay, đã bán, lãi,
+tồn). **Thông báo đầu ngày**: quản lý đăng, mọi người thấy cửa sổ thông báo khi đăng nhập đến khi xác nhận.
+
+**Sàn TMĐT và website** (Kho hàng → Sàn TMĐT, quản trị viên): giá hoặc tồn đổi là sản phẩm được đẩy lên trong vòng 1
+phút. *Amazon*: Selling Partner API (Listings Items: giá quy đổi sang tiền tệ của sàn và số lượng), lấy đơn Amazon về
+(giữ hàng; Amazon báo đã gửi thì hoàn tất, huỷ thì huỷ), chỉ đọc SKU và số lượng. Khoá chỉ nằm trong biến môi trường
+(`AMAZON_LWA_CLIENT_ID`, `AMAZON_LWA_CLIENT_SECRET`, `AMAZON_REFRESH_TOKEN` hoặc tên bạn chọn). *Webhook*: website của
+bạn nhận giá và tồn, ký HMAC-SHA256 (`X-Signature`). Mỗi sản phẩm dùng SKU khác trên sàn, hoặc `-` để không bán ở đó.
+Website cũng có thể đọc `GET /hooks/catalog?key=…` (bật bằng biến `CATALOG_KEY`; chỉ giá bán và tồn, không có giá vốn).
+
+Chưa có: tài khoản đăng nhập website cho khách VIP (hệ thống không có website bán hàng), gửi hoá đơn qua email riêng
+(gửi qua kênh chat, gồm kênh email nếu khách dùng), bán kính 30 km quanh showroom khi lọc khách.
 
 ## Mở rộng quy mô và đo tải
 

@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="/static/admin.css">
   <script src="/static/admin.js" defer></script>
   <script src="/static/inventory.js" defer></script>
+  <script src="/static/business.js" defer></script>
 </head>
 <body>
   <section id="login" class="login" hidden>
@@ -28,9 +29,13 @@
       <div class="brand">Nhân viên AI</div>
       <nav id="nav">
         <button data-view="overview" data-admin>Tổng quan</button>
-        <button data-view="inbox">Hộp thư <span id="inbox-badge" class="badge" hidden></span></button>
+        <button data-view="inbox" data-roles="manager,agent">Hộp thư <span id="inbox-badge" class="badge" hidden></span></button>
+        <button data-view="pos" data-roles="manager,agent,cashier">Bán hàng</button>
         <button data-view="customers" data-admin>Khách hàng</button>
-        <button data-view="inventory" data-admin>Kho hàng</button>
+        <button data-view="inventory" data-roles="manager,warehouse">Kho hàng</button>
+        <button data-view="delivery" data-roles="manager,delivery">Giao hàng</button>
+        <button data-view="marketing" data-roles="manager,marketing">Marketing</button>
+        <button data-view="reports" data-roles="manager,marketing">Báo cáo</button>
         <button data-view="sla" data-admin>SLA</button>
         <button data-view="desk" data-admin>Cài đặt hộp thư</button>
         <button data-view="channels" data-admin>Kênh &amp; SimpleX</button>
