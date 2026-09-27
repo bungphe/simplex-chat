@@ -23,7 +23,7 @@ const INV_TABS = [["products", tr("Sản phẩm")], ["purchase", tr("Nhập hàn
 let invMeta = { settings: { currency: "VND" }, warehouses: [], suppliers: [] };
 let invTab = "products";
 const pillOf = (map, key) => { const [cls, label] = map[key] || ["neutral", key]; return h("span", { class: `pill ${cls}` }, label); };
-const money = (n) => (n === null || n === undefined || n === "" ? "—" : `${Number(n).toLocaleString("vi-VN")} ${invMeta.settings.currency === "VND" ? tr("đ") : invMeta.settings.currency}`);
+const money = (n) => (n === null || n === undefined || n === "" ? "—" : `${Number(n).toLocaleString(LOCALE)} ${invMeta.settings.currency === "VND" ? tr("đ") : invMeta.settings.currency}`);
 const num = (el) => (el.value.trim() === "" ? null : Number(el.value));
 const whName = (id) => (invMeta.warehouses.find((w) => w.id === id) || {}).name || `#${id}`;
 const field = (label, el) => h("label", {}, label, el);

@@ -10,7 +10,7 @@ const ROUTE_ST = { planned: ["neutral", tr("chưa chạy")], in_progress: ["warn
 const isManager = () => me && (me.role === "admin" || me.role === "manager");
 const store = { get: (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch (_) { return d; } }, set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (_) { /* private mode */ } } };
 const today = () => new Date().toISOString().slice(0, 10);
-const moneyOf = (cur) => (n) => (n === null || n === undefined ? "—" : `${Number(n).toLocaleString("vi-VN")} ${cur === "VND" ? tr("đ") : cur}`);
+const moneyOf = (cur) => (n) => (n === null || n === undefined ? "—" : `${Number(n).toLocaleString(LOCALE)} ${cur === "VND" ? tr("đ") : cur}`);
 
 // ---------------------------------------------------------------- start-of-day notices
 

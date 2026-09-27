@@ -696,6 +696,33 @@ tiếng Việt cho iPhone). Liên kết tới trang
 khác (bản đồ, link khách gửi), hoá đơn in và tệp CSV mở bằng trình duyệt ngoài. Ứng dụng SimpleX gốc từ cửa hàng ứng
 dụng không có màn hình này, nhưng vẫn dùng được cách 1 và 2.
 
+## Ngôn ngữ giao diện (cho SaaS)
+
+Toàn bộ phần mềm có 17 ngôn ngữ giao diện: Việt, Anh, Trung, Nhật, Hàn, Thái, Indonesia, Mã Lai, Khmer, Lào, Pháp,
+Đức, Tây Ban Nha, Bồ Đào Nha, Nga, Ả Rập (hiển thị phải sang trái), Hindi.
+
+| Phần | Ngôn ngữ theo |
+|---|---|
+| Trang quản trị (kể cả màn hình *Quản lý cửa hàng* trong ứng dụng SimpleX) | Mỗi nhân viên tự chọn (trang đăng nhập, *Tài khoản của tôi*); lưu theo tài khoản, dùng trên mọi máy. Chưa chọn: ngôn ngữ của trình duyệt |
+| Lỗi và thông báo từ máy chủ | Ngôn ngữ của nhân viên đang thao tác |
+| Lệnh của nhân viên trong SimpleX, menu lệnh, thông báo công việc | Ngôn ngữ của tài khoản nhân viên đã liên kết (mỗi người nhận thông báo bằng ngôn ngữ của mình) |
+| Lệnh và menu của khách trong SimpleX | Ngôn ngữ của khách (tự nhận ra hoặc nhân viên chọn quốc gia) |
+| Website bán hàng | Khách chọn ở chân trang (`?lang=`), nhớ trong cookie; chưa chọn: ngôn ngữ trình duyệt |
+| Hoá đơn in, email hoá đơn, email xác nhận | Ngôn ngữ của cửa hàng (`staff_language` trong cấu hình); hoá đơn xem trên website theo ngôn ngữ khách chọn |
+
+Mỗi cửa hàng (mỗi khách thuê SaaS) đặt ngôn ngữ mặc định bằng `staff_language` trong file cấu hình (vd. `en`, `th`).
+Dữ liệu do người dùng nhập (tên sản phẩm, ghi chú, lý do...) giữ nguyên như khi nhập.
+
+**Cho người phát triển.** Chữ trong mã viết bằng tiếng Việt và bọc trong `tr("...")` (Python và JavaScript), giá
+trị thay bằng `{0}`, `{1}`. Bản dịch nằm ở `src/ai_employees/locales/<mã>.json`. Sau khi thêm hoặc sửa chữ:
+
+```bash
+python scripts/i18n_extract.py            # gom chữ mới vào các catalog (chưa dịch thì hiện tiếng Việt)
+python scripts/i18n_batch.py todo en 150  # xuất 150 chữ chưa dịch để dịch (người dịch hoặc công cụ dịch)
+python scripts/i18n_batch.py done en <tệp bản dịch.json>
+python scripts/i18n_batch.py check        # kiểm tra {0}, /lệnh, thẻ HTML, xuống dòng không bị mất
+```
+
 ## Mở rộng quy mô và đo tải
 
 **Lưu trữ.** Mọi dữ liệu nằm trong cơ sở dữ liệu: mặc định là các file SQLite trong `state_dir` (quyền `600`),

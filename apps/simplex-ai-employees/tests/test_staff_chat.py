@@ -201,9 +201,13 @@ async def test_linking_from_the_admin_web_ui(office):
         await client.close()
 
 
-async def test_the_customer_menu_and_replies_in_the_customer_language(office):
+async def test_the_customer_menu_and_replies_in_the_customer_language(office, monkeypatch):
     import re
 
+    from ai_employees import i18n
+
+    # a language without its own catalog: the replies are translated by the model
+    monkeypatch.setattr(i18n, "catalog", lambda code: {})
     office, llm, _p, chat, _users = office
     sales = office.employees["sales"]
     sales.state.set_language(50, "en")

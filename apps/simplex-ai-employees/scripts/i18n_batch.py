@@ -43,14 +43,18 @@ def load(lang: str) -> dict[str, str]:
 
 
 def save(lang: str, data: dict[str, str]) -> None:
-    (LOCALES / f"{lang}.json").write_text(json.dumps(data, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    (LOCALES / f"{lang}.json").write_text(
+        json.dumps(data, ensure_ascii=False, indent=1) + "\n", encoding="utf-8"
+    )
 
 
 def todo(lang: str, size: int = 150) -> None:
     data = load(lang)
     batch = [k for k, v in data.items() if not v][:size]
     WORK.mkdir(exist_ok=True)
-    (WORK / f"{lang}-todo.json").write_text(json.dumps(batch, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    (WORK / f"{lang}-todo.json").write_text(
+        json.dumps(batch, ensure_ascii=False, indent=1) + "\n", encoding="utf-8"
+    )
     left = sum(1 for v in data.values() if not v)
     print(f"{lang}: {len(batch)} texts in {WORK / f'{lang}-todo.json'} ({left} untranslated in all)")
 
@@ -60,7 +64,9 @@ def done(lang: str, file: str) -> None:
     batch = json.loads((WORK / f"{lang}-todo.json").read_text(encoding="utf-8"))
     out = json.loads(Path(file).read_text(encoding="utf-8"))
     if not isinstance(out, list) or len(out) != len(batch):
-        sys.exit(f"expected a JSON list of {len(batch)} translations, got {len(out) if isinstance(out, list) else type(out)}")
+        sys.exit(
+            f"expected a JSON list of {len(batch)} translations, got {len(out) if isinstance(out, list) else type(out)}"
+        )
     bad = 0
     for source, text in zip(batch, out, strict=True):
         if issues := problems(source, text):

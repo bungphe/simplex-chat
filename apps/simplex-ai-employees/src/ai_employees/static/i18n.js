@@ -8,6 +8,8 @@ function tr(text, ...values) {
 }
 
 const LANG = (window.I18N && I18N.lang) || "vi";
+// dates and numbers as the staff member reads them (4.500.000 in Vietnamese, 4,500,000 in English)
+const LOCALE = { vi: "vi-VN", zh: "zh-CN", pt: "pt-BR" }[LANG] || LANG;
 document.documentElement.lang = LANG;
 if (window.I18N && I18N.rtl) document.documentElement.dir = "rtl";
 

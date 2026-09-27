@@ -22,12 +22,23 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1] / "src" / "ai_employees"
 sys.path.insert(0, str(ROOT.parent))
-from ai_employees.i18n import LANGUAGES, SOURCE  # noqa: E402
+from ai_employees.i18n import LANGUAGES, SOURCE
 
-VI = re.compile(r"[àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ]", re.I)
+VI = re.compile(r"[àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ]", re.IGNORECASE)
 JS_TR = re.compile(r'\btr\(\s*"((?:[^"\\]|\\.)*)"')
 # module-level tables whose labels go through tr() where they are used
-TABLES = {"STATUS", "ADMIN_MENU", "ADMIN_HELP", "COMMANDS", "GROUPS", "PAY", "SLOTS", "ATTACHMENT_KINDS", "CONGRATS", "SENT"}
+TABLES = {
+    "STATUS",
+    "ADMIN_MENU",
+    "ADMIN_HELP",
+    "COMMANDS",
+    "GROUPS",
+    "PAY",
+    "SLOTS",
+    "ATTACHMENT_KINDS",
+    "CONGRATS",
+    "SENT",
+}
 
 
 class _Page(HTMLParser):
@@ -96,9 +107,15 @@ def server_texts() -> set[str]:
                 and isinstance(node.args[0].value, str)
             ):
                 out.add(node.args[0].value)
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "tr":
-                if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
-                    out.add(node.args[0].value)
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "tr"
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)
+            ):
+                out.add(node.args[0].value)
         for node in tree.body:
             targets = []
             if isinstance(node, ast.Assign):

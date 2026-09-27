@@ -54,7 +54,7 @@ async function run(fn, okMsg) {
   }
 }
 
-const fmtTime = (iso) => (iso ? new Date(iso).toLocaleString("vi-VN", { dateStyle: "short", timeStyle: "short" }) : "—");
+const fmtTime = (iso) => (iso ? new Date(iso).toLocaleString(LOCALE, { dateStyle: "short", timeStyle: "short" }) : "—");
 const STATUS = {
   ok: ["ok", tr("thành công")], busy: ["warn", tr("bận")], refused: ["warn", tr("từ chối")], step_limit: ["warn", tr("quá bước")],
   error: ["bad", tr("lỗi")], queued: ["neutral", tr("chờ duyệt")], rejected: ["neutral", tr("bị từ chối")], skipped: ["neutral", tr("bỏ qua")],
@@ -812,7 +812,7 @@ views.inbox = async (arg) => {
           const r = await api("GET", `/api/inbox/${cid}/products?q=${encodeURIComponent(q)}`);
           const unit = r.currency === "VND" ? tr("đ") : r.currency;
           put(pickResults, r.products.length ? r.products.map((p) => {
-            const line = `${p.name} (${p.sku}): ${p.price !== null ? p.price.toLocaleString("vi-VN") + " " + unit : tr("chưa có giá")}${p.available ? tr(", còn {0}", p.available) : tr(", tạm hết hàng")}${p.incoming ? tr(
+            const line = `${p.name} (${p.sku}): ${p.price !== null ? p.price.toLocaleString(LOCALE) + " " + unit : tr("chưa có giá")}${p.available ? tr(", còn {0}", p.available) : tr(", tạm hết hàng")}${p.incoming ? tr(
               ", sắp về {0}{1}",
               p.incoming,
               p.next_eta ? tr(" khoảng ") + p.next_eta : ""
@@ -967,11 +967,11 @@ views.customers = async (arg) => {
       h("p", {}, tr(
         "{0} điểm · đã mua {1} · {2} đơn",
         pts.points,
-        Number(pts.total_spent).toLocaleString("vi-VN"),
+        Number(pts.total_spent).toLocaleString(LOCALE),
         pts.orders
       ), pts.vip ? tr(" · ⭐ VIP (thẻ {0}) từ {1}", pts.card, fmtTime(pts.vip_since)) : ""),
       h("div", { class: "row" }, h("button", { class: "small", onclick: () => { const d = prompt(tr("Cộng (hoặc trừ, số âm) bao nhiêu điểm?")); if (d) run(async () => { await api("POST", `/api/crm/contacts/${selected}/points`, { delta: Number(d), reason: prompt(tr("Lý do:")) || "" }); await loadDetail(); }, tr("Đã điều chỉnh điểm")); } }, tr("Điều chỉnh điểm"))),
-      pts.orders_list.length ? h("table", {}, h("tbody", {}, pts.orders_list.map((o) => h("tr", {}, h("td", { class: "mono" }, o.code), h("td", {}, fmtTime(o.created)), h("td", {}, Number(o.total).toLocaleString("vi-VN")), h("td", {}, o.status))))) : null);
+      pts.orders_list.length ? h("table", {}, h("tbody", {}, pts.orders_list.map((o) => h("tr", {}, h("td", { class: "mono" }, o.code), h("td", {}, fmtTime(o.created)), h("td", {}, Number(o.total).toLocaleString(LOCALE)), h("td", {}, o.status))))) : null);
     put(detail, ...contactPanel(r.contact, companies, {
       save: (body) => run(async () => { await api("PATCH", `/api/crm/contacts/${selected}`, body); await loadAll(); }, tr("Đã lưu")),
       merge: (other) => run(async () => { await api("POST", `/api/crm/contacts/${selected}/merge`, { other }); await loadAll(); }, tr("Đã gộp khách")),
