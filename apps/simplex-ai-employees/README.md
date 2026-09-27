@@ -463,7 +463,9 @@ trong volume `zalo-sessions`; coi như mật khẩu.
   `https://<máy chủ>/hooks/email?key=<EMAIL_INBOUND_KEY>` (hoặc Basic Auth với mật khẩu là key). Trả lời qua SMTP, đúng
   luồng thư (`Re:`, `In-Reply-To`, `References`), phần trích dẫn thư cũ được cắt bỏ. Thư tự động, thư báo lỗi,
   danh sách thư (`Auto-Submitted`, `Precedence`, `List-Id`, `noreply@`) không được trả lời, nên không có vòng lặp
-  thư. Tệp đính kèm chỉ giữ tên (xem trong hộp thư gốc).
+  thư. Tệp đính kèm chỉ giữ tên (xem trong hộp thư gốc). Thư phải qua được SPF hoặc DKIM của tên miền người gửi
+  (SendGrid gửi kèm kết quả): thư không xác minh được vẫn vào hộp thư nhưng hội thoại chuyển cho nhân viên, AI không
+  tự trả lời (tắt bằng `require_sender_auth: false` trong cấu hình kênh).
 
 **Webhook** cho mọi nền tảng khác. Cầu nối của bạn gửi tin của khách:
 
@@ -557,11 +559,12 @@ Phần còn lại của sale-management (module 1, 3, 4, 5), cùng cơ sở dữ
 
 **Vai trò nhân viên** (trang Tài khoản): *Quản lý cửa hàng* (mọi trang vận hành, huỷ và hoàn tác đơn, không đụng
 tài khoản, model, cấu hình AI), *Nhân viên bán hàng* (hộp thư và bán hàng), *Thu ngân* (bán hàng), *Thủ kho* (kho
-hàng), *Điều phối giao hàng*, *Marketing* (marketing, báo cáo, xem sản phẩm và khách).
+hàng), *Điều phối giao hàng*, *Marketing* (marketing, xem báo cáo, sản phẩm và khách).
 
 **Bán tại quầy (POS).** Mở nhiều đơn cùng lúc (giữ trong trình duyệt đến khi xong), tìm sản phẩm thấy ngay giá hôm
 nay cho khách đó (VIP, khuyến mại), tồn từng kho, hàng sắp về và ngày về. Mỗi dòng giảm theo % hoặc nhập giá riêng
-(ra % giảm tương ứng); voucher; combo. Đơn *lấy ngay* giữ hàng trong kho; *đặt trước* giữ chỗ trên container sắp về.
+(ra % giảm tương ứng); voucher; combo. Thu ngân và nhân viên bán hàng giảm tối đa 10% so với giá bán (cả dòng và
+cả đơn); giảm nhiều hơn cần quản lý cửa hàng. Đơn *lấy ngay* giữ hàng trong kho; *đặt trước* giữ chỗ trên container sắp về.
 Thu tiền nhiều lần (cọc rồi trả nốt) bằng tiền mặt (gợi ý tiền khách đưa, tính tiền thối), thẻ, chuyển khoản, ví,
 COD; mỗi lần thu có mã chống ghi trùng. *Đã giao (xuất kho)* trừ kho và ghi lãi thực tế theo lô FIFO. In hoá đơn (tên
 cửa hàng, MST, VAT đã gồm, tài khoản ngân hàng khi còn nợ) hoặc gửi hoá đơn qua kênh chat của khách. Nhân viên chỉ
@@ -621,14 +624,18 @@ storefront:
 - **Sản phẩm, combo, giỏ hàng, đặt hàng**: giá, khuyến mại, tồn kho và hàng sắp về lấy thẳng từ Kho hàng, nên website
   luôn khớp với quầy và nhân viên AI. Sản phẩm có ảnh (`https://…`), mô tả và ô *Hiện trên website* (Kho hàng → sản
   phẩm). Khi đặt hàng, phần có sẵn thành đơn giữ hàng ngay, phần còn lại thành đơn đặt trước trên lô hàng đang về.
-  Đơn web có kênh `web`, gắn vào khách cùng số điện thoại (hoặc khách mới), quản trị viên được báo qua SimpleX, khách
-  nhận email xác nhận với đường dẫn theo dõi đơn riêng.
+  Đơn web có kênh `web`, quản trị viên được báo qua SimpleX, khách nhận email xác nhận với đường dẫn theo dõi đơn
+  riêng. Khách chưa đăng nhập không được xác minh, nên đơn của họ không bao giờ vào tài khoản của một khách đã có
+  (khách đó sẽ thấy đơn lạ, người đặt sẽ đọc được hoá đơn của họ): đơn gắn vào khách cùng số điện thoại chỉ khi không
+  ai đăng nhập được vào khách đó (chưa có email, chưa chat), còn lại tạo khách mới để nhân viên gộp sau; email khách
+  gõ khi đặt chỉ dùng cho đơn đó. Tối đa 10 đơn / giờ mỗi địa chỉ IP và 3 đơn chưa thanh toán mỗi số điện thoại.
 - **Tài khoản khách, không mật khẩu**: khách gõ email hoặc số điện thoại đã dùng với cửa hàng và nhận **mã 6 số**
   (hiệu lực 10 phút, sai 5 lần là hỏng, tối đa 3 mã / 15 phút) qua email, hoặc qua **kênh chat khách vẫn dùng**
   (SimpleX, Zalo, Telegram…; hộp thư chỉ ghi "đã gửi mã", nhân viên không thấy mã). Trong ứng dụng SimpleX, khách
   bấm lệnh `/shop` để nhận đường dẫn đăng nhập một chạm. Đăng nhập rồi: **khách VIP thấy và mua với giá VIP**, xem
   thẻ VIP, điểm tích luỹ, lịch sử điểm, các đơn và **hoá đơn**, sửa tên và địa chỉ. Khách chưa đăng nhập luôn thấy
-  giá thường, và không sửa được thông tin của khách đã có.
+  giá thường, và không sửa được thông tin của khách đã có. Trang đăng nhập trả lời giống nhau và ngay lập tức dù người
+  gõ có là khách hay không (mã gửi ở nền), nên không dò được ai là khách.
 - **An toàn**: trang dựng sẵn trên máy chủ, không có JavaScript; CSP chặt, cookie `HttpOnly`/`SameSite`/`Secure` (khi
   `public_url` là https), mã chống CSRF trên mọi biểu mẫu, mã đăng nhập chỉ lưu dạng băm.
 
