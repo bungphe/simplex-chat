@@ -439,6 +439,9 @@ class Storefront:
             await employee.notify_admins(
                 f"🛒 Đơn web mới từ {first['customer_name']} ({first['phone']}):\n{summary}\nĐịa chỉ: {first['address']}"
             )
+        await self.office.staff_links.notify(
+            "pos", f"🛒 Đơn web mới từ {first['customer_name']} ({first['phone']}):\n{summary}"
+        )
 
 
 # ---------------------------------------------------------------------- #

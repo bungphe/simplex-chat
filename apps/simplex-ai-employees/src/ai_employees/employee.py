@@ -98,6 +98,9 @@ class Employee:
         from .chat_menu import ChatMenu
 
         self.menu = ChatMenu(self)
+        from .staff_chat import StaffChat
+
+        self.staff = StaffChat(self)
         self.bot.on_message(content_type="text", chat_type="direct")(self._on_text)
         self.bot.on_message(chat_type="direct")(self._on_other)
 
@@ -142,6 +145,11 @@ class Employee:
 
             if word in CUSTOMER_WORDS:
                 await msg.reply(await self.menu.handle(cid, word, rest, name))
+                return
+            from .staff_chat import STAFF_WORDS
+
+            if word in STAFF_WORDS:
+                await msg.reply(await self.staff.handle(cid, word, rest))
                 return
         if text:
             await self._incoming(msg, cid, name, text, [])
@@ -293,7 +301,7 @@ class Employee:
             self.state.add_admin(cid)
             if by:
                 self.state.remember_contact(cid, by)
-            self._spawn(self.menu.sync_admin_menu(cid))
+            self._spawn(self.staff.sync_menu(cid))
             return f"Bạn đã là quản trị viên của {self.base.display_name}.\n\n{ADMIN_HELP}"
         if not self.state.is_admin(cid):
             return "Lệnh này chỉ dành cho quản trị viên. Gửi /admin <mã> để đăng nhập."
@@ -558,6 +566,10 @@ class Office:
 
         # the web shop, when configured (also used by the chat commands: /shop login links)
         self.storefront = Storefront(self, config.storefront.public_url) if config.storefront else None
+        from .staff_chat import StaffLinks
+
+        # staff accounts linked to their SimpleX chats (commands and menus by role)
+        self.staff_links = StaffLinks(self)
 
     @property
     def http_client(self) -> httpx2.AsyncClient:
@@ -667,8 +679,10 @@ class Office:
             for e in self.employees.values() if primary else ():
                 await stack.enter_async_context(e.bot)
                 log.info("%s (%s) address: %s", e.base.display_name, e.id, e.bot.address)
-                for cid in list(e.state.admins):  # admins see the management menu in their app
-                    e._spawn(e.menu.sync_admin_menu(cid))
+                # admins and linked staff see their own menus in their app
+                staff = {cid for emp, cid, _u in self.staff_links.linked() if emp == e.id}
+                for cid in sorted(set(e.state.admins) | staff):
+                    e._spawn(e.staff.sync_menu(cid))
             if self.config.admin_ui:
                 from .web import start_admin_ui
 

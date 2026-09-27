@@ -157,6 +157,10 @@ class FakeChatApi:
 
     def __init__(self) -> None:
         self.sent: list[tuple[int, str]] = []
+        self.prefs: dict[int, dict[str, Any]] = {}  # the menu each contact sees
+
+    async def api_set_contact_prefs(self, contact_id: int, preferences: dict[str, Any]) -> None:
+        self.prefs[contact_id] = preferences
 
     async def api_send_text_message(self, chat: list[Any], text: str) -> list[Any]:
         assert chat[0] == "direct"

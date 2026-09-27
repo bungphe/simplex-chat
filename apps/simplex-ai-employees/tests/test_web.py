@@ -63,6 +63,17 @@ async def test_page_and_security_headers(ui):
     assert r.headers["X-Frame-Options"] == "DENY"
     assert (await client.get("/static/admin.js")).headers["Content-Type"].startswith("application/javascript")
     assert (await client.get("/static/secret.py")).status == 404
+    # an installable app (PWA): manifest, service worker at the root, icons, all public
+    import json
+
+    manifest = json.loads(await (await client.get("/manifest.webmanifest")).text())
+    assert manifest["display"] == "standalone" and manifest["start_url"] == "/"
+    assert {i["sizes"] for i in manifest["icons"]} >= {"192x192", "512x512"}
+    sw = await client.get("/sw.js")
+    assert sw.status == 200 and "/api" in await sw.text()
+    icon = await client.get("/static/icon-512.png")
+    assert icon.headers["Content-Type"] == "image/png" and (await icon.read())[:4] == b"\x89PNG"
+    assert '<link rel="manifest"' in await r.text()
 
 
 async def test_login_session_and_csrf(ui):

@@ -217,6 +217,11 @@ class ChatMenu:
             f"🙋 {contact['name'] or conv.customer_name or 'Khách'} ({contact['phone'] or 'SimpleX'}) muốn gặp nhân viên"
             f"{': ' + args if args else ''}. Trả lời trong Hộp thư của trang quản trị."
         )
+        await self.office.staff_links.notify(
+            "inbox",
+            f"🙋 #{conv.id} {contact['name'] or conv.customer_name or 'Khách'} muốn gặp nhân viên"
+            f"{': ' + args if args else ''}. Xem: /'open {conv.id}'",
+        )
         return "Đã báo nhân viên, quý khách vui lòng chờ trong giây lát. 🙏"
 
     # ------------------------------------------------------------------ #
@@ -279,10 +284,7 @@ class ChatMenu:
 
     async def sync_admin_menu(self, contact_id: int) -> None:
         """Give an admin the longer menu (only this contact sees it)."""
-        try:
-            await self.employee.bot.api.api_set_contact_prefs(contact_id, {"commands": admin_menu()})
-        except Exception:  # noqa: BLE001 - the menu is a convenience; typed commands still work
-            log.warning("%s: could not set the admin menu for contact %s", self.employee.id, contact_id)
+        await self.employee.staff.sync_menu(contact_id)
 
 
 def _mask(email: str) -> str:

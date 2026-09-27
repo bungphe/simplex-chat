@@ -28,7 +28,7 @@ from aiohttp import BodyPartReader, web
 from . import skills as sk
 from .config import EFFORT_LEVELS, AdminUIConfig, ConfigError
 from .providers import PROVIDERS, ModelError
-from .users import Sessions, User, Users
+from .users import ROLE_AREAS, Sessions, User, Users
 
 if TYPE_CHECKING:
     from .employee import Employee, Office
@@ -39,7 +39,25 @@ COOKIE = "aie_session"
 SESSION_TTL = 12 * 3600
 CSRF_HEADER = "X-Requested-With"
 CSRF_VALUE = "ai-employees"
-STATIC = ("admin.html", "admin.js", "admin.css", "inventory.js", "business.js")
+STATIC = (
+    "admin.html",
+    "admin.js",
+    "admin.css",
+    "inventory.js",
+    "business.js",
+    "icon.svg",
+    "manifest.webmanifest",
+)
+# the installable app (PWA): icons, and the service worker served at the root (its scope)
+STATIC_BINARY = ("icon-192.png", "icon-512.png", "apple-touch-icon.png")
+CONTENT_TYPES = {
+    "html": "text/html",
+    "js": "application/javascript",
+    "css": "text/css",
+    "svg": "image/svg+xml",
+    "webmanifest": "application/manifest+json",
+    "png": "image/png",
+}
 SECURITY_HEADERS = {
     "Content-Security-Policy": "default-src 'self'; img-src 'self' data:; frame-ancestors 'none'",
     "X-Content-Type-Options": "nosniff",
@@ -56,14 +74,6 @@ USER: web.RequestKey[User] = web.RequestKey("user")
 
 
 # What each staff role may call besides its own account (admins: everything).
-ROLE_AREAS: dict[str, tuple[str, ...]] = {
-    "manager": ("inbox", "pos", "inventory", "delivery", "marketing", "reports", "crm"),
-    "agent": ("inbox", "pos"),
-    "cashier": ("pos",),
-    "warehouse": ("inventory",),
-    "delivery": ("delivery",),
-    "marketing": ("marketing", "reports", "crm-read", "inventory-read"),
-}
 _AREA_PREFIXES = {
     "inbox": ("/api/inbox",),
     "pos": ("/api/pos",),
@@ -79,7 +89,7 @@ def _may(user: User, method: str, path: str) -> bool:
     if user.is_admin:
         return True
     if path in ("/api/me", "/api/me/password", "/api/logout", "/api/notices") or path.startswith(
-        "/api/notices/"
+        ("/api/notices/", "/api/me/simplex")
     ):
         return True
     if method == "GET" and path == "/api/channels":
@@ -180,12 +190,17 @@ def _employee(request: web.Request) -> Employee:
 
 
 async def page(request: web.Request) -> web.Response:
-    name = request.match_info.get("file") or "admin.html"
-    if name not in STATIC:
+    name = request.match_info.get("file") or {
+        "/sw.js": "sw.js",
+        "/manifest.webmanifest": "manifest.webmanifest",
+    }.get(request.path, "admin.html")
+    if name not in (*STATIC, *STATIC_BINARY, "sw.js"):
         raise web.HTTPNotFound()
-    body = resources.files("ai_employees").joinpath("static", name).read_text(encoding="utf-8")
-    ctype = {"html": "text/html", "js": "application/javascript", "css": "text/css"}[name.rsplit(".", 1)[1]]
-    return web.Response(text=body, content_type=ctype, charset="utf-8")
+    ctype = CONTENT_TYPES[name.rsplit(".", 1)[1]]
+    files = resources.files("ai_employees").joinpath("static", name)
+    if name in STATIC_BINARY:
+        return web.Response(body=files.read_bytes(), content_type=ctype)
+    return web.Response(text=files.read_text(encoding="utf-8"), content_type=ctype, charset="utf-8")
 
 
 async def no_content(request: web.Request) -> web.Response:
@@ -1706,6 +1721,40 @@ async def hook_messages(request: web.Request) -> web.Response:
     return _json({"messages": msgs})
 
 
+async def me_simplex(request: web.Request) -> web.Response:
+    """This staff member's SimpleX chats linked to their account, and where to find the
+    AI employees in SimpleX."""
+    office = request.app[OFFICE]
+    return _json(
+        {
+            "links": office.staff_links.of_user(_user(request).username),
+            "employees": [
+                {"id": e.id, "name": e.base.display_name, "address": getattr(e.bot, "address", None) or ""}
+                for e in office.employees.values()
+            ],
+        }
+    )
+
+
+async def me_simplex_code(request: web.Request) -> web.Response:
+    from .staff_chat import CODE_MINUTES
+
+    code = request.app[OFFICE].staff_links.new_code(_user(request).username)
+    return _json({"code": code, "minutes": CODE_MINUTES})
+
+
+async def me_simplex_remove(request: web.Request) -> web.Response:
+    office = request.app[OFFICE]
+    key = request.match_info["key"]
+    if not office.staff_links.remove(_user(request).username, key):
+        raise ApiError(404, "no such link")
+    employee_id, _, cid = key.partition(":")
+    employee = office.employees.get(employee_id)
+    if employee is not None and cid.isdigit():
+        office.hub.spawn(employee.staff.sync_menu(int(cid)))
+    return _json({"ok": True})
+
+
 def create_app(office: Office, password: str) -> web.Application:
     app = web.Application(middlewares=[guard], client_max_size=256 * 1024)
     app[OFFICE] = office
@@ -1715,11 +1764,16 @@ def create_app(office: Office, password: str) -> web.Application:
     r = app.router
     r.add_get("/", page)
     r.add_get("/static/{file}", page)
+    r.add_get("/sw.js", page)
+    r.add_get("/manifest.webmanifest", page)
     r.add_get("/favicon.ico", no_content)
     r.add_post("/api/login", login)
     r.add_post("/api/logout", logout)
     r.add_get("/api/me", me)
     r.add_post("/api/me/password", me_password)
+    r.add_get("/api/me/simplex", me_simplex)
+    r.add_post("/api/me/simplex", me_simplex_code)
+    r.add_delete("/api/me/simplex/{key}", me_simplex_remove)
     r.add_get("/api/users", users_list)
     r.add_post("/api/users", users_add)
     r.add_patch("/api/users/{username}", users_patch)

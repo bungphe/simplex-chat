@@ -1325,8 +1325,27 @@ views.me = async () => {
           h("label", {}, "Mật khẩu mới", pw), h("label", {}, "Nhập lại mật khẩu mới", pw2)),
         h("button", { class: "primary", onclick: change }, "Đổi mật khẩu")),
     ),
+    await simplexLinkCard(),
   );
 };
+
+async function simplexLinkCard() {
+  const r = await api("GET", "/api/me/simplex");
+  const out = h("div", {});
+  const newCode = () => run(async () => {
+    const c = await api("POST", "/api/me/simplex", {});
+    put(out, h("p", {}, "Trong ứng dụng SimpleX, gửi cho nhân viên AI tin nhắn: ", h("b", { class: "mono" }, `/link ${c.code}`),
+      h("span", { class: "muted" }, ` (dùng một lần, trong ${c.minutes} phút)`)));
+  });
+  return h("div", { class: "card section" }, h("h2", {}, "Liên kết SimpleX (làm việc trên điện thoại)"),
+    h("p", { class: "muted" }, "Liên kết chat SimpleX của bạn với tài khoản này: trong ứng dụng SimpleX, gõ / hoặc bấm // để có menu lệnh theo vai trò (hộp thư, bán hàng, kho, giao hàng…), và nhận thông báo công việc."),
+    r.employees.some((e) => e.address) ? h("div", {}, h("h3", {}, "Địa chỉ SimpleX của nhân viên AI"),
+      r.employees.filter((e) => e.address).map((e) => h("p", {}, h("b", {}, e.name), h("div", { class: "mono muted" }, e.address)))) : null,
+    r.links.length ? h("table", {}, h("tbody", {}, r.links.map((l) => h("tr", {}, h("td", {}, `Chat với ${l.employee_name}`), h("td", { class: "muted" }, `từ ${fmtTime(l.since)}`),
+      h("td", {}, h("button", { class: "small danger", onclick: () => confirm("Huỷ liên kết chat này?") && run(async () => {
+        await api("DELETE", `/api/me/simplex/${encodeURIComponent(l.key)}`); go("me"); }, "Đã huỷ liên kết") }, "Huỷ")))))) : h("p", { class: "muted" }, "Chưa liên kết chat nào."),
+    h("button", { class: "primary", onclick: newCode }, "Lấy mã liên kết"), out);
+}
 
 // --------------------------------------------------------------------------
 
@@ -1341,9 +1360,14 @@ async function start() {
   }
   $("#me").textContent = `${me.name} · ${ROLE[me.role] || me.role}`;
   const first = { admin: "overview", manager: "pos", agent: "inbox", cashier: "pos", warehouse: "inventory", delivery: "delivery", marketing: "marketing" };
-  go(first[me.role] || "inbox");
+  // the installed app's shortcuts open a page directly: /#inbox, /#pos…
+  const wanted = document.querySelector(`#nav button[data-view="${CSS.escape(location.hash.slice(1))}"]`);
+  go(wanted && !wanted.hidden ? wanted.dataset.view : first[me.role] || "inbox");
   if (typeof showNotices === "function") showNotices();
 }
+
+// installable app (PWA): the page's files work offline; data always comes live
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
 
 (async () => {
   try {

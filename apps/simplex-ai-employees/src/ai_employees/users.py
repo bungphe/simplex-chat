@@ -32,6 +32,15 @@ from .state import now_iso
 
 OWNER = "admin"
 ROLES = ("admin", "manager", "agent", "cashier", "warehouse", "delivery", "marketing")
+# what each role works on (admins: everything); "-read": may look, not change
+ROLE_AREAS: dict[str, tuple[str, ...]] = {
+    "manager": ("inbox", "pos", "inventory", "delivery", "marketing", "reports", "crm"),
+    "agent": ("inbox", "pos"),
+    "cashier": ("pos",),
+    "warehouse": ("inventory",),
+    "delivery": ("delivery",),
+    "marketing": ("marketing", "reports", "crm-read", "inventory-read"),
+}
 MIN_PASSWORD = 10
 _USERNAME = re.compile(r"^[a-z0-9][a-z0-9._-]{1,31}$")
 _SCRYPT = {"n": 2**14, "r": 8, "p": 1, "dklen": 32}

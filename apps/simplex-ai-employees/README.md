@@ -657,6 +657,37 @@ nhắn của nhân viên AI (vd. `/'invoice DH00012'`) chạm vào là gửi.
 đơn đang mở, tồn kho, hàng sắp hết, yêu cầu chờ duyệt, cấu hình nhân viên AI (xem bảng lệnh ở *Quản trị trong chat*).
 Quản trị viên cũng nhận thông báo đơn web mới, khách lên VIP, khách gọi nhân viên qua SimpleX.
 
+### Nhân viên làm việc trên điện thoại
+
+**1. Lệnh theo vai trò trong ứng dụng SimpleX gốc.** Mỗi nhân viên liên kết chat SimpleX của mình với tài khoản nhân
+viên: trang quản trị → *Tài khoản của tôi* → *Lấy mã liên kết*, rồi gửi `/link <mã>` cho nhân viên AI (mã dùng một lần,
+15 phút). Từ đó menu `/` của họ chỉ có các lệnh vai trò của họ được dùng (kiểm tra quyền như trang web); tài khoản bị
+khoá thì chat mất quyền ngay. Họ cũng nhận thông báo công việc: khách gọi nhân viên (hộp thư), đơn web mới (bán hàng).
+
+| Phần việc (vai trò) | Lệnh |
+|---|---|
+| Hộp thư (agent, manager) | `/inbox` khách đang chờ · `/open <số>` xem hội thoại · `/reply <số> <nội dung>` trả lời (dịch sang tiếng của khách, AI tạm dừng) · `/aion <số>` trả lại AI · `/close <số>` |
+| Bán hàng (cashier, agent, manager) | `/sell SOFA-01 1, GHE-02 4; 0901234567 Chị Lan` tạo đơn (giá VIP nếu khách VIP) · `/pay <mã đơn> cash\|card\|transfer\|wallet\|cod [số tiền]` · `/done <mã đơn>` giao tại quầy · `/order <mã đơn>` · `/sales` đơn của tôi hôm nay |
+| Kho (warehouse, manager; marketing chỉ xem) | `/stock <mã/tên>` · `/lowstock` · `/incoming` hàng đang về · `/receive <số đơn nhập>` nhận đủ (tự giữ hàng cho đơn đặt trước) |
+| Giao hàng (delivery, manager) | `/trips` chuyến hôm nay · `/go <mã chuyến>` bắt đầu (khách được báo) · `/delivered <số lịch>` · `/failed <số lịch> <lý do>` |
+| Quản lý (manager) | `/report` doanh thu hôm nay · `/openorders` · `/approvals`, `/approve <số>`, `/reject <số> [lý do]` |
+| Mọi nhân viên | `/me`, `/unlink` |
+
+Nhân viên bán hàng và thu ngân chỉ xem, thu tiền đơn của chính mình trong ngày (như trang web); huỷ, trả hàng vẫn do
+quản lý làm trên trang web. Lệnh trong tin trả lời (vd. `/'open 12'`, `/'delivered 5'`) chạm vào là chạy.
+
+**2. Trang quản trị cài như ứng dụng (PWA).** Mở trang quản trị bằng Chrome (Android) → *Cài đặt ứng dụng* / *Thêm
+vào màn hình chính*, hoặc Safari (iPhone) → *Chia sẻ* → *Thêm vào MH chính*: có biểu tượng riêng, mở toàn màn hình,
+phím tắt Hộp thư / Bán hàng / Giao hàng, đủ mọi chức năng. Tệp giao diện chạy được khi mạng chập chờn; dữ liệu luôn lấy
+trực tiếp, không lưu trên máy. Cần HTTPS (reverse proxy) để trình duyệt cho cài.
+
+**3. Màn hình "Quản lý cửa hàng" trong ứng dụng SimpleX** (bản ứng dụng build từ repo này: `apps/multiplatform` cho
+Android và máy tính, `apps/ios` cho iPhone). Cài đặt → *Quản lý cửa hàng*: nhập địa chỉ trang quản trị (https, hoặc
+http trong mạng nội bộ), rồi mở ngay trong SimpleX (Android, iPhone: trình duyệt nhúng giữ phiên đăng nhập; máy tính:
+mở trình duyệt). Trong thông tin liên hệ của một bot (nhân viên AI) cũng có nút *Quản lý cửa hàng*. Liên kết tới trang
+khác (bản đồ, link khách gửi), hoá đơn in và tệp CSV mở bằng trình duyệt ngoài. Ứng dụng SimpleX gốc từ cửa hàng ứng
+dụng không có màn hình này, nhưng vẫn dùng được cách 1 và 2.
+
 ## Mở rộng quy mô và đo tải
 
 **Lưu trữ.** Mọi dữ liệu nằm trong cơ sở dữ liệu: mặc định là các file SQLite trong `state_dir` (quyền `600`),
