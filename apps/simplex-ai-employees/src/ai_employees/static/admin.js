@@ -60,7 +60,7 @@ const STATUS = {
   error: ["bad", "lỗi"], queued: ["neutral", "chờ duyệt"], rejected: ["neutral", "bị từ chối"], skipped: ["neutral", "bỏ qua"],
   pending: ["warn", "chờ duyệt"], executing: ["neutral", "đang chạy"], done: ["ok", "đã làm"], failed: ["bad", "thất bại"],
 };
-const KIND = { reply: "trả lời", consult: "hỏi đồng nghiệp", routine: "lịch làm việc", action: "hành động", suggest: "gợi ý trả lời", memory: "tóm tắt trí nhớ" };
+const KIND = { reply: "trả lời", consult: "hỏi đồng nghiệp", routine: "lịch làm việc", action: "hành động", suggest: "gợi ý trả lời", memory: "tóm tắt trí nhớ", translate: "dịch", summary: "tóm tắt hội thoại" };
 function pill(status) {
   const [cls, label] = STATUS[status] || ["neutral", status || "—"];
   return h("span", { class: `pill ${cls}` }, label);
@@ -462,7 +462,7 @@ views.conversations = async (arg) => {
 
 const CH_SHORT = { simplex: "SimpleX", zalo_oa: "Zalo OA", zalo_personal: "Zalo", facebook: "Messenger", webhook: "Web",
   telegram: "Telegram", whatsapp: "WhatsApp", email: "Email" };
-const SENDER = { customer: "Khách", ai: "AI", human: "Nhân viên", system: "Hệ thống" };
+const SENDER = { customer: "Khách", ai: "AI", human: "Nhân viên", system: "Hệ thống", note: "Ghi chú nội bộ" };
 let inboxSel = null;
 
 function chBadge(info) {
@@ -499,6 +499,17 @@ function attachmentView(cid, m, a, i) {
 // A customer who writes in another language than the staff: translation helpers apply.
 const foreign = (c) => !!c.lang && c.lang !== c.staff_language;
 
+// Inbox settings shared by the inbox views: labels, saved replies, teams, staff accounts.
+let deskMeta = { labels: [], canned: [], teams: [], users: [], my_teams: [], sla_minutes: 15 };
+const labelColor = (name) => (deskMeta.labels.find((l) => l.name === name) || {}).color || "#64748b";
+// colours through the CSSOM: the page's CSP forbids inline style attributes
+const colored = (el, color) => { el.style.backgroundColor = color; return el; };
+const labelChip = (name) => colored(h("span", { class: "label" }, name), labelColor(name));
+const userName = (u) => (deskMeta.users.find((x) => x.username === u) || {}).name || u;
+const teamName = (t) => (deskMeta.teams.find((x) => x.id === t) || {}).name || t;
+const fmtDur = (s) => (s < 60 ? `${s}s` : s < 3600 ? `${Math.round(s / 60)} phút` : `${(s / 3600).toFixed(1)} giờ`);
+const waitingFor = (iso) => (iso ? fmtDur(Math.max(0, Math.round((Date.now() - new Date(iso)) / 1000))) : "");
+
 views.inbox = async (arg) => {
   const langs = await api("GET", "/api/inbox/languages").catch(() => ({ languages: [], countries: [] }));
   if (arg) inboxSel = arg;
@@ -506,13 +517,23 @@ views.inbox = async (arg) => {
   const modeSel = h("select", {}, h("option", { value: "" }, "Mọi chế độ"),
     h("option", { value: "ai" }, "AI đang trả lời"), h("option", { value: "human" }, "Người đang trả lời"));
   const search = h("input", { type: "search", placeholder: "Tìm khách hoặc nội dung" });
+  deskMeta = await api("GET", "/api/inbox/meta").catch(() => deskMeta);
+  const statusSel = h("select", {}, h("option", { value: "open" }, "Đang mở"), h("option", { value: "closed" }, "Đã đóng"),
+    h("option", { value: "" }, "Mọi trạng thái"));
+  const whoSel = h("select", {}, h("option", { value: "" }, "Mọi người phụ trách"), h("option", { value: "me" }, "Của tôi"),
+    h("option", { value: "-" }, "Chưa giao cho ai"), h("option", { value: "waiting" }, "Khách đang chờ"),
+    deskMeta.teams.length ? h("optgroup", { label: "Nhóm" }, deskMeta.teams.map((t) => h("option", { value: `team:${t.id}` }, t.name))) : null);
+  const labelSel = h("select", {}, h("option", { value: "" }, "Mọi nhãn"), deskMeta.labels.map((l) => h("option", { value: l.name }, l.name)));
   const listBox = h("div", { class: "conv-list" });
   const pane = h("div", { class: "card thread" }, h("p", { class: "muted" }, "Chọn một hội thoại ở bên trái."));
   let channelsLoaded = false;
   let thread = null; // {id, head, msgs, side}
 
   const loadList = async () => {
-    const q = new URLSearchParams({ channel: chSel.value, mode: modeSel.value, q: search.value.trim() });
+    const q = new URLSearchParams({ channel: chSel.value, mode: modeSel.value, q: search.value.trim(), status: statusSel.value, label: labelSel.value });
+    if (whoSel.value === "waiting") q.set("waiting", "1");
+    else if (whoSel.value.startsWith("team:")) q.set("team", whoSel.value.slice(5));
+    else if (whoSel.value) q.set("assignee", whoSel.value);
     const data = await api("GET", `/api/inbox?${q}`);
     if (!channelsLoaded) {
       chSel.append(...data.channels.map((c) => h("option", { value: c.id }, c.name)));
@@ -525,7 +546,11 @@ views.inbox = async (arg) => {
     h("div", { class: "row spread" }, h("b", {}, c.customer_name || `Khách ${c.external_id}`), h("span", { class: "muted" }, fmtTime(c.last_ts))),
     h("div", { class: "row" }, chBadge(c.channel_info), foreign(c) ? h("span", { class: "pill neutral", title: c.lang_name }, c.lang.toUpperCase()) : null,
       c.mode === "human" ? h("span", { class: "pill warn" }, "người") : null,
-      h("span", { class: "muted" }, c.employee_name), c.unread ? h("span", { class: "badge" }, c.unread) : null),
+      c.status === "closed" ? h("span", { class: "pill neutral" }, "đã đóng") : null,
+      h("span", { class: "muted" }, c.assignee ? `👤 ${userName(c.assignee)}` : c.team ? `👥 ${teamName(c.team)}` : c.employee_name),
+      c.unread ? h("span", { class: "badge" }, c.unread) : null),
+    c.labels.length || c.waiting_since ? h("div", { class: "row" }, c.labels.map(labelChip),
+      c.waiting_since && c.status === "open" ? h("span", { class: "muted", title: "Khách chờ trả lời" }, `⏱ ${waitingFor(c.waiting_since)}`) : null) : null,
     h("div", { class: "preview" }, (c.last_sender && c.last_sender !== "customer" ? `${SENDER[c.last_sender]}: ` : "") + c.last_preview),
     )) : [h("p", { class: "muted" }, "Chưa có hội thoại nào.")]);
   };
@@ -534,7 +559,7 @@ views.inbox = async (arg) => {
     // Re-render only when something changed: keeps the scroll position and does not
     // download attachments again on every refresh.
     const last = d.messages[d.messages.length - 1];
-    const sig = `${d.messages.length}:${last ? last.id : 0}:${d.messages.filter((m) => m.translation).length}:${d.conversation.lang}`;
+    const sig = `${d.messages.length}:${last ? last.id : 0}:${d.messages.filter((m) => m.translation).length}:${d.conversation.lang}:${d.conversation.customer_name}`;
     if (thread.sig === sig) return;
     thread.sig = sig;
     const nearBottom = thread.msgs.scrollHeight - thread.msgs.scrollTop - thread.msgs.clientHeight < 80;
@@ -600,6 +625,27 @@ views.inbox = async (arg) => {
   const renderHead = (d) => {
     const c = d.conversation;
     const base = `/api/inbox/${c.id}`;
+    // the 5-second refresh must not close an open menu or reset a select being used
+    const sig = JSON.stringify([c.id, c.mode, c.status, c.assignee, c.team, c.labels, c.employee, c.lang, c.lang_source, c.country, c.customer_name]);
+    if (thread.headSig === sig) return;
+    thread.headSig = sig;
+    const post = (path, body, msg) => run(async () => { update(await api("POST", `${base}/${path}`, body)); loadList(); }, msg);
+    const person = h("select", { title: "Nhân viên phụ trách hội thoại" }, h("option", { value: "" }, "— chưa giao —"),
+      deskMeta.users.map((u) => h("option", { value: u.username, selected: u.username === c.assignee }, u.name)));
+    const team = h("select", { title: "Nhóm phụ trách" }, h("option", { value: "" }, "— không nhóm —"),
+      deskMeta.teams.map((t) => h("option", { value: t.id, selected: t.id === c.team }, t.name)));
+    const assignStaff = () => post("assignee", { assignee: person.value, team: team.value }, "Đã giao hội thoại");
+    person.addEventListener("change", assignStaff);
+    team.addEventListener("change", assignStaff);
+    const labelMenu = h("details", { class: "label-menu" }, h("summary", {}, "Nhãn ▾"),
+      h("div", { class: "menu" }, deskMeta.labels.length ? deskMeta.labels.map((l) => {
+        const box = h("input", { type: "checkbox", checked: c.labels.includes(l.name) });
+        box.addEventListener("change", () => {
+          const next = box.checked ? [...c.labels, l.name] : c.labels.filter((x) => x !== l.name);
+          post("labels", { labels: next });
+        });
+        return h("label", { class: "check" }, box, labelChip(l.name));
+      }) : h("p", { class: "muted" }, me && me.role === "admin" ? "Chưa có nhãn: thêm trong Cài đặt hộp thư." : "Chưa có nhãn.")));
     const setMode = (mode) => run(async () => { update(await api("POST", `${base}/mode`, { mode })); loadList(); },
       mode === "ai" ? "Đã giao lại cho AI" : "Bạn đang trả lời; AI tạm dừng ở hội thoại này");
     const assign = h("select", { disabled: c.channel.startsWith("simplex:"),
@@ -608,14 +654,22 @@ views.inbox = async (arg) => {
     put(thread.head,
       h("div", { class: "row spread" },
         h("div", {}, h("h2", {}, c.customer_name || `Khách ${c.external_id}`),
-          h("div", { class: "row" }, chBadge(c.channel_info), h("span", { class: "muted" }, c.channel_info.name), modePill(c.mode))),
+          h("div", { class: "row" }, chBadge(c.channel_info), h("span", { class: "muted" }, c.channel_info.name), modePill(c.mode),
+            c.status === "closed" ? h("span", { class: "pill neutral" }, "đã đóng") : null, c.labels.map(labelChip))),
         h("div", { class: "row" },
           languagePicker(c),
-          h("label", { class: "inline" }, "Phụ trách", assign),
+          h("label", { class: "inline", title: "Nhân viên AI trả lời hội thoại này" }, "AI", assign),
           c.mode === "ai"
             ? h("button", { onclick: () => setMode("human") }, "Tiếp quản (dừng AI)")
             : h("button", { class: "primary", onclick: () => setMode("ai") }, "Giao lại cho AI")),
       ),
+      h("div", { class: "row" },
+        h("label", { class: "inline" }, "Giao cho", person), team, labelMenu,
+        h("button", { onclick: () => summarize(c.id) }, "Tóm tắt (AI)"),
+        c.status === "open"
+          ? h("button", { onclick: () => post("status", { status: "closed" }, "Đã đóng hội thoại") }, "✓ Đóng hội thoại")
+          : h("button", { onclick: () => post("status", { status: "open" }, "Đã mở lại") }, "Mở lại")),
+      thread.brief,
     );
   };
 
@@ -645,6 +699,24 @@ views.inbox = async (arg) => {
       ));
   };
 
+  const summarize = (cid) => run(async () => {
+    put(thread.brief, h("p", { class: "muted" }, "AI đang đọc hội thoại…"));
+    thread.brief.hidden = false;
+    try {
+      const r = await api("POST", `/api/inbox/${cid}/summary`, {});
+      const keep = h("button", { class: "small", onclick: () => run(async () => {
+        update(await api("POST", `/api/inbox/${cid}/note`, { text: "Tóm tắt (AI):\n" + r.text }));
+        thread.brief.hidden = true;
+      }, "Đã lưu thành ghi chú nội bộ") }, "Lưu thành ghi chú");
+      put(thread.brief, h("div", { class: "row spread" }, h("b", {}, "Tóm tắt hội thoại (AI)"),
+        h("div", { class: "row" }, keep, h("button", { class: "small", onclick: () => { thread.brief.hidden = true; } }, "Đóng"))),
+      h("div", { class: "pre" }, r.text));
+    } catch (e) {
+      thread.brief.hidden = true;
+      throw e;
+    }
+  });
+
   const update = (d) => {
     if (!thread || thread.id !== d.conversation.id) return;
     if (thread.translateWrap) {
@@ -669,17 +741,37 @@ views.inbox = async (arg) => {
       const translating = () => !translateWrap.hidden && translate.checked;
       const sendBtn = h("button", { class: "primary" }, "Gửi");
       const suggestBtn = h("button", {}, "Gợi ý trả lời (AI)");
+      const noteMode = h("input", { type: "checkbox" });
+      const composer = h("div", { class: "composer" });
+      noteMode.addEventListener("change", () => {
+        composer.classList.toggle("noting", noteMode.checked);
+        sendBtn.textContent = noteMode.checked ? "Lưu ghi chú" : "Gửi";
+        text.placeholder = noteMode.checked ? "Ghi chú cho đồng nghiệp — khách và AI không thấy" : "Nhập trả lời… (Enter để gửi, Shift+Enter xuống dòng)";
+      });
+      const canned = h("select", { title: "Câu trả lời mẫu" }, h("option", { value: "" }, "Câu trả lời mẫu…"),
+        deskMeta.canned.map((x) => h("option", { value: x.id }, x.title)));
+      canned.addEventListener("change", () => {
+        const x = deskMeta.canned.find((y) => y.id === canned.value);
+        canned.value = "";
+        if (!x) return;
+        const name = (thread && thread.name) || "anh/chị";
+        const filled = x.text.replaceAll("{name}", name);
+        text.value = text.value.trim() ? `${text.value.trimEnd()}\n${filled}` : filled;
+        text.focus();
+      });
       const send = () => {
         const body = { text: text.value.trim(), take_over: takeOver.checked, translate: translating() };
         if (!body.text) return;
+        const note = noteMode.checked;
         run(async () => {
           sendBtn.disabled = true;
           try {
-            update(await api("POST", `/api/inbox/${cid}/reply`, body));
+            update(await api("POST", `/api/inbox/${cid}/${note ? "note" : "reply"}`, note ? { text: body.text } : body));
             text.value = "";
+            if (note) { noteMode.checked = false; noteMode.dispatchEvent(new Event("change")); }
             loadList();
           } finally { sendBtn.disabled = false; }
-        }, "Đã gửi");
+        }, note ? "Đã lưu ghi chú nội bộ" : "Đã gửi");
       };
       sendBtn.addEventListener("click", send);
       text.addEventListener("keydown", (ev) => { if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); send(); } });
@@ -695,14 +787,16 @@ views.inbox = async (arg) => {
           suggestBtn.textContent = "Gợi ý trả lời (AI)";
         }
       }, "AI đã soạn bản nháp; sửa rồi bấm Gửi"));
-      thread = { id: cid, head: h("div", { class: "thread-head" }), mem: h("details", { class: "notes" }), msgs: h("div", { class: "msgs" }), fresh: true, translateWrap, translateLabel };
+      thread = { id: cid, head: h("div", { class: "thread-head" }), mem: h("details", { class: "notes" }), msgs: h("div", { class: "msgs" }),
+        brief: h("div", { class: "brief", hidden: true }), fresh: true, translateWrap, translateLabel, name: d.conversation.customer_name };
       renderMemory(d);
-      put(pane, thread.head, thread.mem, thread.msgs,
-        h("div", { class: "composer" }, text,
-          h("div", { class: "row spread" },
-            h("div", { class: "row" }, h("span", { class: "muted" }, `Trả lời với tên: ${me ? me.name : ""}`),
-              h("label", { class: "check inline" }, takeOver, h("span", {}, "Tiếp quản (AI dừng trả lời)")), translateWrap),
-            h("div", { class: "row" }, suggestBtn, sendBtn))));
+      put(composer, text,
+        h("div", { class: "row spread" },
+          h("div", { class: "row" }, h("span", { class: "muted" }, `Trả lời với tên: ${me ? me.name : ""}`),
+            h("label", { class: "check inline" }, takeOver, h("span", {}, "Tiếp quản (AI dừng trả lời)")), translateWrap,
+            h("label", { class: "check inline", title: "Chỉ nhân viên thấy" }, noteMode, h("span", {}, "Ghi chú nội bộ"))),
+          h("div", { class: "row" }, canned, suggestBtn, sendBtn)));
+      put(pane, thread.head, thread.mem, thread.msgs, composer);
       if (d.conversation.unread) api("POST", `/api/inbox/${cid}/read`, {}).then(refreshBadge).catch(() => {});
     }
     update(d);
@@ -710,12 +804,12 @@ views.inbox = async (arg) => {
 
   let searchTimer;
   search.addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => run(loadList), 300); });
-  chSel.addEventListener("change", () => run(loadList));
-  modeSel.addEventListener("change", () => run(loadList));
+  for (const sel of [chSel, modeSel, statusSel, whoSel, labelSel]) sel.addEventListener("change", () => run(loadList));
   render(
     h("div", { class: "row spread" }, h("h1", {}, "Hộp thư chung"), h("span", { class: "muted" }, "Mọi kênh chat trong một màn hình · tự làm mới mỗi 5 giây")),
     h("div", { class: "inbox" },
-      h("div", { class: "inbox-left" }, h("div", { class: "filters" }, search, h("div", { class: "two" }, chSel, modeSel)), listBox),
+      h("div", { class: "inbox-left" }, h("div", { class: "filters" }, search, h("div", { class: "two" }, statusSel, whoSel),
+        h("div", { class: "two" }, chSel, modeSel), deskMeta.labels.length ? labelSel : null), listBox),
       pane),
   );
   await run(loadList);
@@ -725,6 +819,133 @@ views.inbox = async (arg) => {
     run(loadList);
     if (thread) run(openConv);
   }, 5000);
+};
+
+// --------------------------------------------------------------------------
+// Inbox settings (admins): labels, saved replies, teams, triage rules, SLA target
+
+views.desk = async () => {
+  const [meta, acc] = await Promise.all([run(() => api("GET", "/api/inbox/meta")), run(() => api("GET", "/api/users"))]);
+  if (!meta || !acc) return;
+  const save = (section, value, msg) => run(async () => { await api("PUT", `/api/desk/${section}`, { value }); go("desk"); }, msg);
+  const del = (section, i) => confirm("Xoá mục này?") && save(section, meta[section].filter((_, j) => j !== i), "Đã xoá");
+  const chName = Object.fromEntries(acc.channels.map((c) => [c.id, c.name]));
+  const uName = Object.fromEntries(acc.users.map((u) => [u.username, u.name]));
+
+  // labels
+  const lName = h("input", { placeholder: "vd. VIP, Khiếu nại, Chờ thanh toán", maxlength: 40 });
+  const lColor = h("input", { type: "color", value: "#2563eb" });
+  const labels = h("div", { class: "card section" }, h("h2", {}, "Nhãn"),
+    h("p", { class: "muted" }, "Gắn lên hội thoại để lọc và báo cáo. Đổi tên thì các hội thoại đi theo."),
+    h("div", { class: "row" }, meta.labels.length ? meta.labels.map((l, i) => h("span", { class: "row" }, labelChipOf(l),
+      h("button", { class: "small", title: "Đổi tên", onclick: () => { const n = prompt("Tên mới:", l.name); if (n && n.trim() && n.trim() !== l.name) save("labels", meta.labels.map((x, j) => (j === i ? { ...x, name: n.trim(), was: l.name } : x)), "Đã đổi tên"); } }, "✎"),
+      h("button", { class: "small danger", onclick: () => del("labels", i) }, "✕"))) : h("span", { class: "muted" }, "Chưa có nhãn.")),
+    h("div", { class: "row section" }, lName, lColor,
+      h("button", { class: "primary", onclick: () => lName.value.trim() && save("labels", [...meta.labels, { name: lName.value.trim(), color: lColor.value }], "Đã thêm nhãn") }, "Thêm nhãn")));
+
+  // saved replies
+  const cTitle = h("input", { placeholder: "Tiêu đề, vd. Chào khách mới", maxlength: 80 });
+  const cText = h("textarea", { rows: 3, placeholder: "Nội dung. {name} được thay bằng tên khách." });
+  const canned = h("div", { class: "card section" }, h("h2", {}, "Câu trả lời mẫu"),
+    meta.canned.length ? h("table", {}, h("tbody", {}, meta.canned.map((x, i) => h("tr", {},
+      h("td", {}, h("b", {}, x.title)), h("td", { class: "pre" }, x.text),
+      h("td", {}, h("button", { class: "small danger", onclick: () => del("canned", i) }, "Xoá")))))) : h("p", { class: "muted" }, "Chưa có câu mẫu."),
+    h("div", { class: "section" }, h("label", {}, "Tiêu đề", cTitle), h("label", {}, "Nội dung", cText),
+      h("button", { class: "primary", onclick: () => cTitle.value.trim() && cText.value.trim() && save("canned", [...meta.canned, { title: cTitle.value.trim(), text: cText.value.trim() }], "Đã thêm câu mẫu") }, "Thêm câu mẫu")));
+
+  // teams
+  const tId = h("input", { placeholder: "mã, vd. cskh", maxlength: 48 });
+  const tName = h("input", { placeholder: "Tên nhóm, vd. Chăm sóc khách hàng" });
+  const tBoxes = acc.users.map((u) => { const box = h("input", { type: "checkbox", value: u.username }); return { box, el: h("label", { class: "check" }, box, h("span", {}, u.name)) }; });
+  const teams = h("div", { class: "card section" }, h("h2", {}, "Nhóm"),
+    h("p", { class: "muted" }, "Hội thoại giao cho nhóm hiện trong mục \"Của tôi\" của mọi thành viên, đến khi giao cho một người."),
+    meta.teams.length ? h("table", {}, h("tbody", {}, meta.teams.map((t, i) => h("tr", {},
+      h("td", {}, h("b", {}, t.name), " ", h("span", { class: "mono muted" }, t.id)),
+      h("td", {}, t.members.map((m) => uName[m] || m).join(", ") || "—"),
+      h("td", {}, h("button", { class: "small danger", onclick: () => del("teams", i) }, "Xoá")))))) : h("p", { class: "muted" }, "Chưa có nhóm."),
+    h("div", { class: "two section" }, h("label", {}, "Mã nhóm", tId), h("label", {}, "Tên nhóm", tName)),
+    h("div", { class: "checks" }, tBoxes.map((b) => b.el)),
+    h("button", { class: "primary", onclick: () => save("teams", [...meta.teams, { id: tId.value.trim(), name: tName.value.trim(), members: tBoxes.filter((b) => b.box.checked).map((b) => b.box.value) }], "Đã thêm nhóm") }, "Thêm nhóm"));
+
+  // triage rules
+  const r = {
+    name: h("input", { placeholder: "vd. Khiếu nại → CSKH" }),
+    keywords: h("input", { placeholder: "khiếu nại, hoàn tiền, lỗi (để trống = mọi tin)" }),
+    team: h("select", {}, h("option", { value: "" }, "—"), meta.teams.map((t) => h("option", { value: t.id }, t.name))),
+    assignee: h("select", {}, h("option", { value: "" }, "—"), acc.users.map((u) => h("option", { value: u.username }, u.name))),
+    handoff: h("input", { type: "checkbox" }),
+  };
+  const rCh = acc.channels.map((c) => { const box = h("input", { type: "checkbox", value: c.id }); return { box, el: h("label", { class: "check" }, box, h("span", {}, c.name)) }; });
+  const rLb = meta.labels.map((l) => { const box = h("input", { type: "checkbox", value: l.name }); return { box, el: h("label", { class: "check" }, box, labelChipOf(l)) }; });
+  const picked = (xs) => xs.filter((b) => b.box.checked).map((b) => b.box.value);
+  const describeRule = (x) => [
+    x.channels.length ? `kênh ${x.channels.map((c) => chName[c] || c).join(", ")}` : "mọi kênh",
+    x.keywords.length ? `có "${x.keywords.join('", "')}"` : "mọi tin",
+  ].join(", ") + " → " + [
+    x.labels.length ? `gắn ${x.labels.join(", ")}` : null, x.team ? `nhóm ${teamName(x.team)}` : null,
+    x.assignee ? `giao ${uName[x.assignee] || x.assignee}` : null, x.handoff ? "chuyển người trả lời (AI dừng)" : null,
+  ].filter(Boolean).join(", ");
+  deskMeta = { ...deskMeta, ...meta };
+  const rules = h("div", { class: "card section" }, h("h2", {}, "Quy tắc tự phân loại"),
+    h("p", { class: "muted" }, "Chạy với mỗi tin mới của khách (không phân biệt dấu, hoa thường). Chỉ giao người/nhóm khi hội thoại chưa có ai phụ trách."),
+    meta.rules.length ? h("table", {}, h("tbody", {}, meta.rules.map((x, i) => h("tr", {},
+      h("td", {}, h("b", {}, x.name)), h("td", {}, describeRule(x)),
+      h("td", {}, h("div", { class: "row" },
+        h("button", { class: "small", onclick: () => save("rules", meta.rules.map((y, j) => (j === i ? { ...y, enabled: !y.enabled } : y)), x.enabled ? "Đã tắt" : "Đã bật") }, x.enabled ? "Tắt" : "Bật"),
+        h("button", { class: "small danger", onclick: () => del("rules", i) }, "Xoá"))))))) : h("p", { class: "muted" }, "Chưa có quy tắc."),
+    h("div", { class: "two section" }, h("label", {}, "Tên quy tắc", r.name), h("label", {}, "Từ khoá (cách nhau bởi dấu phẩy)", r.keywords)),
+    h("h3", {}, "Kênh (không chọn = mọi kênh)"), h("div", { class: "checks" }, rCh.map((b) => b.el)),
+    h("h3", {}, "Gắn nhãn"), rLb.length ? h("div", { class: "checks" }, rLb.map((b) => b.el)) : h("p", { class: "muted" }, "Thêm nhãn ở trên trước."),
+    h("div", { class: "two section" }, h("label", {}, "Giao cho nhóm", r.team), h("label", {}, "Giao cho người", r.assignee)),
+    h("label", { class: "check" }, r.handoff, h("span", {}, "Chuyển cho người trả lời (AI dừng ở hội thoại này)")),
+    h("div", { class: "row section" }, h("button", { class: "primary", onclick: () => save("rules", [...meta.rules, {
+      name: r.name.value.trim(), keywords: r.keywords.value.split(",").map((k) => k.trim()).filter(Boolean),
+      channels: picked(rCh), labels: picked(rLb), team: r.team.value, assignee: r.assignee.value, handoff: r.handoff.checked,
+    }], "Đã thêm quy tắc") }, "Thêm quy tắc")));
+
+  const sla = h("input", { type: "number", min: 1, max: 10080, value: meta.sla_minutes, class: "narrow" });
+  render(h("h1", {}, "Cài đặt hộp thư"),
+    h("div", { class: "card section" }, h("h2", {}, "Mục tiêu thời gian trả lời (SLA)"),
+      h("div", { class: "row" }, "Khách chờ quá", sla, "phút là trễ",
+        h("button", { onclick: () => save("sla_minutes", parseInt(sla.value, 10), "Đã lưu") }, "Lưu"),
+        h("button", { class: "ghost", onclick: () => go("sla") }, "Xem báo cáo SLA →"))),
+    labels, canned, teams, rules);
+};
+const labelChipOf = (l) => colored(h("span", { class: "label" }, l.name), l.color);
+
+views.sla = async () => {
+  const hours = h("select", {}, [[24, "24 giờ qua"], [168, "7 ngày qua"], [720, "30 ngày qua"]].map(([v, t]) => h("option", { value: v }, t)));
+  const box = h("div", {});
+  const load = async () => {
+    const [d, meta] = await Promise.all([api("GET", `/api/inbox/sla?hours=${hours.value}`), api("GET", "/api/inbox/meta")]);
+    deskMeta = meta;
+    const target = d.target_seconds;
+    const pct = (x) => (x.answers ? `${Math.round((100 * x.within_target) / x.answers)}%` : "—");
+    put(box,
+      h("div", { class: "tiles" },
+        tile(d.counts.open, "hội thoại đang mở"), tile(d.counts.waiting, "khách đang chờ trả lời"),
+        tile(d.counts.late, `chờ quá ${fmtDur(target)}`), tile(d.counts.unassigned, "đang mở, chưa giao ai")),
+      h("div", { class: "card section" }, h("h2", {}, "Thời gian trả lời"),
+        d.responders.length ? h("table", {}, h("thead", {}, h("tr", {}, ["Ai trả lời", "Số lần", "Trung bình", "Lâu nhất", `Trong ${fmtDur(target)}`].map((t) => h("th", {}, t)))),
+          h("tbody", {}, d.responders.map((x) => h("tr", {},
+            h("td", {}, x.responder === "ai" ? "AI" : x.author || "Nhân viên"), h("td", {}, x.answers),
+            h("td", {}, fmtDur(x.avg_seconds)), h("td", {}, fmtDur(x.max_seconds)), h("td", {}, pct(x)))))) : h("p", { class: "muted" }, "Chưa có câu trả lời nào trong khoảng này.")),
+      h("div", { class: "card section" }, h("h2", {}, "Khách chờ lâu nhất"),
+        d.oldest_waiting.length ? h("table", {}, h("tbody", {}, d.oldest_waiting.map((c) => h("tr", {},
+          h("td", {}, chBadge(c.channel_info), " ", h("a", { href: "#", onclick: (ev) => { ev.preventDefault(); go("inbox", c.id); } }, c.customer_name || `Khách ${c.external_id}`)),
+          h("td", {}, c.labels.map(labelChip)),
+          h("td", {}, c.assignee ? userName(c.assignee) : c.team ? teamName(c.team) : h("span", { class: "muted" }, "chưa giao")),
+          h("td", {}, c.mode === "ai" ? "AI" : "người"),
+          h("td", {}, h("span", { class: `pill ${new Date(c.waiting_since) < Date.now() - target * 1000 ? "bad" : "warn"}` }, `chờ ${waitingFor(c.waiting_since)}`)))))) : h("p", { class: "muted" }, "Không khách nào đang chờ.")),
+      h("div", { class: "card section" }, h("h2", {}, "Việc của từng người / nhóm"),
+        d.workload.length ? h("table", {}, h("thead", {}, h("tr", {}, ["Người", "Nhóm", "Đang mở", "Khách đang chờ"].map((t) => h("th", {}, t)))),
+          h("tbody", {}, d.workload.map((w) => h("tr", {}, h("td", {}, w.assignee_name || "—"), h("td", {}, w.team_name || "—"), h("td", {}, w.open), h("td", {}, w.waiting))))) : h("p", { class: "muted" }, "Chưa giao hội thoại nào.")),
+    );
+  };
+  hours.addEventListener("change", () => run(load));
+  render(h("div", { class: "row spread" }, h("h1", {}, "Báo cáo SLA"), hours), box);
+  await run(load);
+  refreshTimer = setInterval(() => current === "sla" && run(load), 30000);
 };
 
 // --------------------------------------------------------------------------

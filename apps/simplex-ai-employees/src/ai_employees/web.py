@@ -653,7 +653,7 @@ def _channel_label(office: Office, channel: str) -> dict[str, str]:
     return {"type": ch.type if ch else "?", "name": f"{names.get(ch.type, '?') if ch else '?'} · {channel}"}
 
 
-def _conv_json(office: Office, conv: Any) -> dict[str, Any]:
+def _conv_json(office: Office, conv: Any, labels: list[str] | None = None) -> dict[str, Any]:
     from . import lang
 
     e = office.employees.get(conv.employee)
@@ -668,6 +668,7 @@ def _conv_json(office: Office, conv: Any) -> dict[str, Any]:
         "lang_source": language.get("source", ""),
         "country": language.get("country", ""),
         "staff_language": office.config.staff_language,
+        "labels": labels if labels is not None else office.hub.inbox.labels(conv.id),
     }
 
 
@@ -675,16 +676,30 @@ async def inbox_list(request: web.Request) -> web.Response:
     office = request.app[OFFICE]
     q = request.query
     user = _user(request)
+    who = q.get("assignee") or None
+    teams = None
+    if who == "me":  # assigned to me, or to one of my teams and nobody in particular
+        who, teams = user.username, office.hub.desk.teams_of(user.username) or None
     convs = office.hub.inbox.list(
-        channel=q.get("channel") or None, mode=q.get("mode") or None, query=q.get("q") or None
+        channel=q.get("channel") or None,
+        mode=q.get("mode") or None,
+        query=q.get("q") or None,
+        status=q.get("status") if q.get("status") in ("open", "closed") else None,
+        label=q.get("label") or None,
+        assignee=who,
+        teams=teams,
+        team=q.get("team") or None,
+        waiting=q.get("waiting") == "1",
     )
+    convs = [c for c in convs if user.sees(c.channel)]
+    labels = office.hub.inbox.labels_for([c.id for c in convs])
     channels = [
         {"id": f"simplex:{e.id}", **_channel_label(office, f"simplex:{e.id}")}
         for e in office.employees.values()
     ] + [{"id": c, **_channel_label(office, c)} for c in office.hub.channels]
     return _json(
         {
-            "conversations": [_conv_json(office, c) for c in convs if user.sees(c.channel)],
+            "conversations": [_conv_json(office, c, labels.get(c.id, [])) for c in convs],
             "channels": [c for c in channels if user.sees(c["id"])],
         }
     )
@@ -754,6 +769,131 @@ async def inbox_assign(request: web.Request) -> web.Response:
         raise ApiError(400, "Không đổi được nhân viên cho hội thoại này")
     _hub(request).inbox.set_employee(conv.id, emp)
     return await inbox_get(request)
+
+
+async def inbox_note(request: web.Request) -> web.Response:
+    conv = _inbox_conv(request)
+    text = str((await _body(request)).get("text", "")).strip()
+    if not text:
+        raise ApiError(400, "Nội dung trống")
+    _hub(request).add_note(conv.id, text[:4000], _user(request).name)
+    return await inbox_get(request)
+
+
+async def inbox_status(request: web.Request) -> web.Response:
+    conv = _inbox_conv(request)
+    status = (await _body(request)).get("status")
+    if status not in ("open", "closed"):
+        raise ApiError(400, "status phải là open hoặc closed")
+    _hub(request).inbox.set_status(conv.id, status)
+    return await inbox_get(request)
+
+
+async def inbox_assignee(request: web.Request) -> web.Response:
+    conv = _inbox_conv(request)
+    data = await _body(request)
+    assignee, team = str(data.get("assignee") or ""), str(data.get("team") or "")
+    users = request.app[USERS]
+    if assignee and ((u := users.get(assignee)) is None or not u.sees(conv.channel)):
+        raise ApiError(400, "Tài khoản này không có hoặc không được xem kênh này")
+    if team and team not in {t["id"] for t in _hub(request).desk.teams}:
+        raise ApiError(400, "Không có nhóm này")
+    _hub(request).inbox.set_assignee(conv.id, assignee, team)
+    return await inbox_get(request)
+
+
+async def inbox_labels(request: web.Request) -> web.Response:
+    conv = _inbox_conv(request)
+    labels = (await _body(request)).get("labels")
+    known = {lb["name"] for lb in _hub(request).desk.labels}
+    if not isinstance(labels, list) or not set(labels) <= known:
+        raise ApiError(400, "Nhãn chưa được khai báo trong cài đặt hộp thư")
+    _hub(request).inbox.set_labels(conv.id, labels)
+    return await inbox_get(request)
+
+
+async def inbox_summary(request: web.Request) -> web.Response:
+    conv = _inbox_conv(request)
+    try:
+        text = await _hub(request).summarize_thread(conv.id)
+    except KeyError:
+        raise ApiError(404, "no employee for this conversation") from None
+    except Exception as e:  # noqa: BLE001 - no model reachable
+        raise ApiError(502, f"AI chưa tóm tắt được: {e}") from None
+    return _json({"text": text})
+
+
+async def inbox_meta(request: web.Request) -> web.Response:
+    """What the inbox needs to show and edit conversations: labels, saved replies, teams, staff."""
+    office = request.app[OFFICE]
+    desk = office.hub.desk.get()
+    users = [
+        {"username": u["username"], "name": u["name"]} for u in request.app[USERS].list() if not u["disabled"]
+    ]
+    return _json(
+        {
+            **desk,
+            "users": users,
+            "me": _user(request).username,
+            "my_teams": office.hub.desk.teams_of(_user(request).username),
+        }
+    )
+
+
+async def inbox_sla(request: web.Request) -> web.Response:
+    """Answer times and who is waiting (admins: it counts every channel)."""
+    if not _user(request).is_admin:
+        raise ApiError(403, "Chỉ quản trị viên xem được báo cáo SLA")
+    from datetime import datetime, timedelta
+
+    from .state import now_iso
+
+    office = request.app[OFFICE]
+    try:
+        hours = min(max(float(request.query.get("hours", "24")), 1), 24 * 90)
+    except ValueError:
+        raise ApiError(400, "hours phải là số") from None
+    since = (datetime.now().astimezone() - timedelta(hours=hours)).isoformat(timespec="seconds")
+    target = office.hub.desk.sla_seconds()
+    report = office.hub.inbox.sla(since, now_iso(), target)
+    report["oldest_waiting"] = [_conv_json(office, c) for c in report["oldest_waiting"]]
+    names = {u["username"]: u["name"] for u in request.app[USERS].list()}
+    teams = {t["id"]: t["name"] for t in office.hub.desk.teams}
+    for w in report["workload"]:
+        w["assignee_name"] = names.get(w["assignee"], w["assignee"])
+        w["team_name"] = teams.get(w["team"], w["team"])
+    return _json({**report, "hours": hours, "target_seconds": target})
+
+
+async def desk_save(request: web.Request) -> web.Response:
+    """Admins: replace one section of the inbox settings (labels, canned, teams, rules, sla_minutes)."""
+    office = request.app[OFFICE]
+    hub = office.hub
+    section = request.match_info["section"]
+    value = (await _body(request)).get("value")
+    usernames = {u["username"] for u in request.app[USERS].list()}
+    before = {lb["name"] for lb in hub.desk.labels}
+    renames = {}
+    if section == "labels" and isinstance(value, list):
+        # {"name": new, "was": old}: a renamed label follows its conversations
+        renames = {x["was"]: x.get("name") for x in value if isinstance(x, dict) and x.get("was") in before}
+    try:
+        desk = hub.desk.save(section, value, usernames, _channel_ids(office))
+    except ValueError as e:
+        raise ApiError(400, str(e)) from None
+    if section == "labels":
+        now = {lb["name"] for lb in desk["labels"]}
+        for old in before - now:
+            hub.inbox.rename_label(old, renames.get(old) if renames.get(old) in now else None)
+        rules = [
+            {**r, "labels": [renames.get(x, x) for x in r["labels"] if renames.get(x, x) in now]}
+            for r in desk["rules"]
+        ]
+        rules = [r for r in rules if r["labels"] or r["team"] or r["assignee"] or r["handoff"]]
+        if rules != desk["rules"]:
+            desk = hub.desk.save("rules", rules, usernames, _channel_ids(office))
+    log.info("admin UI: %s changed inbox %s", _user(request).username, section)
+    return _json(desk)
 
 
 async def inbox_read(request: web.Request) -> web.Response:
@@ -1074,7 +1214,7 @@ async def hook_messages(request: web.Request) -> web.Response:
         after = int(request.query.get("after", "0"))
     except ValueError:
         raise ApiError(400, "after must be a message id") from None
-    msgs = [m for m in office.hub.inbox.messages(conv.id) if m["id"] > after] if conv else []
+    msgs = [m for m in office.hub.inbox.messages(conv.id, notes=False) if m["id"] > after] if conv else []
     return _json({"messages": msgs})
 
 
@@ -1120,11 +1260,19 @@ def create_app(office: Office, password: str) -> web.Application:
     r.add_get("/api/runlog", runlog)
     r.add_get("/api/inbox", inbox_list)
     r.add_get("/api/inbox/languages", languages)  # before {cid}
+    r.add_get("/api/inbox/meta", inbox_meta)
+    r.add_get("/api/inbox/sla", inbox_sla)
+    r.add_put("/api/desk/{section}", desk_save)
     r.add_get("/api/inbox/{cid}", inbox_get)
     r.add_post("/api/inbox/{cid}/reply", inbox_reply)
     r.add_post("/api/inbox/{cid}/mode", inbox_mode)
     r.add_post("/api/inbox/{cid}/assign", inbox_assign)
     r.add_post("/api/inbox/{cid}/read", inbox_read)
+    r.add_post("/api/inbox/{cid}/note", inbox_note)
+    r.add_post("/api/inbox/{cid}/status", inbox_status)
+    r.add_post("/api/inbox/{cid}/assignee", inbox_assignee)
+    r.add_post("/api/inbox/{cid}/labels", inbox_labels)
+    r.add_post("/api/inbox/{cid}/summary", inbox_summary)
     r.add_post("/api/inbox/{cid}/suggest", inbox_suggest)
     r.add_post("/api/inbox/{cid}/memory", inbox_memory)
     r.add_post(r"/api/inbox/{cid:\d+}/messages/{mid:\d+}/translate", inbox_translate)

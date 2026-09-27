@@ -246,7 +246,8 @@ def search_conversation(ctx: SkillContext, query: str) -> str:
     conv = employee.office.hub.inbox.by_contact(employee.id, ctx.contact_id)
     if conv is not None:
         found = [
-            (m["ts"], m["sender"], m["text"]) for m in employee.office.hub.inbox.messages(conv.id, limit=5000)
+            (m["ts"], m["sender"], m["text"])
+            for m in employee.office.hub.inbox.messages(conv.id, limit=5000, notes=False)
         ]
     else:  # no inbox record (older data): the remembered turns
         found = [

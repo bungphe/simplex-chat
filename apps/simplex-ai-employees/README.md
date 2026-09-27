@@ -306,7 +306,9 @@ Mở `http://127.0.0.1:8080`. Chủ đăng nhập với tên `admin` và mật k
 | Trang | Làm được gì |
 |---|---|
 | Tổng quan | Trạng thái từng nhân viên, số việc 24 giờ, yêu cầu chờ duyệt, lịch tiếp theo, địa chỉ SimpleX |
-| Hộp thư | **Mọi kênh chat trong một màn hình**: SimpleX, Zalo OA, Zalo cá nhân, Messenger, Telegram, WhatsApp, email, webhook. Trả lời khách, AI gợi ý câu trả lời, tiếp quản / giao lại cho AI, đổi nhân viên phụ trách |
+| Hộp thư | **Mọi kênh chat trong một màn hình**: SimpleX, Zalo OA, Zalo cá nhân, Messenger, Telegram, WhatsApp, email, webhook. Trả lời khách, AI gợi ý câu trả lời, tiếp quản / giao lại cho AI; nhãn, ghi chú nội bộ, câu trả lời mẫu, đóng/mở, giao cho người hoặc nhóm, AI tóm tắt hội thoại |
+| SLA | Khách đang chờ, chờ quá hạn, thời gian trả lời của AI và từng nhân viên, việc của từng người/nhóm |
+| Cài đặt hộp thư | Nhãn, câu trả lời mẫu, nhóm, quy tắc tự phân loại, mục tiêu thời gian trả lời |
 | Kênh chat & SimpleX | Trạng thái từng kênh, lấy tin ngay, đăng nhập Zalo cá nhân bằng QR; địa chỉ SimpleX kèm mã QR, tạo link mời một lần, kết nối bằng link |
 | Nhân viên | Sửa vai trò, gán model, mức suy nghĩ, bật/tắt skill, mở kênh hành động, quy tắc sửa sai, chạy/tạm dừng lịch, gỡ quản trị viên, khôi phục cấu hình gốc |
 | Chờ duyệt | Duyệt hoặc từ chối yêu cầu của mọi nhân viên, xem lịch sử |
@@ -466,6 +468,27 @@ Câu trả lời được POST tới `reply_url` dạng `{"conversation_id", "te
 
 Webhook `/hooks/...` dùng chung cổng với giao diện quản trị. Nếu nền tảng ở ngoài máy chủ cần gọi vào, chỉ
 mở đường dẫn `/hooks/` qua reverse proxy có HTTPS, không mở `/api/` và trang quản trị.
+
+### Làm việc nhóm trong hộp thư
+
+- **Trạng thái:** hội thoại *đang mở* hoặc *đã đóng*. Đóng khi xong việc; khách nhắn lại thì tự mở lại.
+- **Giao việc:** giao cho một người, một nhóm, hoặc cả hai. Bộ lọc *Của tôi* gồm hội thoại giao cho mình và
+  hội thoại giao cho nhóm của mình mà chưa có ai nhận; *Chưa giao cho ai*; *Khách đang chờ*; lọc theo nhãn.
+- **Ghi chú nội bộ:** tick *Ghi chú nội bộ* khi soạn: tin chỉ nhân viên thấy (nền vàng), không gửi cho khách,
+  không đưa vào trí nhớ hay công cụ tìm kiếm của AI, không có trong `GET /hooks/<kênh>/...` của cầu nối.
+- **Câu trả lời mẫu:** chọn trong ô *Câu trả lời mẫu…*; `{name}` được thay bằng tên khách. Sửa trước khi gửi.
+- **Tóm tắt (AI):** AI đọc cả hội thoại (kể cả ghi chú) và viết bản tóm tắt cho người tiếp nhận: khách cần gì, đã
+  hứa gì, vấn đề, việc tiếp theo. Không lưu, trừ khi bấm *Lưu thành ghi chú*.
+- **Quy tắc tự phân loại** (Cài đặt hộp thư): với mỗi tin mới của khách, nếu đúng kênh và có từ khoá (không phân
+  biệt dấu, hoa thường: "khieu nai" khớp "Khiếu nại") thì gắn nhãn, giao nhóm/người (chỉ khi chưa có ai phụ trách),
+  hoặc chuyển cho người trả lời (AI dừng ở hội thoại đó). Ví dụ: "khiếu nại, hoàn tiền, lừa đảo" → nhãn *Khiếu
+  nại*, nhóm CSKH, AI dừng.
+- **SLA:** mỗi lần khách chờ được tính từ tin đầu tiên chưa được trả lời tới câu trả lời của AI hoặc nhân viên (tin
+  hệ thống và ghi chú không tính). Trang SLA cho thấy số khách đang chờ, chờ quá mục tiêu, thời gian trả lời trung
+  bình, lâu nhất, tỉ lệ đúng hạn theo AI và từng nhân viên, và danh sách khách chờ lâu nhất. Chỉ quản trị viên xem.
+
+Nhân viên bán hàng dùng được mọi tính năng trên trong các kênh mình được xem; nhãn, câu mẫu, nhóm và quy tắc do
+quản trị viên khai báo.
 
 ## Mở rộng quy mô và đo tải
 

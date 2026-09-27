@@ -20,7 +20,7 @@ from .db import Database
 from .state import now_iso
 
 # Closed vocabularies, so counts and filters never meet a surprise value.
-KINDS = ("reply", "consult", "routine", "action", "suggest", "memory", "translate")
+KINDS = ("reply", "consult", "routine", "action", "suggest", "memory", "translate", "summary")
 STATUSES = ("ok", "busy", "refused", "step_limit", "error", "queued", "rejected", "skipped")
 
 SCHEMA = """

@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .channels import Channel, ChannelError, InboundMessage, make_channel
+from .desk import Desk
 from .inbox import EXTERNAL_BASE, Conversation, Inbox, describe
 from .lang import detect
 from .state import now_iso
@@ -50,6 +51,7 @@ class ChannelHub:
         self.office = office
         state_dir = Path(office.config.state_dir)
         self.inbox = Inbox(office.db or state_dir / "inbox.db")
+        self.desk = Desk(office.docs)
         old = state_dir / "channel_secrets.json"
         if old.exists():  # tokens kept before they moved into the database
             saved = json.loads(old.read_text(encoding="utf-8"))
@@ -152,7 +154,9 @@ class ChannelHub:
                     conv.id, "customer", m.text, m.customer_name, m.external_id, iso(m.ts), m.attachments
                 ):
                     added += 1
-                    if m.ts >= self.answer_from.get(ch.id, self.started):
+                    if self.triage(conv, m.text):
+                        to_answer.discard(conv.id)
+                    elif m.ts >= self.answer_from.get(ch.id, self.started):
                         to_answer.add(conv.id)
                 continue
             # A message from the business side that we did not send: someone answered on
@@ -209,6 +213,54 @@ class ChannelHub:
         task.add_done_callback(self._tasks.discard)
 
     webhook_inbound = push_inbound
+
+    def triage(self, conv: Conversation, text: str) -> bool:
+        """Apply the inbox rules to a new customer message: labels, a team or person (only
+        if nobody has the conversation yet). True when a rule handed it to a person."""
+        rules = self.desk.matching_rules(conv.channel, text)
+        if not rules:
+            return False
+        if labels := [label for r in rules for label in r["labels"]]:
+            self.inbox.add_labels(conv.id, labels)
+        now = self.inbox.conversation(conv.id) or conv
+        team = now.team or next((r["team"] for r in rules if r["team"]), "")
+        assignee = now.assignee or next((r["assignee"] for r in rules if r["assignee"]), "")
+        if (team, assignee) != (now.team, now.assignee):
+            self.inbox.set_assignee(conv.id, assignee, team)
+        if any(r["handoff"] for r in rules):
+            if now.mode != "human":
+                self.inbox.set_mode(conv.id, "human")
+                log.info("inbox: conversation %s handed to staff by a triage rule", conv.id)
+            return True
+        return False
+
+    def add_note(self, conv_id: int, text: str, author: str) -> int | None:
+        """An internal note: staff only, never sent to the customer or shown to the AI."""
+        return self.inbox.add(conv_id, "note", text, author)
+
+    async def summarize_thread(self, conv_id: int) -> str:
+        """A short briefing for staff picking up the conversation (nothing is stored)."""
+        conv = self.inbox.conversation(conv_id)
+        if conv is None:
+            raise KeyError(conv_id)
+        employee = self.employee_for(conv)
+        if employee is None:
+            raise KeyError(conv.employee)
+        who = {
+            "customer": "Khách",
+            "ai": "AI",
+            "human": "Nhân viên",
+            "system": "Hệ thống",
+            "note": "Ghi chú nội bộ",
+        }
+        lines = [
+            f"{who[m['sender']]}{' ' + m['author'] if m['author'] and m['sender'] != 'customer' else ''} "
+            f"({m['ts'][:16]}): {describe(m['text'], m['attachments'])[:1500]}"
+            for m in self.inbox.messages(conv_id, limit=120)
+        ]
+        return await employee.agent.summarize_thread(
+            conv.contact_id, conv.customer_name, "\n".join(lines), self.office.config.staff_language
+        )
 
     # ------------------------------------------------------------------ #
     # answering
@@ -367,7 +419,10 @@ class ChannelHub:
         """Mirror a SimpleX message; returns the conversation and the stored message id."""
         conv = self.inbox.upsert(f"simplex:{employee.id}", str(contact_id), name, employee.id)
         employee.state.observe_language(contact_id, detect(text))
-        return conv, self.inbox.add(conv.id, "customer", text, name, attachments=attachments)
+        mid = self.inbox.add(conv.id, "customer", text, name, attachments=attachments)
+        if mid is not None and self.triage(conv, text):
+            conv = self.inbox.conversation(conv.id) or conv
+        return conv, mid
 
     def simplex_outbound(self, employee: Employee, contact_id: int, text: str, sender: str) -> None:
         conv = self.inbox.upsert(f"simplex:{employee.id}", str(contact_id), "", employee.id)
