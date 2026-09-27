@@ -154,7 +154,7 @@ async def test_guest_buys_now_and_preorders_the_rest(site):
         note="Giao buổi chiều",
     )
     assert "Cảm ơn quý khách" in body
-    now, pre = sorted(office.inventory.orders(), key=lambda o: o["id"])
+    now, pre = sorted(office.inventory.orders(), key=lambda o: o["kind"] != "now")
     assert (now["kind"], pre["kind"]) == ("now", "preorder")
     assert now["channel"] == "web" and now["source"] == "storefront" and now["email"] == "hoa@example.com"
     assert now["total"] == 20_000_000 and pre["total"] == 10_000_000
@@ -175,9 +175,13 @@ async def test_guest_buys_now_and_preorders_the_rest(site):
     assert (await shop.get(f"/order/{now['code']}?t=0000")).status == 404
     assert (await shop.get(link.replace(now["code"], pre["code"]))).status == 404
 
-    # a guest with a VIP customer's phone number still sees the normal prices, and
-    # never changes that customer's details
-    office.hub.crm.update(contact["id"], vip=True)
+    # the guest's email stays on the order: nobody logs in with an email a guest typed
+    assert contact["email"] == ""
+
+    # a guest with a VIP customer's phone number still sees the normal prices, never
+    # changes that customer's details, and their order never joins that customer's
+    # account (they could read its orders and invoices, or have their own shown there)
+    office.hub.crm.update(contact["id"], vip=True, email="hoa@example.com")
     assert "9.000.000" not in await (await shop.get("/")).text()
     await post(shop, "/cart/add", item="SOFA-01", qty="1")
     await post(
@@ -190,7 +194,9 @@ async def test_guest_buys_now_and_preorders_the_rest(site):
         address="Chỗ khác",
     )
     latest = office.inventory.orders()[0]
-    assert latest["total"] == 10_000_000 and latest["contact_id"] == contact["id"]
+    assert latest["total"] == 10_000_000 and latest["contact_id"] != contact["id"]
+    assert latest["email"] == "la@evil.test"
+    assert office.hub.crm.contact(latest["contact_id"])["email"] == ""
     assert office.hub.crm.contact(contact["id"])["email"] == "hoa@example.com"
     assert office.hub.crm.contact(contact["id"])["address"] == "12 Lê Lợi, Quận 1"
 
@@ -206,11 +212,13 @@ async def test_customer_login_with_a_code_vip_prices_and_invoices(site):
     await shop.get("/login")
     # somebody unknown: the same answer, and no code goes anywhere
     r, _ = await post(shop, "/login", who="ai.do@nowhere.test")
+    await settle(office.hub)
     assert r.headers["Location"] == "/verify" and mails == []
     _r, body = await post(shop, "/verify", status=400, code="123456")
     assert "Mã không đúng" in body
 
     await post(shop, "/login", who="HOA@example.com")
+    await settle(office.hub)
     assert mails[-1][1]["To"] == "hoa@example.com" and "mã đăng nhập" in mails[-1][1]["Subject"]
     code = last_code(mails)
     await post(shop, "/verify", status=400, code="000000" if code != "000000" else "111111")
@@ -251,14 +259,17 @@ async def test_customer_login_with_a_code_vip_prices_and_invoices(site):
 
     # a code tried too often stops working, even when it is finally right
     await post(shop, "/login", who="0901234567")
+    await settle(office.hub)
     code = last_code(mails)
     for _ in range(CODE_ATTEMPTS):
         await post(shop, "/verify", status=400, code="999999" if code != "999999" else "888888")
     await post(shop, "/verify", status=400, code=code)
     # and at most three codes per 15 minutes
     await post(shop, "/login", who="0901234567")
+    await settle(office.hub)
     sent = len(mails)
     await post(shop, "/login", who="0901234567")
+    await settle(office.hub)
     assert len(mails) == sent
 
 
@@ -270,6 +281,7 @@ async def test_login_code_on_the_chat_channel_is_hidden_from_staff(site):
     assert contact["phone"]
     await shop.get("/login")
     await post(shop, "/login", who="0912.345.678")
+    await settle(office.hub)
     assert mails == []  # no email: the code went to the chat
     _kind, body = platforms.sent[-1]
     code = re.search(r"\b(\d{6})\b", str(body)).group(1)
@@ -406,7 +418,7 @@ async def test_the_shop_in_the_simplex_apps(site):
 
     # a one-tap login to the website, confirmed with a button there
     reply = await menu.handle(11, "shop", "", "Hoa")
-    link = re.search(rf"{SITE}(/l/\d+/[\w-]+)", reply).group(1)
+    link = re.search(rf"{SITE}(/l/[\w-]+/[\w-]+)", reply).group(1)
     await shop.get(link)
     oid, token = link.split("/")[2:]
     r, _ = await post(shop, "/l", id=oid, token=token)

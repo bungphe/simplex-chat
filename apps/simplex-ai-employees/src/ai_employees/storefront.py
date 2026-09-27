@@ -23,6 +23,7 @@ import html
 import ipaddress
 import json
 import logging
+import re
 import secrets
 import time
 from datetime import UTC, datetime, timedelta
@@ -52,12 +53,15 @@ CREATE TABLE IF NOT EXISTS sf_codes (
   attempts {int} NOT NULL DEFAULT 0, used {int} NOT NULL DEFAULT 0, created TEXT NOT NULL, expires TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS sf_codes_contact ON sf_codes (contact_id, created)
 """
+HANDLE_INDEX = "CREATE INDEX IF NOT EXISTS sf_codes_handle ON sf_codes (handle)"
 KEY = "storefront"
 SESSION_DAYS = 30
 CODE_MINUTES = 10
 CODE_ATTEMPTS = 5
 CODES_PER_CONTACT = 3  # per 15 minutes
-REQUESTS_PER_IP = 20  # login requests per 15 minutes
+REQUESTS_PER_IP = 20  # login requests (and, apart, code checks) per 15 minutes
+CHECKOUTS_PER_IP = 10  # web orders per hour
+OPEN_ORDERS_PER_PHONE = 3  # unpaid web orders waiting for the shop
 CART_LINES = 30
 SESSION, CSRF, CART, LOGIN, LANG = "sf_session", "sf_csrf", "sf_cart", "sf_login", "sf_lang"
 CSP = (
@@ -84,6 +88,7 @@ OFFICE: web.AppKey[Office] = web.AppKey("office")
 SHOP: web.AppKey[Storefront] = web.AppKey("shop")
 NEW_CSRF: web.RequestKey[str] = web.RequestKey("new_csrf")
 CUSTOMER: web.RequestKey[dict[str, Any] | None] = web.RequestKey("customer")
+LIVE_CART: web.RequestKey[list[dict[str, Any]]] = web.RequestKey("live_cart")
 
 
 def _utc(delta: timedelta = timedelta()) -> str:
@@ -103,6 +108,9 @@ class Storefront:
         self.crm = office.hub.crm
         self.db = self.crm.db
         self.db.script(SCHEMA)
+        # codes are found by a random handle, never by their (guessable) row id
+        self.db.add_columns("sf_codes", {"handle": "TEXT NOT NULL DEFAULT ''"})
+        self.db.execute(HANDLE_INDEX)
         self.public_url = public_url
         self._ip_hits: dict[str, list[float]] = {}
 
@@ -136,23 +144,28 @@ class Storefront:
             )
         return self.crm.contact(int(row["id"])) if row else None
 
-    def allow_ip(self, ip: str) -> bool:
+    def allow_ip(
+        self, ip: str, what: str = "login", limit: int = REQUESTS_PER_IP, window: float = 900
+    ) -> bool:
         now = time.monotonic()
-        hits = [t for t in self._ip_hits.get(ip, []) if now - t < 900]
+        key = f"{what}:{ip}"
+        hits = [t for t in self._ip_hits.get(key, []) if now - t < window]
         if len(self._ip_hits) > 10000:  # a flood of addresses: forget the oldest
             self._ip_hits.clear()
-        if len(hits) >= REQUESTS_PER_IP:
-            self._ip_hits[ip] = hits
+        if len(hits) >= limit:
+            self._ip_hits[key] = hits
             return False
-        self._ip_hits[ip] = [*hits, now]
+        self._ip_hits[key] = [*hits, now]
         return True
 
-    async def request_code(self, who: str) -> int:
-        """Send a login code to a known customer; returns the code's id (0 when nobody was
-        found or nothing could be sent: the page says the same either way)."""
+    async def request_code(self, who: str, handle: str) -> bool:
+        """Send a login code to a known customer, found later by `handle` (a random
+        value in the visitor's cookie). False when nobody was found or nothing could be
+        sent: the visitor sees the same page either way, and the page does not wait for
+        the sending (see `login`), so neither tells who is a customer."""
         contact = self.find_contact(who)
         if contact is None:
-            return 0
+            return False
         cid = int(contact["id"])
         recent = self.db.row(
             "SELECT COUNT(*) AS n FROM sf_codes WHERE contact_id=? AND created>=?",
@@ -160,7 +173,7 @@ class Storefront:
         )
         if recent and int(recent["n"]) >= CODES_PER_CONTACT:
             log.info("storefront: too many login codes for contact %s", cid)
-            return 0
+            return False
         code = f"{secrets.randbelow(1_000_000):06d}"
         shop = self.inv.settings()["shop_name"] or tr("Cửa hàng")
         text = tr(
@@ -190,41 +203,49 @@ class Storefront:
                 pass
         if not via:
             log.info("storefront: no way to send a login code to contact %s", cid)
-            return 0
-        oid = self.db.execute(
-            "INSERT INTO sf_codes (contact_id, code_hash, via, created, expires) VALUES (?, ?, ?, ?, ?) RETURNING id",
-            (cid, "", via, _utc(), _utc(timedelta(minutes=CODE_MINUTES))),
-        )
-        assert oid is not None
+            return False
+        self._store_code(cid, via, handle, code)
+        return True
+
+    def _store_code(self, contact_id: int, via: str, handle: str, code: str) -> None:
         self.db.execute(
-            "UPDATE sf_codes SET code_hash=? WHERE id=?", (self.sign("code", f"{oid}:{code}"), oid)
+            "INSERT INTO sf_codes (contact_id, code_hash, via, handle, created, expires) VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                contact_id,
+                self.sign("code", f"{handle}:{code}"),
+                via,
+                handle,
+                _utc(),
+                _utc(timedelta(minutes=CODE_MINUTES)),
+            ),
         )
-        return int(oid)
 
     def magic_link(self, contact_id: int) -> str:
         """A one-time login link for a customer who asked for it in the chat (they are
         already known there): valid for CODE_MINUTES, once."""
-        token = secrets.token_urlsafe(24)
-        oid = self.db.execute(
-            "INSERT INTO sf_codes (contact_id, code_hash, via, created, expires) VALUES (?, ?, ?, ?, ?) RETURNING id",
-            (contact_id, "", "link", _utc(), _utc(timedelta(minutes=CODE_MINUTES))),
-        )
-        assert oid is not None
-        self.db.execute(
-            "UPDATE sf_codes SET code_hash=? WHERE id=?", (self.sign("code", f"{oid}:{token}"), oid)
-        )
-        return f"{self.public_url}/l/{oid}/{token}"
+        handle, token = secrets.token_urlsafe(12), secrets.token_urlsafe(24)
+        self._store_code(contact_id, "link", handle, token)
+        return f"{self.public_url}/l/{handle}/{token}"
 
-    def verify_code(self, code_id: int, code: str) -> int | None:
-        """The contact id when the code is right (once), else None."""
-        row = self.db.row("SELECT * FROM sf_codes WHERE id=?", (code_id,))
-        if row is None or row["used"] or int(row["attempts"]) >= CODE_ATTEMPTS or row["expires"] < _utc():
+    def verify_code(self, handle: str, code: str, link: bool = False) -> int | None:
+        """The contact id when the code is right (once), else None. A login link's token
+        works only as a link, a code sent by email or chat only on the code page."""
+        if not handle:
             return None
-        if not hmac.compare_digest(self.sign("code", f"{code_id}:{code.strip()}"), row["code_hash"]):
-            self.db.execute("UPDATE sf_codes SET attempts=attempts+1 WHERE id=?", (code_id,))
+        row = self.db.row("SELECT * FROM sf_codes WHERE handle=? ORDER BY id DESC LIMIT 1", (handle,))
+        if (
+            row is None
+            or (row["via"] == "link") != link
+            or row["used"]
+            or int(row["attempts"]) >= CODE_ATTEMPTS
+            or row["expires"] < _utc()
+        ):
+            return None
+        if not hmac.compare_digest(self.sign("code", f"{handle}:{code.strip()}"), row["code_hash"]):
+            self.db.execute("UPDATE sf_codes SET attempts=attempts+1 WHERE id=?", (row["id"],))
             return None
         if (
-            self.db.execute("UPDATE sf_codes SET used=1 WHERE id=? AND used=0 RETURNING id", (code_id,))
+            self.db.execute("UPDATE sf_codes SET used=1 WHERE id=? AND used=0 RETURNING id", (row["id"],))
             is None
         ):
             return None
@@ -277,9 +298,13 @@ class Storefront:
             "list_price": self.inv.major(price["list_price"]) if price else None,
             "promo": (price or {}).get("promo", ""),
             "vip_price": bool(price and price["vip"]),
-            "available": max(0, int(p["available"])),
+            # what checkout can reserve: the stock of the warehouse the website sells from
+            "available": max(0, self.inv._available(self._warehouse(), int(p["id"]))),
             "can_preorder": incoming,
         }
+
+    def _warehouse(self) -> int:
+        return int(self.inv.default_warehouse()["id"])
 
     def product(self, sku: str, vip: bool = False) -> dict[str, Any] | None:
         row = self.inv.by_sku(sku)
@@ -329,9 +354,15 @@ class Storefront:
             except InventoryError:
                 continue
             line["total"] = line["price"] * line["qty"]
+            line["item"] = it
             total += line["total"]
             lines.append(line)
         return lines, total
+
+    def live_cart(self, cart: list[dict[str, Any]], vip: bool) -> list[dict[str, Any]]:
+        """The cart without what can no longer be bought on the website (taken off it,
+        no price, a combo that ended): what the cart page shows is what is ordered."""
+        return [ln["item"] for ln in self.cart_lines(cart, vip)[0]]
 
     # ------------------------------------------------------------------ #
     # checkout
@@ -343,19 +374,37 @@ class Storefront:
             if form.get("email") and not logged_in["email"] and valid_email(form["email"]):
                 self.crm.update(cid, email=form["email"])
             return cid
-        # A guest: the contact with this phone number, else a new one. A guest never
-        # changes an existing customer's details (they are not logged in as them).
+        # A guest is not logged in: nothing they type is verified. Their order joins a
+        # contact with this phone number only when nobody can log in as that contact (no
+        # email, no chat: e.g. an earlier guest, or a customer staff met at the counter);
+        # it never joins a customer's account (whose orders, invoices and points the
+        # guest would otherwise add to or be shown), and a guest never changes an existing
+        # contact's details. The email stays on the order (for its confirmation), never
+        # on the contact, where it would let whoever typed it log in.
         key = phone_key(form.get("phone", ""))
-        row = (
-            self.db.row("SELECT id FROM crm_contacts WHERE phone_key=? ORDER BY id LIMIT 1", (key,))
+        rows = (
+            self.db.rows("SELECT id, email FROM crm_contacts WHERE phone_key=? ORDER BY id", (key,))
             if key
-            else None
+            else []
         )
-        if row:
-            return int(row["id"])
-        contact = self.crm.create_contact(form.get("name", ""), form.get("phone", ""), form.get("email", ""))
+        for row in rows:
+            if not row["email"] and not self.crm.conversations(int(row["id"])):
+                return int(row["id"])
+        contact = self.crm.create_contact(form.get("name", ""), form.get("phone", ""))
         self.crm.locate(int(contact["id"]), form.get("address", ""))
         return int(contact["id"])
+
+    def open_orders(self, phone: str) -> int:
+        """Unpaid web orders with this phone number still waiting for the shop."""
+        key = phone_key(phone)
+        n = 0
+        for row in self.db.rows(
+            "SELECT phone FROM inv_orders WHERE source='storefront' AND status='confirmed' AND paid=0 "
+            "AND created>=? ORDER BY id DESC LIMIT 200",
+            (_utc(timedelta(days=-7)),),
+        ):
+            n += phone_key(row["phone"]) == key
+        return n
 
     def checkout(
         self, cart: list[dict[str, Any]], form: dict[str, str], logged_in: dict[str, Any] | None
@@ -373,7 +422,16 @@ class Storefront:
         if not form.get("address", "").strip():
             raise InventoryError(tr("Vui lòng nhập địa chỉ giao hàng"))
         vip = bool(logged_in and logged_in["vip"])
-        wh = int(self.inv.default_warehouse()["id"])
+        cart = self.live_cart(cart, vip)
+        if not cart:
+            raise InventoryError(tr("Giỏ hàng trống"))
+        if logged_in is None and self.open_orders(phone) >= OPEN_ORDERS_PER_PHONE:
+            raise InventoryError(
+                tr(
+                    "Số điện thoại này đã có đơn đang chờ cửa hàng xác nhận. Vui lòng gọi cửa hàng để đặt thêm."
+                )
+            )
+        wh = self._warehouse()
         now_items: list[dict[str, Any]] = []
         later: list[dict[str, Any]] = []
         for it in cart:
@@ -404,11 +462,11 @@ class Storefront:
             "email": email or (logged_in or {}).get("email", ""),
         }
         orders = []
-        try:
-            if now_items:
-                orders.append(self.inv.create_order(now_items, kind="now", **common))
+        try:  # the preorder first: it is the part that is more likely refused
             if later:
                 orders.append(self.inv.create_order(later, kind="preorder", **common))
+            if now_items:
+                orders.insert(0, self.inv.create_order(now_items, kind="now", **common))
         except InventoryError:
             for o in orders:  # all or nothing
                 self.inv.cancel_order(int(o["id"]), actor="web")
@@ -486,6 +544,8 @@ def _money(office: Office) -> Any:
 
 
 def _cart(request: web.Request) -> list[dict[str, Any]]:
+    if request.get(LIVE_CART) is not None:  # changed by this request
+        return list(request[LIVE_CART])
     shop = request.app[SHOP]
     raw = request.cookies.get(CART, "")
     data, _, sig = raw.rpartition(".")
@@ -495,7 +555,11 @@ def _cart(request: web.Request) -> list[dict[str, Any]]:
         cart = json.loads(base64.urlsafe_b64decode(data.encode()))
     except ValueError:
         return []
-    return [x for x in cart if isinstance(x, dict) and int(x.get("qty") or 0) > 0][:CART_LINES]
+    if not isinstance(cart, list):
+        return []
+    return [x for x in cart if isinstance(x, dict) and isinstance(x.get("qty"), int) and x["qty"] > 0][
+        :CART_LINES
+    ]
 
 
 def _set_cart(request: web.Request, resp: web.StreamResponse, cart: list[dict[str, Any]]) -> None:
@@ -561,7 +625,10 @@ async def _headers(request: web.Request, handler: Any) -> web.StreamResponse:
         or default()
     )
     with use_language(lang):  # the pages, and the emails and chat messages they send
-        resp = await handler(request)
+        try:
+            resp = await handler(request)
+        except web.HTTPException as exc:  # redirects and refusals get the same headers
+            resp = exc
     if chosen:
         _cookie(request, resp, LANG, chosen, days=365)
     for k, v in HEADERS.items():
@@ -570,7 +637,15 @@ async def _headers(request: web.Request, handler: Any) -> web.StreamResponse:
     resp.headers.setdefault("Cache-Control", "no-store")
     if request.get(NEW_CSRF):
         _cookie(request, resp, CSRF, request[NEW_CSRF], days=1)
+    if isinstance(resp, web.HTTPException) and resp.status >= 300:
+        raise resp
     return resp
+
+
+def _order_id(code: str) -> int | None:
+    """The order id in a code like DH00012 (None for anything else)."""
+    m = re.fullmatch(r"(?:DH)?0*([0-9]{1,12})", code.strip().upper())
+    return int(m.group(1)) if m else None
 
 
 def _page(request: web.Request, title: str, body: str, status: int = 200) -> web.Response:
@@ -833,12 +908,24 @@ def _cart_body(request: web.Request, error: str = "", values: dict[str, str] | N
 
 
 async def cart_page(request: web.Request) -> web.Response:
-    return _page(request, tr("Giỏ hàng"), _cart_body(request))
+    cart = _cart(request)
+    who = request[CUSTOMER]
+    live = request.app[SHOP].live_cart(cart, bool(who and who["vip"]))
+    if live == cart:
+        return _page(request, tr("Giỏ hàng"), _cart_body(request))
+    request[LIVE_CART] = live  # taken off the website since: out of the cart, for good
+    resp = _page(request, tr("Giỏ hàng"), _cart_body(request))
+    _set_cart(request, resp, live)
+    return resp
 
 
 async def checkout(request: web.Request) -> web.Response:
     form = await _form(request)
     shop = request.app[SHOP]
+    if not shop.allow_ip(_client_ip(request), "checkout", CHECKOUTS_PER_IP, 3600):
+        return _page(
+            request, tr("Giỏ hàng"), tr("<p>Quá nhiều yêu cầu, vui lòng thử lại sau ít phút.</p>"), 429
+        )
     try:
         orders = shop.checkout(_cart(request), form, request[CUSTOMER])
     except (InventoryError, ValueError) as e:
@@ -899,12 +986,13 @@ def _order_body(request: web.Request, oid: int) -> str:
 
 async def order_page(request: web.Request) -> web.Response:
     shop = request.app[SHOP]
-    code = request.match_info["code"].upper()
+    oid = _order_id(request.match_info["code"])
     who = request[CUSTOMER]
     try:
-        oid = int(code.removeprefix("DH"))
+        if oid is None:
+            raise InventoryError("")
         order = request.app[OFFICE].inventory.order(oid)
-    except (ValueError, InventoryError):
+    except InventoryError:
         return _page(request, tr("Không tìm thấy"), tr("<p>Không tìm thấy đơn hàng.</p>"), 404)
     mine = who is not None and order["contact_id"] == who["id"]
     if not (mine or shop.check("order", order["code"], request.query.get("t", ""))):
@@ -928,10 +1016,11 @@ async def login(request: web.Request) -> web.Response:
         return _page(
             request, tr("Đăng nhập"), tr("<p>Quá nhiều yêu cầu, vui lòng thử lại sau ít phút.</p>"), 429
         )
-    code_id = await shop.request_code(form.get("who", "")[:200])
+    # The same answer, at once, whoever typed: the code is sent in the background.
+    handle = secrets.token_urlsafe(18)
+    request.app[OFFICE].hub.spawn(shop.request_code(form.get("who", "")[:200], handle))
     resp = web.HTTPSeeOther("/verify")
-    ref = str(code_id or secrets.randbelow(10**9) + 10**9)  # the same page either way
-    _cookie(request, resp, LOGIN, f"{ref}.{shop.sign('login', ref)}", days=CODE_MINUTES / 1440)
+    _cookie(request, resp, LOGIN, f"{handle}.{shop.sign('login', handle)}", days=CODE_MINUTES / 1440)
     raise resp
 
 
@@ -953,10 +1042,14 @@ async def verify_page(request: web.Request) -> web.Response:
 async def verify(request: web.Request) -> web.Response:
     form = await _form(request)
     shop = request.app[SHOP]
-    ref, _, sig = request.cookies.get(LOGIN, "").partition(".")
+    if not shop.allow_ip(_client_ip(request), "verify"):
+        return _page(
+            request, tr("Nhập mã"), tr("<p>Quá nhiều yêu cầu, vui lòng thử lại sau ít phút.</p>"), 429
+        )
+    handle, _, sig = request.cookies.get(LOGIN, "").rpartition(".")
     contact_id = (
-        shop.verify_code(int(ref), form.get("code", ""))
-        if ref.isdigit() and shop.check("login", ref, sig)
+        shop.verify_code(handle, form.get("code", ""))
+        if handle and shop.check("login", handle, sig)
         else None
     )
     if contact_id is None:
@@ -983,8 +1076,11 @@ async def link_page(request: web.Request) -> web.Response:
 async def link_login(request: web.Request) -> web.Response:
     form = await _form(request)
     shop = request.app[SHOP]
-    ref = form.get("id", "")
-    contact_id = shop.verify_code(int(ref), form.get("token", "")) if ref.isdigit() else None
+    if not shop.allow_ip(_client_ip(request), "verify"):
+        return _page(
+            request, tr("Đăng nhập"), tr("<p>Quá nhiều yêu cầu, vui lòng thử lại sau ít phút.</p>"), 429
+        )
+    contact_id = shop.verify_code(form.get("id", ""), form.get("token", ""), link=True)
     if contact_id is None:
         return _page(
             request,
@@ -1079,12 +1175,12 @@ async def account_save(request: web.Request) -> web.Response:
 async def invoice(request: web.Request) -> web.Response:
     who = request[CUSTOMER]
     office = request.app[OFFICE]
+    oid = _order_id(request.match_info["code"])
     try:
-        oid = int(request.match_info["code"].upper().removeprefix("DH"))
-        order = office.inventory.order(oid)
-    except (ValueError, InventoryError):
+        order = office.inventory.order(oid) if oid is not None else None
+    except InventoryError:
         order = None
-    if who is None or order is None or order["contact_id"] != who["id"]:
+    if who is None or order is None or oid is None or order["contact_id"] != who["id"]:
         return _page(request, tr("Không tìm thấy"), tr("<p>Không tìm thấy hoá đơn.</p>"), 404)
     resp = web.Response(text=receipt_html(office, oid, lang=current()), content_type="text/html")
     resp.headers["Content-Security-Policy"] = RECEIPT_CSP

@@ -73,7 +73,7 @@ def _receipt_html(office: Office, oid: int, printable: bool, lang: str) -> str:
     )
     bank = f"<p>{e(tr('Chuyển khoản'))}: {e(shop['bank_info'])}</p>" if shop["bank_info"] and r["due"] else ""
     tax = f" · {e(tr('MST'))} {e(shop['tax_code'])}" if shop["tax_code"] else ""
-    head = "".join(f"<td>{e(tr(x))}</td>" for x in ("Sản phẩm", "SL", "Đơn giá", "Thành tiền"))
+    head = "".join(f"<td>{e(x)}</td>" for x in (tr("Sản phẩm"), tr("SL"), tr("Đơn giá"), tr("Thành tiền")))
     button = f'<p class="c"><button onclick="print()">{e(tr("In"))}</button></p>' if printable else ""
     return (
         f'<!doctype html><html lang="{lang}"{" dir=rtl" if lang in RTL else ""}><head><meta charset="utf-8">'
