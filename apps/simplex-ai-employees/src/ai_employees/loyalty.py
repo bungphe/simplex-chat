@@ -128,6 +128,11 @@ class Loyalty:
         contact = crm.contact(contact_id) or {}
         shop = self.office.inventory.settings()["shop_name"] or "cửa hàng"
         text = CONGRATS.format(name=contact.get("name") or "quý khách", shop=shop, card=vip_card(contact_id))
+        web = getattr(self.office, "storefront", None)
+        if web is not None and web.public_url:
+            text += (
+                f" Quý khách có thể đăng nhập {web.public_url}/login để mua với giá VIP và xem điểm, hoá đơn."
+            )
         convs = crm.conversations(contact_id)
         target = order.get("conversation_id") or (convs[-1] if convs else None)
         sent = await hub.notify_customer(int(target), text) if target else False

@@ -5,7 +5,6 @@ Registered by web.create_app; access per role is decided by web._may."""
 from __future__ import annotations
 
 import hmac
-import html
 import os
 from datetime import datetime, timedelta
 from typing import Any
@@ -148,6 +147,7 @@ def pos_order_create(request: web.Request, d: dict[str, Any]) -> Any:
         contact_id=int(contact["id"]) if contact else None,
         customer_name=str(d.get("customer_name") or (contact or {}).get("name") or ""),
         phone=str(d.get("phone") or (contact or {}).get("phone") or ""),
+        email=str(d.get("email") or (contact or {}).get("email") or ""),
         address=str(d.get("address", "")),
         discount=d.get("discount", 0),
         vip=bool(contact and contact.get("vip")),
@@ -223,48 +223,48 @@ def pos_step(request: web.Request, d: dict[str, Any]) -> Any:
 
 async def pos_receipt(request: web.Request) -> web.Response:
     """A printable receipt (the browser's print dialog)."""
+    from .invoices import RECEIPT_CSP, receipt_html
+
     oid = _id(request)
     _own_order(request, oid)
-    r = _office(request).inventory.receipt(oid)
-    cur = "đ" if r["shop"]["currency"] == "VND" else r["shop"]["currency"]
-    e = html.escape
-
-    def m(v: Any) -> str:
-        return e(f"{v:,}".replace(",", ".") + f" {cur}")
-
-    rows = "".join(
-        f"<tr><td>{e(i['name'])}<br><small>{e(i['sku'])}{' · ' + e(i['promo']) if i['promo'] else ''}</small></td>"
-        f"<td>{i['qty']}</td><td>{m(i['unit_price'])}</td><td>{m(i['line_total'])}</td></tr>"
-        for i in r["items"]
-    )
-    pays = "".join(
-        f"<div>{e(p['method'])}: {m(p['amount'])}{' · thối ' + m(p['change']) if p['change'] else ''}</div>"
-        for p in r["payments"]
-    )
-    shop = r["shop"]
-    body = f"""<!doctype html><html lang="vi"><head><meta charset="utf-8"><title>{e(r["code"])}</title>
-<style>body{{font-family:system-ui,sans-serif;max-width:380px;margin:12px auto;font-size:13px}}table{{width:100%;border-collapse:collapse}}
-td{{padding:3px 2px;vertical-align:top;border-bottom:1px dashed #ccc}}td:nth-child(n+2){{text-align:right;white-space:nowrap}}
-h1{{font-size:16px;margin:0}}.c{{text-align:center}}.t{{font-weight:700;font-size:15px}}@media print{{button{{display:none}}}}</style></head>
-<body><div class="c"><h1>{e(shop["shop_name"] or "Hoá đơn bán hàng")}</h1><div>{e(shop["shop_address"])}</div>
-<div>{e(shop["shop_phone"])}{" · MST " + e(shop["tax_code"]) if shop["tax_code"] else ""}</div>
-<p><b>{e(r["code"])}</b> · {e(r["created"][:16].replace("T", " "))}<br>{e(r["customer_name"])} {e(r["phone"])}</p></div>
-<table><tr><td>Sản phẩm</td><td>SL</td><td>Đơn giá</td><td>Thành tiền</td></tr>{rows}</table>
-<p>Tạm tính: {m(r["subtotal"])}<br>{"Giảm giá: -" + m(r["discount"] + r["voucher_discount"]) + "<br>" if r["discount"] or r["voucher_discount"] else ""}
-{"Phí giao hàng: " + m(r["shipping_fee"]) + "<br>" if r["shipping_fee"] else ""}<span class="t">Tổng: {m(r["total"])}</span>
-{"<br><small>Đã gồm VAT " + str(r["vat_pct"]) + "%: " + m(r["vat_amount"]) + "</small>" if r["vat_pct"] else ""}</p>
-{pays}<p>Đã trả: {m(r["paid"])}{" · <b>Còn lại: " + m(r["due"]) + "</b>" if r["due"] else ""}</p>
-{"<p>Chuyển khoản: " + e(shop["bank_info"]) + "</p>" if shop["bank_info"] else ""}
-<p class="c">{e(shop["receipt_footer"])}</p><p class="c"><button onclick="print()">In</button></p></body></html>"""
-    # the page's own inline style and the print button: a CSP just for this page
     return web.Response(
-        text=body,
+        text=receipt_html(_office(request), oid),
         content_type="text/html",
         charset="utf-8",
-        headers={
-            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"
-        },
+        headers={"Content-Security-Policy": RECEIPT_CSP},  # the page's own style and print button
     )
+
+
+async def pos_email_invoice(request: web.Request, d: dict[str, Any]) -> Any:
+    """The invoice by email: to the address given, the sale's, or the customer's."""
+    from .invoices import email_invoice
+
+    oid = _id(request)
+    _own_order(request, oid)
+    sent_to = await email_invoice(_office(request), oid, str(d.get("to") or "").strip() or None)
+    return {"sent_to": sent_to}
+
+
+def mail_settings(request: web.Request, d: dict[str, Any]) -> Any:
+    mailer = _office(request).mailer
+    if request.method == "PUT":
+        return mailer.save(d)
+    return mailer.public()
+
+
+async def mail_test(request: web.Request, d: dict[str, Any]) -> Any:
+    office = _office(request)
+    to = str(d.get("to") or "").strip()
+    shop = office.inventory.settings()["shop_name"] or "Cửa hàng"
+    await office.mailer.send(to, f"{shop} – thử gửi email", "Email của cửa hàng đã hoạt động.")
+    return {"sent_to": to}
+
+
+async def crm_geocode(request: web.Request, _d: dict[str, Any]) -> Any:
+    """Locate customers with an address but no coordinates (Google Geocoding)."""
+    office = _office(request)
+    result = await office.delivery.geocode_customers()
+    return {**result, **office.sales.located()}
 
 
 async def pos_send_receipt(request: web.Request, _d: dict[str, Any]) -> Any:
@@ -339,6 +339,12 @@ def mk_overview(request: web.Request, _d: dict[str, Any]) -> Any:
         "sets": inv.set_templates(),
         "platforms": list(_sales().PLATFORMS),
         "channel_types": sorted({ch.type for ch in office.hub.channels.values()} | {"simplex"}),
+        # showrooms for "customers within X km"
+        "showrooms": [
+            {"id": w["id"], "name": w["name"], "located": bool(w.get("lat"))}
+            for w in inv.warehouses(active_only=True)
+        ],
+        "located": office.sales.located(),
     }
 
 
@@ -387,11 +393,16 @@ def mk_segment(request: web.Request, _d: dict[str, Any]) -> Any:
     sales = _office(request).sales
     q = request.query
     rows = sales.segment(
-        q.get("kind", "top"), int(q.get("limit") or 500), q.get("channel", ""), int(q.get("min_orders") or 0)
+        q.get("kind", "top"),
+        int(q.get("limit") or 500),
+        q.get("channel", ""),
+        int(q.get("min_orders") or 0),
+        near_wh=int(q["near_wh"]) if q.get("near_wh") else None,
+        radius_km=float(q["radius_km"]) if q.get("radius_km") else None,
     )
     if q.get("format") == "csv":
         return _csv(sales.segment_csv(rows), "khach-hang.csv")
-    return {"customers": rows}
+    return {"customers": rows, "located": sales.located()}
 
 
 def mk_weekly(request: web.Request, _d: dict[str, Any]) -> Any:
@@ -677,6 +688,7 @@ def add_routes(r: web.UrlDispatcher) -> None:
     g(r"/api/pos/orders/{id:\d+}/receipt", pos_receipt)
     p(r"/api/pos/orders/{id:\d+}/payments", handler(pos_pay))
     p(r"/api/pos/orders/{id:\d+}/send-receipt", handler(pos_send_receipt))
+    p(r"/api/pos/orders/{id:\d+}/email-invoice", handler(pos_email_invoice))
     p(r"/api/pos/orders/{id:\d+}/{step}", handler(pos_step))
     g("/api/pos/customers", handler(pos_customers))
     p("/api/pos/customers", handler(pos_customer_create))
@@ -717,6 +729,11 @@ def add_routes(r: web.UrlDispatcher) -> None:
     r.add_delete("/api/inventory/marketplaces/{mid}", handler(mp_remove))
     p("/api/inventory/marketplaces/{mid}/sync", handler(mp_sync))
     p(r"/api/inventory/products/{id:\d+}/external-sku", handler(mp_sku))
+
+    g("/api/inventory/mail", handler(mail_settings))
+    r.add_put("/api/inventory/mail", handler(mail_settings))
+    p("/api/inventory/mail/test", handler(mail_test))
+    p("/api/crm/geocode", handler(crm_geocode))
 
     g("/api/notices", handler(notices))
     p("/api/notices", handler(notices))

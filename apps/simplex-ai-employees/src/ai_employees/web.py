@@ -92,7 +92,7 @@ def _may(user: User, method: str, path: str) -> bool:
         elif any(path == p or path.startswith(p + "/") for p in _AREA_PREFIXES[area]):
             # settings and the marketplace credentials stay with admins
             if area == "inventory" and path.startswith(
-                ("/api/inventory/settings", "/api/inventory/marketplaces")
+                ("/api/inventory/settings", "/api/inventory/marketplaces", "/api/inventory/mail")
             ):
                 return method == "GET" and user.role == "manager"
             return True
@@ -959,6 +959,7 @@ def _contact_json(request: web.Request, contact: dict[str, Any], full: bool = Fa
     company = crm.company(int(contact["company_id"])) if contact.get("company_id") else None
     out["company"] = company["name"] if company else ""
     if full:
+        out.update({k: contact.get(k) for k in ("address", "lat", "lng")})
         user = _user(request)
         convs = [office.hub.inbox.conversation(c) for c in crm.conversations(int(contact["id"]))]
         out["conversations"] = [_conv_json(office, c) for c in convs if c and user.sees(c.channel)]

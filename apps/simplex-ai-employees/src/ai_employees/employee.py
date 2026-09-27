@@ -43,6 +43,8 @@ ADMIN_HELP = """\
 /ai routines — lịch làm việc; /ai run <id> — chạy ngay; /ai routine pause|resume <id>
 /ai pending — yêu cầu chờ duyệt; /ai approve <số>; /ai reject <số> [lý do]
 /ai releases — hành động được tự làm; /ai release <hành động>; /ai hold <hành động>
+/ai report — doanh thu hôm nay; /ai orders — đơn đang mở
+/ai stock <mã hoặc tên> — tồn kho; /ai lowstock — hàng sắp hết
 /ai pause — tạm dừng mọi việc; /ai resume — bật lại
 /ai forget all — xoá toàn bộ trí nhớ hội thoại
 /ai reset — bỏ mọi thay đổi, quay về file cấu hình"""
@@ -66,6 +68,14 @@ class EmployeeBot(Bot):
         self.address = await super()._sync_address(user)
         return self.address
 
+    def _profile_to_wire(self) -> Any:
+        """The shop's command menu, as the SimpleX apps show it (with parameters)."""
+        from .chat_menu import CUSTOMER_MENU
+
+        p = super()._profile_to_wire()
+        p["preferences"]["commands"] = CUSTOMER_MENU
+        return p
+
 
 class Employee:
     def __init__(self, cfg: EmployeeConfig, office: Office, state_dir: str):
@@ -85,6 +95,9 @@ class Employee:
             welcome=cfg.welcome,
             commands=[BotCommand(keyword="forget", label="Xoá lịch sử trò chuyện / Forget me")],
         )
+        from .chat_menu import ChatMenu
+
+        self.menu = ChatMenu(self)
         self.bot.on_message(content_type="text", chat_type="direct")(self._on_text)
         self.bot.on_message(chat_type="direct")(self._on_other)
 
@@ -124,6 +137,11 @@ class Employee:
             word, _, rest = text[1:].partition(" ")
             if word in ("admin", "ai", "forget"):
                 await msg.reply(await self.command(cid, word, rest.strip(), by=name))
+                return
+            from .chat_menu import CUSTOMER_WORDS
+
+            if word in CUSTOMER_WORDS:
+                await msg.reply(await self.menu.handle(cid, word, rest, name))
                 return
         if text:
             await self._incoming(msg, cid, name, text, [])
@@ -275,6 +293,7 @@ class Employee:
             self.state.add_admin(cid)
             if by:
                 self.state.remember_contact(cid, by)
+            self._spawn(self.menu.sync_admin_menu(cid))
             return f"Bạn đã là quản trị viên của {self.base.display_name}.\n\n{ADMIN_HELP}"
         if not self.state.is_admin(cid):
             return "Lệnh này chỉ dành cho quản trị viên. Gửi /admin <mã> để đăng nhập."
@@ -287,6 +306,14 @@ class Employee:
         st = self.state
         if sub in ("", "help"):
             return ADMIN_HELP
+        if sub == "report":
+            return self.menu.report()
+        if sub == "orders":
+            return self.menu.open_orders()
+        if sub == "stock":
+            return self.menu.stock(rest)
+        if sub == "lowstock":
+            return self.menu.low_stock()
         if sub == "show":
             return (
                 f"*{s.display_name}* ({s.id})\n"
@@ -522,6 +549,15 @@ class Office:
         self.sales = Sales(self)
         self.delivery = Delivery(self)
         self.marketplaces = Marketplaces(self)
+        from .invoices import install_auto_invoice
+        from .mailer import Mailer
+
+        self.mailer = Mailer(self)
+        install_auto_invoice(self)
+        from .storefront import Storefront
+
+        # the web shop, when configured (also used by the chat commands: /shop login links)
+        self.storefront = Storefront(self, config.storefront.public_url) if config.storefront else None
 
     @property
     def http_client(self) -> httpx2.AsyncClient:
@@ -631,11 +667,18 @@ class Office:
             for e in self.employees.values() if primary else ():
                 await stack.enter_async_context(e.bot)
                 log.info("%s (%s) address: %s", e.base.display_name, e.id, e.bot.address)
+                for cid in list(e.state.admins):  # admins see the management menu in their app
+                    e._spawn(e.menu.sync_admin_menu(cid))
             if self.config.admin_ui:
                 from .web import start_admin_ui
 
                 runner = await start_admin_ui(self, self.config.admin_ui)
                 stack.push_async_callback(runner.cleanup)
+            if self.config.storefront:
+                from .storefront import start_storefront
+
+                shop = await start_storefront(self, self.config.storefront)
+                stack.push_async_callback(shop.cleanup)
             await asyncio.gather(
                 *([self._scheduler()] if primary else []),
                 self.hub.run(self._stopping),

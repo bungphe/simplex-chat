@@ -83,6 +83,16 @@ class AdminUIConfig:
 
 
 @dataclass(frozen=True)
+class StorefrontConfig:
+    """The public web shop (storefront.py): its own listener, meant for the Internet
+    behind an HTTPS reverse proxy; public_url is used in links sent to customers."""
+
+    host: str = "127.0.0.1"
+    port: int = 8081
+    public_url: str = ""
+
+
+@dataclass(frozen=True)
 class AppConfig:
     employees: tuple[EmployeeConfig, ...]
     state_dir: str
@@ -92,6 +102,7 @@ class AppConfig:
     models: dict[str, ModelProfile] = field(default_factory=dict)
     actions: dict[str, ActionDef] = field(default_factory=dict)
     admin_ui: AdminUIConfig | None = None
+    storefront: StorefrontConfig | None = None
     channels: tuple[ChannelConfig, ...] = ()
     # After downtime, customer messages up to this old still get an AI answer.
     catch_up_hours: float = 12.0
@@ -236,6 +247,7 @@ def parse_config(raw: dict[str, Any], base_dir: Path) -> AppConfig:
         models=models,
         actions=actions,
         admin_ui=parse_admin_ui(raw.get("admin_ui")),
+        storefront=parse_storefront(raw.get("storefront")),
         channels=tuple(channels),
         catch_up_hours=float(raw.get("catch_up_hours", 12)),
         staff_language=str(raw.get("staff_language") or "vi"),
@@ -243,6 +255,19 @@ def parse_config(raw: dict[str, Any], base_dir: Path) -> AppConfig:
         or (os.environ.get(str(raw["database_url_env"])) if raw.get("database_url_env") else None)
         or None,
         shards=int((raw.get("cluster") or {}).get("shards", 1)),
+    )
+
+
+def parse_storefront(raw: dict[str, Any] | None) -> StorefrontConfig | None:
+    if not raw:
+        return None
+    url = str(raw.get("public_url") or "").rstrip("/")
+    if url and not url.startswith(("https://", "http://")):
+        raise ConfigError("storefront.public_url must start with https://")
+    return StorefrontConfig(
+        host=os.environ.get("AI_STOREFRONT_HOST") or str(raw.get("host", "127.0.0.1")),
+        port=int(raw.get("port", 8081)),
+        public_url=url,
     )
 
 

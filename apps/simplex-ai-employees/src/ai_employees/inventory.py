@@ -276,6 +276,7 @@ class Inventory:
                 "delivery_date": "TEXT NOT NULL DEFAULT ''",
                 "external_ref": "TEXT NOT NULL DEFAULT ''",
                 "returned": "TEXT",
+                "email": "TEXT NOT NULL DEFAULT ''",
             },
         )
         db.add_columns(
@@ -284,7 +285,13 @@ class Inventory:
         )
         db.add_columns(
             "inv_products",
-            {"box_count": "{int} NOT NULL DEFAULT 1", "external_skus": "TEXT NOT NULL DEFAULT '{}'"},
+            {
+                "box_count": "{int} NOT NULL DEFAULT 1",
+                "external_skus": "TEXT NOT NULL DEFAULT '{}'",
+                # the web shop (storefront.py): a picture, and whether the product is shown there
+                "image_url": "TEXT NOT NULL DEFAULT ''",
+                "on_web": "{int} NOT NULL DEFAULT 1",
+            },
         )
         # Other parts of the office react to sales and stock changes (loyalty points,
         # marketplace sync): listener(event, data), called after the change is committed.
@@ -605,6 +612,13 @@ class Inventory:
             fields["rules"] = json.dumps(self._rules(data["rules"], partial=True)) if data["rules"] else ""
         if "active" in data:
             fields["active"] = 1 if data["active"] else 0
+        if "image_url" in data:
+            url = str(data["image_url"] or "").strip()[:500]
+            if url and not url.startswith("https://"):
+                raise InventoryError("Ảnh sản phẩm: địa chỉ https://…")
+            fields["image_url"] = url
+        if "on_web" in data:
+            fields["on_web"] = 1 if data["on_web"] else 0
         fields["updated"] = now_iso()
         return self._save("inv_products", pid, fields, "SKU")
 
@@ -757,6 +771,9 @@ class Inventory:
                     "active",
                     "auto_pricing",
                     "supplier_id",
+                    "description",
+                    "image_url",
+                    "on_web",
                 )
             },
             "attributes": json.loads(p["attributes"] or "{}"),
@@ -1777,6 +1794,7 @@ class Inventory:
         shipping_fee: Any = 0,
         delivery_date: str = "",
         external_ref: str = "",
+        email: str = "",
     ) -> dict[str, Any]:
         """Confirm a sale and reserve its goods. `kind` "now": from stock in the warehouse;
         "preorder": on incoming purchase orders (`po_id` per item, or the earliest ETA),
@@ -1806,8 +1824,8 @@ class Inventory:
         with self.db.transaction():
             oid = self.db.execute(
                 "INSERT INTO inv_orders (kind, warehouse_id, contact_id, conversation_id, customer_name, phone, address, note, "
-                "source, created_by, created, salesperson, channel, delivery_date, external_ref) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+                "source, created_by, created, salesperson, channel, delivery_date, external_ref, email) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
                 (
                     kind,
                     wh,
@@ -1824,6 +1842,7 @@ class Inventory:
                     channel[:20],
                     str(delivery_date or "")[:10],
                     external_ref[:80],
+                    email.strip().lower()[:200],
                 ),
             )
             assert oid is not None

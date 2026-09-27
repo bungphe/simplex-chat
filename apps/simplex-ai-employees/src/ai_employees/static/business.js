@@ -192,6 +192,8 @@ views.pos = async () => {
         o.status === "confirmed" && !o.items.some((i) => i.status === "awaiting") ? h("button", { class: "primary", onclick: () => step("complete", "Đã giao hàng, trừ kho") }, "Đã giao (xuất kho)") : null,
         h("a", { class: "button", href: `/api/pos/orders/${o.id}/receipt`, target: "_blank", rel: "noopener" }, "In hoá đơn"),
         o.contact_id || o.conversation_id ? h("button", { onclick: () => step("send-receipt", "Đã gửi hoá đơn cho khách") }, "Gửi hoá đơn qua chat") : null,
+        h("button", { onclick: () => { const to = prompt("Gửi hoá đơn tới email (để trống: email của khách):", o.email || ""); if (to !== null) run(async () => {
+          const r = await api("POST", `/api/pos/orders/${o.id}/email-invoice`, { to }); toast(`Đã gửi hoá đơn tới ${r.sent_to}`); drawPayment(t); }); } }, "Gửi hoá đơn qua email"),
         isManager() && o.status === "confirmed" ? h("button", { class: "danger", onclick: () => confirm(`Huỷ ${o.code}?`) && step("cancel", "Đã huỷ") }, "Huỷ đơn") : null,
         isManager() && o.status === "completed" ? h("button", { class: "danger", onclick: () => { const why = prompt("Lý do trả hàng:"); if (why !== null) step("return", "Đã nhận trả hàng", { reason: why }); } }, "Trả hàng / hoàn tác") : null,
         h("button", { onclick: closeTab }, "Xong, đóng đơn")));
@@ -373,8 +375,14 @@ views.marketing = async () => {
   const ad = { campaign: h("input", { placeholder: "Chiến dịch" }), platform: h("select", {}, d.platforms.map((p) => h("option", { value: p }, p))),
     amount: h("input", { class: "price", placeholder: "chi phí" }), start: h("input", { type: "date", value: now }), end: h("input", { type: "date", value: now }) };
   const seg = { kind: h("select", {}, h("option", { value: "top" }, "Mua nhiều nhất"), h("option", { value: "vip" }, "Khách VIP")),
-    channel: h("select", {}, h("option", { value: "" }, "mọi kênh"), d.channel_types.map((c) => h("option", { value: c }, c))), min: h("input", { class: "narrow", value: 1 }) };
+    channel: h("select", {}, h("option", { value: "" }, "mọi kênh"), d.channel_types.map((c) => h("option", { value: c }, c))), min: h("input", { class: "narrow", value: 1 }),
+    near: h("select", {}, h("option", { value: "" }, "mọi nơi"), d.showrooms.map((w) => h("option", { value: w.id, disabled: !w.located }, `quanh ${w.name}${w.located ? "" : " (chưa có toạ độ)"}`))),
+    km: h("input", { class: "narrow", value: 30, type: "number", min: 1 }) };
+  const segQuery = () => `kind=${seg.kind.value}&channel=${seg.channel.value}&min_orders=${seg.min.value || 0}` + (seg.near.value ? `&near_wh=${seg.near.value}&radius_km=${seg.km.value || 30}` : "");
   const segOut = h("div", {});
+  const located = h("p", { class: "muted" }, `${d.located.located}/${d.located.n} khách đã có toạ độ` + (d.located.to_geocode ? ` · ${d.located.to_geocode} khách có địa chỉ chưa tìm toạ độ` : ""),
+    d.located.to_geocode && isManager() ? h("button", { class: "small", onclick: () => run(async () => { const r = await api("POST", "/api/crm/geocode", {});
+      toast(`Đã tìm toạ độ ${r.located} khách${r.failed ? `, ${r.failed} địa chỉ không tìm được` : ""}`); go("marketing"); }) }, "Tìm toạ độ từ địa chỉ") : null);
   const weekly = h("div", {});
   const selected = (sel) => [...sel.selectedOptions].map((o) => Number(o.value));
   const setsText = h("textarea", { rows: 8 }, JSON.stringify(d.sets, null, 1));
@@ -408,10 +416,11 @@ views.marketing = async () => {
       h("div", { class: "row section" }, ad.campaign, ad.platform, ad.amount, ad.start, ad.end,
         h("button", { class: "primary", onclick: () => save("ads", { campaign: ad.campaign.value, platform: ad.platform.value, amount: ad.amount.value, start_date: ad.start.value, end_date: ad.end.value }, "Đã ghi chi phí") }, "Ghi chi phí"))),
     h("div", { class: "card section" }, h("h2", {}, "Tập khách cho remarketing"),
-      h("div", { class: "row" }, seg.kind, seg.channel, field("mua từ (đơn)", seg.min),
-        h("button", { onclick: () => run(async () => { const r = await api("GET", `/api/marketing/segment?kind=${seg.kind.value}&channel=${seg.channel.value}&min_orders=${seg.min.value || 0}`);
-          put(segOut, h("p", { class: "muted" }, `${r.customers.length} khách`), h("table", {}, h("tbody", {}, r.customers.slice(0, 30).map((c) => h("tr", {}, h("td", {}, c.name), h("td", {}, c.phone), h("td", {}, c.email), h("td", {}, m(c.total_spent)), h("td", {}, c.vip ? "VIP" : "")))))); }) }, "Xem"),
-        h("button", { onclick: () => { window.location.href = `/api/marketing/segment?kind=${seg.kind.value}&channel=${seg.channel.value}&min_orders=${seg.min.value || 0}&format=csv`; } }, "Xuất CSV")), segOut),
+      h("div", { class: "row" }, seg.kind, seg.channel, field("mua từ (đơn)", seg.min), seg.near, field("trong bán kính (km)", seg.km),
+        h("button", { onclick: () => run(async () => { const r = await api("GET", `/api/marketing/segment?${segQuery()}`);
+          put(segOut, h("p", { class: "muted" }, `${r.customers.length} khách`), h("table", {}, h("tbody", {}, r.customers.slice(0, 30).map((c) => h("tr", {}, h("td", {}, c.name), h("td", {}, c.phone), h("td", {}, c.email), h("td", {}, m(c.total_spent)), h("td", {}, c.vip ? "VIP" : ""),
+            h("td", {}, c.distance_km != null ? `${c.distance_km} km` : "")))))); }) }, "Xem"),
+        h("button", { onclick: () => { window.location.href = `/api/marketing/segment?${segQuery()}&format=csv`; } }, "Xuất CSV")), located, segOut),
     h("div", { class: "card section" }, h("h2", {}, "Biến động giá tuần này"),
       h("button", { onclick: () => run(async () => { const r = await api("GET", "/api/marketing/weekly-prices");
         put(weekly, r.products.length ? h("table", {}, h("thead", {}, h("tr", {}, ["SKU", "Sản phẩm", "Giá đầu tuần", "Giá nay", "Đã bán", "Doanh thu", "Lãi", "Còn", "% còn của lô"].map((x) => h("th", {}, x)))),

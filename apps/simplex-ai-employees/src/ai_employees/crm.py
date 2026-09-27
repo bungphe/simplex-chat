@@ -58,7 +58,7 @@ CREATE INDEX IF NOT EXISTS crm_links_contact ON crm_links (contact_id)
 _PHONE = re.compile(r"(?<![\w+])(?:\+?84|0)(?:[ .-]?\d){9}(?!\d)|(?<![\w+])\+\d(?:[ .-]?\d){7,13}(?!\d)")
 _EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)*\.[a-zA-Z]{2,}")
 FREE_MAIL = {"gmail.com", "yahoo.com", "yahoo.com.vn", "hotmail.com", "outlook.com", "icloud.com", "live.com"}
-FIELDS = ("name", "phone", "email", "company_id", "notes", "vip")
+FIELDS = ("name", "phone", "email", "company_id", "notes", "vip", "address", "lat", "lng")
 
 
 def phone_key(phone: str) -> str:
@@ -103,6 +103,8 @@ class CRM:
                 "orders_count": "{int} NOT NULL DEFAULT 0",
             },
         )
+        # the customer's address and where it is (for delivery and "customers near a showroom")
+        db.add_columns("crm_contacts", {"address": "TEXT NOT NULL DEFAULT ''", "lat": "REAL", "lng": "REAL"})
 
     # contacts of conversations
 
@@ -185,6 +187,22 @@ class CRM:
     def contact(self, contact_id: int) -> dict[str, Any] | None:
         return self.db.row("SELECT * FROM crm_contacts WHERE id=?", (contact_id,))
 
+    def locate(
+        self, contact_id: int, address: str, lat: float | None = None, lng: float | None = None
+    ) -> None:
+        """Remember where a customer lives (from a delivery or a web order), without
+        overwriting an address staff already entered."""
+        contact = self.contact(contact_id)
+        if contact is None:
+            return
+        fields: dict[str, Any] = {}
+        if address.strip() and not contact["address"]:
+            fields["address"] = address
+        if lat is not None and lng is not None and (contact["lat"] is None or fields):
+            fields.update(lat=lat, lng=lng)
+        if fields:
+            self.update(contact_id, **fields)
+
     def update(self, contact_id: int, **fields: Any) -> dict[str, Any]:
         fields = {k: v for k, v in fields.items() if k in FIELDS}
         if "phone" in fields:
@@ -192,9 +210,15 @@ class CRM:
             fields["phone_key"] = phone_key(fields["phone"])
         if "email" in fields:
             fields["email"] = str(fields["email"] or "").strip().lower()[:200]
-        for key, limit in (("name", 120), ("notes", 4000)):
+        for key, limit in (("name", 120), ("notes", 4000), ("address", 300)):
             if key in fields:
                 fields[key] = str(fields[key] or "").strip()[:limit]
+        for key, bound in (("lat", 90), ("lng", 180)):
+            if key in fields:
+                value = fields[key]
+                fields[key] = None if value in (None, "") else float(value)
+                if fields[key] is not None and not -bound <= fields[key] <= bound:
+                    raise ValueError(f"{key} out of range")
         if "vip" in fields:
             fields["vip"] = 1 if fields["vip"] else 0
         if "company_id" in fields:
@@ -284,8 +308,12 @@ class CRM:
         if a is None or b is None:
             raise KeyError(other if a else keep)
         filled = {
-            k: b[k] for k in ("name", "phone", "phone_key", "email", "company_id", "vip") if not a[k] and b[k]
+            k: b[k]
+            for k in ("name", "phone", "phone_key", "email", "company_id", "vip", "address")
+            if not a[k] and b[k]
         }
+        if a["lat"] is None and b["lat"] is not None:
+            filled.update(lat=b["lat"], lng=b["lng"])
         if b["notes"]:
             filled["notes"] = f"{a['notes']}\n{b['notes']}".strip()[:4000]
         with self.db.transaction():

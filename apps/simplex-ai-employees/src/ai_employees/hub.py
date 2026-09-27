@@ -306,6 +306,27 @@ class ChannelHub:
             return False
         return True
 
+    async def send_private(self, conv_id: int, text: str, placeholder: str) -> bool:
+        """A secret for the customer only (a login code): sent on their channel, while the
+        inbox keeps only `placeholder`, so staff never see it."""
+        conv = self.inbox.conversation(conv_id)
+        employee = self.employee_for(conv) if conv else None
+        if conv is None or employee is None:
+            return False
+        try:
+            if conv.is_simplex:
+                await self.office.cluster.simplex_send(employee, int(conv.external_id), text)
+            else:
+                ch = self.channels.get(conv.channel)
+                if ch is None:
+                    return False
+                await ch.send(conv.external_id, text)
+        except Exception as e:  # noqa: BLE001 - reported to the caller as not sent
+            log.warning("inbox: private notice to conversation %s not sent: %s", conv_id, e)
+            return False
+        self.inbox.add(conv.id, "system", placeholder, employee.settings.display_name)
+        return True
+
     def spawn(self, coro: Any) -> None:
         """Run a notice in the background (callers may be synchronous)."""
         self._spawn(coro)

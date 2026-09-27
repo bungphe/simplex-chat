@@ -24,6 +24,8 @@ services:
     #   SIMPLEX_LIBS_DIR: /opt/libsimplex
     ports:
       - "127.0.0.1:8080:8080"
+      # the web shop (storefront: port 8081 in employees.yaml), for your HTTPS reverse proxy
+      - "127.0.0.1:8090:8081"
 
   # Personal Zalo accounts (zca-js, unofficial): "docker compose --profile zalo up -d",
   # then add a zalo_personal channel (gateway_url: http://zalo-gateway:3000) and log in

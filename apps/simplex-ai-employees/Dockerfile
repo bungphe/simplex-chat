@@ -14,7 +14,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
     TZ=Asia/Ho_Chi_Minh \
     # inside the container the UI must listen on all interfaces; compose publishes it on 127.0.0.1 only
-    AI_ADMIN_UI_HOST=0.0.0.0
+    AI_ADMIN_UI_HOST=0.0.0.0 \
+    AI_STOREFRONT_HOST=0.0.0.0
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends python3 python3-venv ca-certificates tzdata libgmp10 zlib1g libffi8 libssl3t64 \

@@ -116,6 +116,12 @@ admin_ui:
   port: 8080
   password_env: AI_ADMIN_PASSWORD
 
+# The public web shop (catalog, cart, customer accounts, invoices), behind an HTTPS proxy.
+storefront:
+  host: 127.0.0.1
+  port: 8081
+  public_url: https://shop.example.vn
+
 plugins: [shop_skills]           # Python modules that register extra skills
 plugin_paths: [./plugins]
 

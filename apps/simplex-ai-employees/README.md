@@ -598,8 +598,64 @@ phút. *Amazon*: Selling Partner API (Listings Items: giá quy đổi sang tiề
 bạn nhận giá và tồn, ký HMAC-SHA256 (`X-Signature`). Mỗi sản phẩm dùng SKU khác trên sàn, hoặc `-` để không bán ở đó.
 Website cũng có thể đọc `GET /hooks/catalog?key=…` (bật bằng biến `CATALOG_KEY`; chỉ giá bán và tồn, không có giá vốn).
 
-Chưa có: tài khoản đăng nhập website cho khách VIP (hệ thống không có website bán hàng), gửi hoá đơn qua email riêng
-(gửi qua kênh chat, gồm kênh email nếu khách dùng), bán kính 30 km quanh showroom khi lọc khách.
+**Khách quanh showroom.** Mỗi khách có địa chỉ và toạ độ: lấy từ lịch giao hàng, đơn đặt trên website, nhân viên
+nhập trong khung khách hàng, hoặc bấm *Tìm toạ độ từ địa chỉ* (Google Geocoding, cần `GOOGLE_MAPS_API_KEY`). Trong
+Marketing → Tập khách, chọn *quanh <showroom>* và bán kính (mặc định 30 km): danh sách xếp từ gần đến xa, có cột
+khoảng cách, xuất CSV. Showroom cần toạ độ (Giao hàng → Kho). Trang cũng cho biết bao nhiêu khách chưa có toạ độ.
+
+## Website bán hàng và tài khoản khách
+
+Một website riêng cho khách (không dùng chung cổng với trang quản trị), bật trong file cấu hình:
+
+```yaml
+storefront:
+  host: 127.0.0.1                 # đặt sau reverse proxy HTTPS (Caddy, nginx)
+  port: 8081
+  public_url: https://shop.example.vn   # dùng trong đường dẫn gửi cho khách
+```
+
+- **Sản phẩm, combo, giỏ hàng, đặt hàng**: giá, khuyến mại, tồn kho và hàng sắp về lấy thẳng từ Kho hàng, nên website
+  luôn khớp với quầy và nhân viên AI. Sản phẩm có ảnh (`https://…`), mô tả và ô *Hiện trên website* (Kho hàng → sản
+  phẩm). Khi đặt hàng, phần có sẵn thành đơn giữ hàng ngay, phần còn lại thành đơn đặt trước trên lô hàng đang về.
+  Đơn web có kênh `web`, gắn vào khách cùng số điện thoại (hoặc khách mới), quản trị viên được báo qua SimpleX, khách
+  nhận email xác nhận với đường dẫn theo dõi đơn riêng.
+- **Tài khoản khách, không mật khẩu**: khách gõ email hoặc số điện thoại đã dùng với cửa hàng và nhận **mã 6 số**
+  (hiệu lực 10 phút, sai 5 lần là hỏng, tối đa 3 mã / 15 phút) qua email, hoặc qua **kênh chat khách vẫn dùng**
+  (SimpleX, Zalo, Telegram…; hộp thư chỉ ghi "đã gửi mã", nhân viên không thấy mã). Trong ứng dụng SimpleX, khách
+  bấm lệnh `/shop` để nhận đường dẫn đăng nhập một chạm. Đăng nhập rồi: **khách VIP thấy và mua với giá VIP**, xem
+  thẻ VIP, điểm tích luỹ, lịch sử điểm, các đơn và **hoá đơn**, sửa tên và địa chỉ. Khách chưa đăng nhập luôn thấy
+  giá thường, và không sửa được thông tin của khách đã có.
+- **An toàn**: trang dựng sẵn trên máy chủ, không có JavaScript; CSP chặt, cookie `HttpOnly`/`SameSite`/`Secure` (khi
+  `public_url` là https), mã chống CSRF trên mọi biểu mẫu, mã đăng nhập chỉ lưu dạng băm.
+
+## Gửi hoá đơn qua email
+
+Kho hàng → Cửa hàng & tích điểm → *Email của cửa hàng*: máy chủ SMTP, cổng, mã hoá, tài khoản, người gửi và **tên**
+biến môi trường chứa mật khẩu (mật khẩu không lưu trong hệ thống). Nếu bỏ trống, dùng SMTP của kênh email trong Hộp
+thư (nếu có). Dùng cho: nút **Gửi hoá đơn qua email** ở Bán hàng (tới email của đơn, của khách, hoặc địa chỉ gõ vào),
+**tự gửi hoá đơn** khi đơn giao xong (bật ô *Tự gửi*), lệnh `/invoice` trong SimpleX, email xác nhận đơn web và mã
+đăng nhập. Hoá đơn gồm bản chữ và bản HTML giống hoá đơn in.
+
+## Trong ứng dụng SimpleX (điện thoại, máy tính)
+
+Không cần sửa ứng dụng SimpleX: nhân viên AI khai báo **menu lệnh** trong hồ sơ, và ứng dụng SimpleX chính thức
+(Android, iOS, máy tính, từ bản 6.4.3) hiện menu khi khách gõ `/` hoặc bấm nút `//` cạnh ô nhắn tin. Lệnh trong tin
+nhắn của nhân viên AI (vd. `/'invoice DH00012'`) chạm vào là gửi.
+
+| Lệnh của khách | Tác dụng |
+|---|---|
+| `/products <tên hoặc mã>` | Giá (giá VIP cho khách VIP), còn hàng hay hàng về khi nào, đường dẫn website |
+| `/combos` | Combo đang bán và số tiền tiết kiệm |
+| `/orders` | 5 đơn gần nhất, trạng thái, còn nợ; chạm để lấy hoá đơn |
+| `/invoice <mã đơn>` | Hoá đơn trong chat (và qua email nếu khách có email); chỉ đơn của chính khách |
+| `/points` | Điểm tích luỹ, số thẻ VIP hoặc còn bao nhiêu điểm nữa lên VIP |
+| `/shop` | Đường dẫn đăng nhập website một lần (10 phút) |
+| `/staff` | Gọi nhân viên: hội thoại chuyển sang người thật, gắn nhãn *cần nhân viên*, quản trị viên được báo |
+| `/help`, `/forget` | Hướng dẫn; xoá lịch sử trò chuyện |
+
+**Quản trị viên** (sau `/admin <mã>`) thấy thêm menu *Quản lý cửa hàng* (chỉ riêng họ thấy): doanh thu hôm nay,
+đơn đang mở, tồn kho, hàng sắp hết, yêu cầu chờ duyệt, cấu hình nhân viên AI (xem bảng lệnh ở *Quản trị trong chat*).
+Quản trị viên cũng nhận thông báo đơn web mới, khách lên VIP, khách gọi nhân viên qua SimpleX.
 
 ## Mở rộng quy mô và đo tải
 
@@ -655,6 +711,8 @@ Nhắn cho nhân viên `/admin <AI_ADMIN_TOKEN>` để trở thành quản trị
 | `/ai routines`, `/ai run <id>`, `/ai routine pause\|resume <id>` | Lịch làm việc |
 | `/ai pending`, `/ai approve <số>`, `/ai reject <số> [lý do]` | Hàng chờ duyệt |
 | `/ai releases`, `/ai release <hành động>`, `/ai hold <hành động>` | Mở hoặc đóng kênh tự thực hiện |
+| `/ai report`, `/ai orders` | Doanh thu và đơn hôm nay; đơn đang mở |
+| `/ai stock <mã hoặc tên>`, `/ai lowstock` | Tồn kho theo kho và hàng sắp về; hàng cần nhập thêm |
 | `/ai pause`, `/ai resume` | Tạm dừng / bật lại mọi việc (trả lời và lịch) |
 | `/ai forget all` | Xoá toàn bộ trí nhớ hội thoại |
 | `/ai reset` | Bỏ mọi thay đổi, quay về file cấu hình |

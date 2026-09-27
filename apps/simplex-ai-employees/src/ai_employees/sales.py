@@ -23,6 +23,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
+from .delivery import haversine_km
 from .inventory import InventoryError, _dec
 from .state import now_iso
 
@@ -488,13 +489,20 @@ class Sales:
         return out
 
     def segment(
-        self, kind: str = "top", limit: int = 500, channel_type: str = "", min_orders: int = 0
+        self,
+        kind: str = "top",
+        limit: int = 500,
+        channel_type: str = "",
+        min_orders: int = 0,
+        near_wh: int | None = None,
+        radius_km: float | None = None,
     ) -> list[dict[str, Any]]:
         """Customers for a remarketing campaign: top buyers, VIPs, or those who came from a
-        channel type (facebook, zalo_oa, telegram...)."""
+        channel type (facebook, zalo_oa, telegram...); with `near_wh` and `radius_km`, only
+        those living within that distance of the showroom (nearest first)."""
         sql = (
-            "SELECT c.id, c.name, c.phone, c.email, c.vip, c.points, c.total_spent, c.orders_count FROM crm_contacts c "
-            "WHERE c.orders_count>=?"
+            "SELECT c.id, c.name, c.phone, c.email, c.vip, c.points, c.total_spent, c.orders_count, "
+            "c.address, c.lat, c.lng FROM crm_contacts c WHERE c.orders_count>=?"
         )
         args: list[Any] = [min_orders]
         if kind == "vip":
@@ -511,14 +519,50 @@ class Sales:
                 args += ids
             else:
                 return []
-        sql += " ORDER BY c.total_spent DESC, c.id LIMIT ?"
-        rows = self.db.rows(sql, [*args, limit])
-        return [{**r, "total_spent": self.inv.major(r["total_spent"])} for r in rows]
+        origin = None
+        if near_wh:
+            wh = self.inv.warehouse(int(near_wh))
+            if not wh.get("lat") or not wh.get("lng"):
+                raise InventoryError(f"Kho {wh['code']} chưa có toạ độ (Giao hàng → Kho: đặt toạ độ)")
+            origin = (float(wh["lat"]), float(wh["lng"]))
+            sql += " AND c.lat IS NOT NULL AND c.lng IS NOT NULL"
+        sql += " ORDER BY c.total_spent DESC, c.id"
+        if origin is None:
+            sql += " LIMIT ?"
+            args.append(limit)
+        rows = self.db.rows(sql, args)
+        out = []
+        for r in rows:
+            row = {**r, "total_spent": self.inv.major(r["total_spent"])}
+            if origin is not None:
+                km = haversine_km(origin, (float(r["lat"]), float(r["lng"])))
+                if radius_km is not None and km > float(radius_km):
+                    continue
+                row["distance_km"] = round(km, 1)
+            out.append(row)
+        if origin is not None:
+            out.sort(key=lambda x: x["distance_km"])
+        return out[:limit]
+
+    def located(self) -> dict[str, int]:
+        """How many customers have a known location (the rest cannot be found by distance)."""
+        row = (
+            self.db.row(
+                "SELECT COUNT(*) AS n, SUM(CASE WHEN lat IS NOT NULL THEN 1 ELSE 0 END) AS located, "
+                "SUM(CASE WHEN lat IS NULL AND address<>'' THEN 1 ELSE 0 END) AS to_geocode FROM crm_contacts"
+            )
+            or {}
+        )
+        return {k: int(row.get(k) or 0) for k in ("n", "located", "to_geocode")}
 
     def segment_csv(self, rows: list[dict[str, Any]]) -> str:
         buf = io.StringIO()
         w = csv.writer(buf)
-        w.writerow(["name", "phone", "email", "vip", "points", "total_spent", "orders"])
+        near = any("distance_km" in r for r in rows)
+        w.writerow(
+            ["name", "phone", "email", "vip", "points", "total_spent", "orders", "address"]
+            + (["distance_km"] if near else [])
+        )
         for r in rows:
             w.writerow(
                 [
@@ -529,9 +573,11 @@ class Sales:
                     r["points"],
                     r["total_spent"],
                     r["orders_count"],
+                    r.get("address", ""),
                 ]
+                + ([r.get("distance_km", "")] if near else [])
             )
-        return "﻿" + buf.getvalue()
+        return "\ufeff" + buf.getvalue()
 
     # ------------------------------------------------------------------ #
     # start-of-day notices

@@ -122,12 +122,14 @@ async function showProduct(box, id, reload) {
     vip_price: h("input", { value: p.vip_price ?? "", placeholder: "để trống: giá giai đoạn kế tiếp" }),
     safety_stock: h("input", { value: p.safety_stock_setting >= 0 ? p.safety_stock_setting : "", placeholder: `tự tính (${p.safety_stock})` }),
     supplier_id: h("select", {}, h("option", { value: "" }, "— theo đơn nhập gần nhất —"), invMeta.suppliers.map((s) => h("option", { value: s.id, selected: s.id === p.supplier_id }, s.name))),
-    auto_pricing: h("input", { type: "checkbox", checked: !!p.auto_pricing }), active: h("input", { type: "checkbox", checked: !!p.active }) };
+    auto_pricing: h("input", { type: "checkbox", checked: !!p.auto_pricing }), active: h("input", { type: "checkbox", checked: !!p.active }),
+    image_url: h("input", { value: p.image_url || "", placeholder: "https://… (ảnh trên website)" }), on_web: h("input", { type: "checkbox", checked: p.on_web !== 0 }),
+    description: h("textarea", { rows: 3, placeholder: "Mô tả trên website" }, p.description || "") };
   const save = () => run(async () => {
     await api("PATCH", `/api/inventory/products/${id}`, { name: e.name.value, category: e.category.value, group_name: e.group_name.value,
       unit: e.unit.value, cbm: e.cbm.value || "0", weight_kg: e.weight_kg.value || "0", vip_price: e.vip_price.value,
       safety_stock: e.safety_stock.value, supplier_id: e.supplier_id.value ? Number(e.supplier_id.value) : null,
-      auto_pricing: e.auto_pricing.checked, active: e.active.checked });
+      auto_pricing: e.auto_pricing.checked, active: e.active.checked, image_url: e.image_url.value, on_web: e.on_web.checked, description: e.description.value });
     await refresh("Đã lưu sản phẩm");
   });
   const whSel = () => h("select", {}, invMeta.warehouses.filter((w) => w.active).map((w) => h("option", { value: w.id }, w.name)));
@@ -167,6 +169,8 @@ async function showProduct(box, id, reload) {
         field("CBM / sản phẩm", e.cbm), field("Cân nặng (kg)", e.weight_kg), field("Giá VIP riêng", e.vip_price), field("Tồn an toàn", e.safety_stock), field("Nhà cung cấp", e.supplier_id)),
       h("label", { class: "check" }, e.auto_pricing, h("span", {}, "Tự động định giá (giảm dần theo tồn và thời gian)")),
       h("label", { class: "check" }, e.active, h("span", {}, "Đang bán")),
+      field("Ảnh sản phẩm (website)", e.image_url), field("Mô tả (website)", e.description),
+      h("label", { class: "check" }, e.on_web, h("span", {}, "Hiện trên website bán hàng")),
       h("button", { class: "primary", onclick: save }, "Lưu")),
     h("details", {}, h("summary", {}, "SKU trên các sàn"), (() => {
       const mk = h("input", { placeholder: "mã sàn, vd. amazon-au" });
@@ -499,8 +503,29 @@ INV_VIEWS.shop = async (box) => {
     h("button", { class: "primary", onclick: () => run(async () => {
       invMeta.settings = await api("PUT", "/api/inventory/settings", { ...Object.fromEntries(Object.entries(f).map(([k, el]) => [k, el.value])),
         ...Object.fromEntries(Object.entries(n).map(([k, el]) => [k, Number(el.value || 0)])) });
-    }, "Đã lưu") }, "Lưu")));
+    }, "Đã lưu") }, "Lưu")),
+    await mailCard());
 };
+
+async function mailCard() {
+  const r = await api("GET", "/api/inventory/mail");
+  const admin = me && me.role === "admin";
+  const f = { smtp_host: h("input", { value: r.smtp_host || "", placeholder: "vd. smtp.gmail.com" }), smtp_port: h("input", { value: r.smtp_port || 587, class: "narrow" }),
+    smtp_tls: h("select", {}, [["starttls", "STARTTLS (587)"], ["ssl", "SSL (465)"], ["none", "không mã hoá"]].map(([v, l]) => h("option", { value: v, selected: (r.smtp_tls || "starttls") === v }, l))),
+    smtp_user: h("input", { value: r.smtp_user || "", autocomplete: "off" }), password_env: h("input", { value: r.password_env || "", placeholder: "vd. SHOP_SMTP_PASSWORD" }),
+    sender: h("input", { value: r.sender || "", placeholder: "Cửa hàng ABC <hoadon@abc.vn>" }), auto_invoice: h("input", { type: "checkbox", checked: !!r.auto_invoice }) };
+  const test = h("input", { type: "email", placeholder: "email nhận thử" });
+  const state = r.ready ? (r.using_channel ? "đang dùng SMTP của kênh email trong Hộp thư" : "sẵn sàng") : "chưa cài đặt";
+  return h("div", { class: "card section" }, h("h2", {}, "Email của cửa hàng (hoá đơn, xác nhận đơn web, mã đăng nhập)"),
+    h("p", { class: "muted" }, `Trạng thái: ${state}.`, r.password_env ? ` Mật khẩu (${r.password_env}): ${r.password_set ? "đã đặt" : "chưa đặt trong biến môi trường"}.` : "",
+      " Mật khẩu chỉ đặt trong biến môi trường; ở đây chỉ lưu tên biến."),
+    h("div", { class: "two" }, field("Máy chủ SMTP", f.smtp_host), field("Cổng", f.smtp_port), field("Mã hoá", f.smtp_tls), field("Tài khoản", f.smtp_user),
+      field("Biến môi trường chứa mật khẩu", f.password_env), field("Người gửi", f.sender)),
+    h("label", { class: "check" }, f.auto_invoice, h("span", {}, "Tự gửi hoá đơn qua email khi đơn giao xong (khách có email)")),
+    admin ? h("div", { class: "row" }, h("button", { class: "primary", onclick: () => run(async () => {
+      await api("PUT", "/api/inventory/mail", { ...Object.fromEntries(Object.entries(f).map(([k, el]) => [k, el.type === "checkbox" ? el.checked : el.value])) });
+    }, "Đã lưu") }, "Lưu"), test, h("button", { onclick: () => run(async () => { const x = await api("POST", "/api/inventory/mail/test", { to: test.value }); toast(`Đã gửi thử tới ${x.sent_to}`); }) }, "Gửi thử")) : null);
+}
 
 // ---------------------------------------------------------------- marketplaces
 

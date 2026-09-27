@@ -282,7 +282,56 @@ class Delivery:
             self.db.execute(
                 "UPDATE inv_orders SET delivery_date=?, address=? WHERE id=?", (day, address, oid)
             )
+        self._locate_customer(order, address, lat, lng)
         return self.booking(int(bid or 0))
+
+    def _locate_customer(self, order: dict[str, Any], address: str, lat: Any, lng: Any) -> None:
+        """The customer's address and location, for the next order and "customers near the showroom"."""
+        if not order.get("contact_id"):
+            return
+        try:
+            la, lo = (
+                (float(lat), float(lng)) if lat not in (None, "") and lng not in (None, "") else (None, None)
+            )
+            self.office.hub.crm.locate(int(order["contact_id"]), address, la, lo)
+        except (ValueError, KeyError):
+            log.debug("delivery: could not store the location of contact %s", order.get("contact_id"))
+
+    async def geocode_address(self, address: str) -> tuple[float, float]:
+        """Coordinates of an address (Google Geocoding; needs GOOGLE_MAPS_API_KEY)."""
+        if not self.maps_key:
+            raise InventoryError(
+                "Chưa có GOOGLE_MAPS_API_KEY: nhập toạ độ tay, hoặc để hệ thống giữ thứ tự bạn xếp"
+            )
+        r = await self.office.http_client.get(
+            f"{MAPS}/geocode/json",
+            params={"address": address, "region": "vn", "key": self.maps_key},
+            timeout=15,
+        )
+        data = r.json()
+        if data.get("status") != "OK":
+            raise InventoryError(f"Không tìm được địa chỉ: {data.get('status')}")
+        loc = data["results"][0]["geometry"]["location"]
+        return float(loc["lat"]), float(loc["lng"])
+
+    async def geocode_customers(self, limit: int = 100) -> dict[str, int]:
+        """Locate customers who have an address but no coordinates yet."""
+        crm = self.office.hub.crm
+        done = failed = 0
+        for c in crm.db.rows(
+            "SELECT id, address FROM crm_contacts WHERE lat IS NULL AND address<>'' ORDER BY id LIMIT ?",
+            (limit,),
+        ):
+            try:
+                lat, lng = await self.geocode_address(c["address"])
+            except InventoryError as e:
+                if "GOOGLE_MAPS_API_KEY" in str(e):
+                    raise
+                failed += 1
+                continue
+            crm.update(int(c["id"]), lat=lat, lng=lng)
+            done += 1
+        return {"located": done, "failed": failed}
 
     def _coords(self, data: dict[str, Any]) -> tuple[str, str]:
         lat, lng = str(data.get("lat") or "").strip(), str(data.get("lng") or "").strip()
@@ -298,23 +347,12 @@ class Delivery:
     async def geocode(self, bid: int) -> dict[str, Any]:
         """Coordinates for a booking's address (Google Geocoding; needs GOOGLE_MAPS_API_KEY)."""
         b = self.booking(bid)
-        if not self.maps_key:
-            raise InventoryError(
-                "Chưa có GOOGLE_MAPS_API_KEY: nhập toạ độ tay, hoặc để hệ thống giữ thứ tự bạn xếp"
-            )
-        r = await self.office.http_client.get(
-            f"{MAPS}/geocode/json",
-            params={"address": b["address"], "region": "vn", "key": self.maps_key},
-            timeout=15,
-        )
-        data = r.json()
-        if data.get("status") != "OK":
-            raise InventoryError(f"Không tìm được địa chỉ: {data.get('status')}")
-        loc = data["results"][0]["geometry"]["location"]
+        lat, lng = await self.geocode_address(b["address"])
         self.db.execute(
-            "UPDATE dl_bookings SET lat=?, lng=?, updated=? WHERE id=?",
-            (str(loc["lat"]), str(loc["lng"]), now_iso(), bid),
+            "UPDATE dl_bookings SET lat=?, lng=?, updated=? WHERE id=?", (str(lat), str(lng), now_iso(), bid)
         )
+        order = self.office.inventory.order(int(b["order_id"]))
+        self._locate_customer(order, b["address"], lat, lng)
         return self.booking(bid)
 
     def update_booking(self, bid: int, data: dict[str, Any]) -> dict[str, Any]:
@@ -356,6 +394,11 @@ class Delivery:
         fields["updated"] = now_iso()
         sets = ", ".join(f"{k}=?" for k in fields)
         self.db.execute(f"UPDATE dl_bookings SET {sets} WHERE id=?", [*fields.values(), bid])
+        if fields.get("lat"):
+            new = self._row(bid)
+            self._locate_customer(
+                self.office.inventory.order(int(b["order_id"])), new["address"], new["lat"], new["lng"]
+            )
         return self.booking(bid)
 
     def cancel_booking(self, bid: int) -> dict[str, Any]:

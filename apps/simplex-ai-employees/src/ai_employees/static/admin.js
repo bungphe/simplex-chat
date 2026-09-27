@@ -870,6 +870,12 @@ function contactPanel(c, companies, act) {
       companies.map((x) => h("option", { value: x.id, selected: x.id === c.company_id }, x.name))),
     notes: h("textarea", { rows: 2, placeholder: "Ghi chú về khách (chỉ nhân viên thấy)" }, c.notes),
     vip: h("input", { type: "checkbox", checked: !!c.vip, disabled: !(me && me.role === "admin") }),
+    address: h("input", { value: c.address || "", maxlength: 300, placeholder: "Số nhà, đường, phường, quận, tỉnh" }),
+    coords: h("input", { value: c.lat != null ? `${c.lat}, ${c.lng}` : "", placeholder: "vd. 10.7769, 106.7009 (để trống: tự tìm)" }),
+  };
+  const located = () => {
+    const parts = f.coords.value.split(",").map((x) => x.trim()).filter(Boolean);
+    return parts.length === 2 ? { lat: parts[0], lng: parts[1] } : { lat: null, lng: null };
   };
   const channels = c.conversations || [];
   const dupes = (c.duplicates || []).flatMap((g) => g.contacts.filter((x) => x.id !== c.id).map((x) => ({ ...x, reason: g.reason })));
@@ -880,9 +886,12 @@ function contactPanel(c, companies, act) {
       h("div", { class: "two" }, h("label", {}, "Tên", f.name), h("label", {}, "Công ty", f.company_id),
         h("label", {}, "Số điện thoại", f.phone), h("label", {}, "Email", f.email)),
       h("label", {}, "Ghi chú", f.notes),
+      "address" in c ? h("div", { class: "two" }, h("label", {}, "Địa chỉ", f.address),
+        h("label", { title: "Dùng để lọc khách quanh showroom (Marketing)" }, "Toạ độ (vĩ độ, kinh độ)", f.coords)) : null,
       h("label", { class: "check", title: "Khách VIP được giá VIP (hoặc giá giai đoạn kế tiếp). Quản trị viên đặt." }, f.vip, h("span", {}, "Khách VIP")),
       h("div", { class: "row" }, h("button", { onclick: () => act.save({ name: f.name.value, phone: f.phone.value, email: f.email.value,
         company_id: f.company_id.value ? parseInt(f.company_id.value, 10) : null, notes: f.notes.value,
+        ...("address" in c ? { address: f.address.value, ...located() } : {}),
         ...(me && me.role === "admin" ? { vip: f.vip.checked } : {}) }) }, "Lưu thông tin khách")),
       h("h3", {}, "Các kênh của khách"),
       h("div", { class: "row" }, channels.map((x) => h("button", {
