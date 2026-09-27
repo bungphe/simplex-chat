@@ -391,6 +391,19 @@ Cách hoạt động:
 - Hành động cần duyệt (tạo đơn…) và `handoff_to_human` hoạt động như trên SimpleX; tin xác nhận gửi về
   đúng kênh của khách.
 
+**Nhận tin tức thì bằng webhook chính thức** (thay vì hỏi 30 giây/lần). Cần đặt giao diện sau HTTPS công khai,
+chỉ mở đường `/hooks/`:
+
+- *Messenger*: thêm `app_secret_env` (App Secret của ứng dụng Meta) và `verify_token` vào kênh `facebook`; trong
+  Meta for Developers đặt Callback URL `https://<máy chủ>/hooks/<id kênh>`, Verify Token như trên, đăng ký sự
+  kiện `messages` và `message_echoes`. Mỗi yêu cầu được kiểm chữ ký `X-Hub-Signature-256`.
+- *Zalo OA*: thêm `webhook_secret_env` (OA Secret Key trong trang quản lý ứng dụng Zalo) vào kênh `zalo_oa`; đặt
+  Webhook URL `https://<máy chủ>/hooks/<id kênh>` và bật các sự kiện `user_send_*` (và `oa_send_*` để thấy nhân viên
+  trả lời trên Zalo). Mỗi yêu cầu được kiểm chữ ký `X-ZEvent-Signature` (sha256 của app_id + nội dung + timestamp +
+  OA Secret Key) theo tài liệu Zalo; hãy thử với OA thật khi cài đặt.
+- Có webhook thì đặt `poll_seconds: 0` để tắt việc hỏi định kỳ (hoặc giữ để bù tin lỡ). Sự kiện chỉ có mã khách,
+  nên tên khách được hỏi thêm từ API của nền tảng. Tin gửi lại hai lần chỉ được lưu và trả lời một lần.
+
 **Zalo OA** là cách được khuyến nghị cho bán hàng: API chính thức, token làm mới tự động (refresh token
 mới được lưu trong `state_dir/channel_secrets.json`, quyền `600`).
 

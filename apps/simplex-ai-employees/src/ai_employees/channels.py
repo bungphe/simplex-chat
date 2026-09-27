@@ -33,11 +33,14 @@ conversations / messages), plus the platforms' send-message endpoints.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import logging
 import os
 import re
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -149,13 +152,25 @@ class Channel:
         """Send text; returns the platform's message id when it gives one."""
         raise NotImplementedError
 
-    # Channels that push messages to POST /hooks/<channel id> (shared-secret authenticated)
+    # Channels that push messages to POST /hooks/<channel id>
 
     def secret(self) -> str:
         return ""
 
+    def accepts_push(self) -> bool:
+        return bool(self.secret())
+
+    def verify_push(self, headers: Mapping[str, str], body: bytes) -> bool:
+        """Is this request really from the platform? Default: a shared X-Hook-Secret."""
+        given = headers.get("X-Hook-Secret", "").encode()
+        return bool(self.secret()) and hmac.compare_digest(given, self.secret().encode())
+
     def parse_push(self, payload: dict[str, Any]) -> list[InboundMessage]:
         raise NotImplementedError
+
+    async def lookup_name(self, conversation: str) -> str:
+        """The customer's display name, when the platform's events do not carry it."""
+        return ""
 
 
 def _ms(ts: Any) -> datetime:
@@ -279,6 +294,72 @@ class ZaloOAChannel(Channel):
             attachment(kind, url, m.get("thumb"), m.get("description") if kind in ("file", "link") else None)
         ]
 
+    # Official webhook (Zalo OA dashboard: Webhook URL = https://<host>/hooks/<channel id>)
+
+    def accepts_push(self) -> bool:
+        return bool(self.cfg.opt("webhook_secret"))
+
+    def verify_push(self, headers: Mapping[str, str], body: bytes) -> bool:
+        """X-ZEvent-Signature: mac=sha256(app_id + body + timestamp + OA secret key)."""
+        secret = self.cfg.opt("webhook_secret", "")
+        given = headers.get("X-ZEvent-Signature", "").removeprefix("mac=").strip()
+        try:
+            timestamp = str(json.loads(body).get("timestamp", ""))
+        except (ValueError, AttributeError):
+            return False
+        data = str(self.cfg.opt("app_id")) + body.decode("utf-8", "replace") + timestamp + secret
+        expected = hashlib.sha256(data.encode()).hexdigest()
+        return bool(secret and given) and hmac.compare_digest(given.lower(), expected)
+
+    PUSH_KINDS: ClassVar[dict[str, str]] = {
+        "image": "image",
+        "gif": "image",
+        "sticker": "sticker",
+        "audio": "audio",
+        "voice": "audio",
+        "video": "video",
+        "file": "file",
+        "link": "link",
+    }
+
+    def parse_push(self, payload: dict[str, Any]) -> list[InboundMessage]:
+        event = str(payload.get("event_name", ""))
+        if not event.startswith(("user_send_", "oa_send_")):
+            return []  # follows, reactions, seen receipts...
+        from_oa = event.startswith("oa_send_")
+        user = (payload.get("recipient") if from_oa else payload.get("sender")) or {}
+        message = payload.get("message") or {}
+        files = []
+        for a in message.get("attachments") or []:
+            p = a.get("payload") or {}
+            files.append(
+                attachment(
+                    self.PUSH_KINDS.get(str(a.get("type")), "file"),
+                    p.get("url"),
+                    p.get("thumbnail"),
+                    p.get("name"),
+                )
+            )
+        text = message.get("text") if isinstance(message.get("text"), str) else ""
+        if not (text or files):
+            return []
+        return [
+            InboundMessage(
+                conversation=str(user.get("id") or ""),
+                customer_name="",
+                text=text[:4000],
+                sender="agent" if from_oa else "customer",
+                external_id=str(message.get("msg_id") or ""),
+                ts=_ms(payload.get("timestamp") or datetime.now(UTC).timestamp() * 1000),
+                attachments=files,
+            )
+        ]
+
+    async def lookup_name(self, conversation: str) -> str:
+        v3 = self.cfg.opt("api_v3", self.API_V3)
+        data = await self._call("GET", f"{v3}/user/detail", {"user_id": conversation})
+        return str((data or {}).get("display_name") or "")[:80]
+
     async def send(self, conversation: str, text: str) -> str | None:
         v3 = self.cfg.opt("api_v3", self.API_V3)
         data = await self._call(
@@ -364,6 +445,69 @@ class FacebookChannel(Channel):
         if m.get("sticker"):
             out.append(attachment("sticker", m["sticker"], m["sticker"]))
         return out
+
+    # Official webhook (Meta app dashboard: callback URL https://<host>/hooks/<channel id>,
+    # verify token = verify_token; subscribe the page to "messages" and "message_echoes")
+
+    def accepts_push(self) -> bool:
+        return bool(self.cfg.opt("app_secret"))
+
+    def verify_subscription(self, query: Mapping[str, str]) -> str | None:
+        """The challenge to echo when Meta checks the callback URL, or None."""
+        token = self.cfg.opt("verify_token", "")
+        given = query.get("hub.verify_token", "")
+        if (
+            query.get("hub.mode") == "subscribe"
+            and token
+            and hmac.compare_digest(given.encode(), token.encode())
+        ):
+            return query.get("hub.challenge", "")
+        return None
+
+    def verify_push(self, headers: Mapping[str, str], body: bytes) -> bool:
+        """X-Hub-Signature-256: sha256=HMAC-SHA256(app secret, raw body)."""
+        secret = self.cfg.opt("app_secret", "")
+        given = headers.get("X-Hub-Signature-256", "").removeprefix("sha256=")
+        expected = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+        return bool(secret and given) and hmac.compare_digest(given, expected)
+
+    def parse_push(self, payload: dict[str, Any]) -> list[InboundMessage]:
+        if payload.get("object") != "page":
+            return []
+        page_id = str(self.cfg.opt("page_id"))
+        out = []
+        for entry in payload.get("entry") or []:
+            for ev in entry.get("messaging") or []:
+                m = ev.get("message")
+                if not m or m.get("is_deleted"):
+                    continue  # deliveries, reads, postbacks...
+                echo = bool(m.get("is_echo")) or str((ev.get("sender") or {}).get("id")) == page_id
+                user = (ev.get("recipient") if echo else ev.get("sender")) or {}
+                files = []
+                for a in m.get("attachments") or []:
+                    kind = {"image": "image", "video": "video", "audio": "audio", "file": "file"}.get(
+                        a.get("type"), "link"
+                    )
+                    files.append(attachment(kind, (a.get("payload") or {}).get("url"), None, a.get("title")))
+                if not (m.get("text") or files):
+                    continue
+                out.append(
+                    InboundMessage(
+                        conversation=str(user.get("id") or ""),
+                        customer_name="",
+                        text=str(m.get("text") or "")[:4000],
+                        sender="agent" if echo else "customer",
+                        external_id=str(m.get("mid") or ""),
+                        ts=_ms(ev.get("timestamp") or datetime.now(UTC).timestamp() * 1000),
+                        attachments=files,
+                    )
+                )
+        return out
+
+    async def lookup_name(self, conversation: str) -> str:
+        graph = self.cfg.opt("graph_url", self.GRAPH)
+        data = await self._get(f"{graph}/{conversation}", {"fields": "name"})
+        return str(data.get("name") or "")[:80]
 
     async def send(self, conversation: str, text: str) -> str | None:
         graph = self.cfg.opt("graph_url", self.GRAPH)

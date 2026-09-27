@@ -14,7 +14,6 @@ Security model:
 from __future__ import annotations
 
 import asyncio
-import hmac
 import json
 import logging
 import os
@@ -971,22 +970,37 @@ async def simplex_connect(request: web.Request) -> web.Response:
 # Public webhook for "webhook" channels (server-to-server, authenticated by a shared secret)
 
 
-def _push_channel(request: web.Request) -> Any:
+def _push_channel(request: web.Request, body: bytes = b"") -> Any:
+    """The channel, if this request proves it comes from its platform or bridge."""
     ch = request.app[OFFICE].hub.channels.get(request.match_info["channel"])
-    if ch is None or not ch.secret():
+    if ch is None or not ch.accepts_push():
         raise ApiError(404, "no such channel")
-    if not hmac.compare_digest(request.headers.get("X-Hook-Secret", "").encode(), ch.secret().encode()):
-        raise ApiError(401, "bad secret")
+    if not ch.verify_push(request.headers, body):
+        log.warning("hooks: rejected a request for %s from %s (bad signature)", ch.id, request.remote)
+        raise ApiError(401, "bad signature")
     return ch
 
 
+async def hook_verify(request: web.Request) -> web.Response:
+    """Meta checks a Messenger callback URL with a GET before sending events."""
+    ch = request.app[OFFICE].hub.channels.get(request.match_info["channel"])
+    challenge = ch.verify_subscription(request.query) if hasattr(ch, "verify_subscription") else None
+    if challenge is None:
+        raise ApiError(403, "verification failed")
+    return web.Response(text=challenge, content_type="text/plain")
+
+
 async def hook_inbound(request: web.Request) -> web.Response:
-    ch = _push_channel(request)
+    body = await request.read()
+    ch = _push_channel(request, body)
     # The Zalo gateway posts to {WEBHOOK_URL}/{account}: the account must be this channel's.
     if (account := request.match_info.get("account")) is not None and account != getattr(ch, "account", None):
         raise ApiError(404, "no such account")
     try:
-        conv = request.app[OFFICE].hub.push_inbound(ch.id, await _body(request))
+        payload = json.loads(body)
+        if not isinstance(payload, dict):
+            raise ApiError(400, "expected a JSON object")
+        conv = request.app[OFFICE].hub.push_inbound(ch.id, payload)
     except ValueError as e:
         raise ApiError(400, str(e)) from None
     return _json({"ok": True, "conversation": conv.id if conv else None})
@@ -1065,6 +1079,7 @@ def create_app(office: Office, password: str) -> web.Application:
     r.add_post("/api/simplex/{emp}/invite", simplex_invite)
     r.add_post("/api/simplex/{emp}/connect", simplex_connect)
     r.add_post("/api/channels/{channel}/login", channel_login)
+    r.add_get("/hooks/{channel}", hook_verify)
     r.add_post("/hooks/{channel}", hook_inbound)
     r.add_post("/hooks/{channel}/{account}", hook_inbound)
     r.add_get("/hooks/{channel}/{conversation}", hook_messages)

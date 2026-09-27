@@ -178,13 +178,35 @@ class ChannelHub:
     def push_inbound(self, channel_id: str, payload: dict[str, Any]) -> Conversation | None:
         """A message pushed to /hooks/<channel id> (webhook bridges, the Zalo gateway)."""
         ch = self.channels.get(channel_id)
-        if ch is None or not ch.secret():
+        if ch is None or not ch.accepts_push():
             raise KeyError(channel_id)
         msgs = [m for m in ch.parse_push(payload) if m.conversation and m.external_id]
         if not msgs:
             return None
         self.ingest(ch, msgs)
-        return self.inbox.find(ch.id, msgs[-1].conversation)
+        conv = self.inbox.find(ch.id, msgs[-1].conversation)
+        if conv is not None and not conv.customer_name:
+            self._spawn(self._fill_name(ch, conv))
+        return conv
+
+    async def _fill_name(self, ch: Channel, conv: Conversation) -> None:
+        """Platform events carry only an id: ask the platform for the customer's name."""
+        try:
+            name = await ch.lookup_name(conv.external_id)
+        except Exception as e:  # noqa: BLE001 - a missing name is cosmetic
+            log.info("%s: no name for %s: %s", ch.id, conv.external_id, e)
+            return
+        if name:
+            self.inbox.upsert(ch.id, conv.external_id, name, conv.employee)
+
+    def _spawn(self, coro: Any) -> None:
+        try:
+            task = asyncio.get_running_loop().create_task(coro)
+        except RuntimeError:  # no event loop (a synchronous caller): skip the extra
+            coro.close()
+            return
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
 
     webhook_inbound = push_inbound
 

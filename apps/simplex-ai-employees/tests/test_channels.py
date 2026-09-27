@@ -33,6 +33,7 @@ ZALO = {
     "app_secret_env": "T_ZALO_SECRET",
     "access_token_env": "T_ZALO_ACCESS",
     "refresh_token_env": "T_ZALO_REFRESH",
+    "webhook_secret_env": "T_ZALO_OA_SECRET",
     "debounce_seconds": 0,
 }
 FACEBOOK = {
@@ -41,6 +42,8 @@ FACEBOOK = {
     "employee": "sales",
     "page_id": "1000",
     "access_token_env": "T_FB_TOKEN",
+    "app_secret_env": "T_FB_APP_SECRET",
+    "verify_token": "verify-me-123",
     "debounce_seconds": 0,
 }
 ZALO_PERSONAL = {
@@ -99,6 +102,8 @@ class Platforms:
             if url.path.endswith("/conversation"):
                 assert json.loads(url.params["data"])["user_id"] == "u-1"
                 return httpx2.Response(200, json={"error": 0, "data": self.zalo_msgs})
+            if url.path.endswith("/user/detail"):
+                return httpx2.Response(200, json={"error": 0, "data": {"display_name": "Hoa Nguyễn"}})
             if url.path.endswith("/message/cs"):
                 body = json.loads(r.content)
                 self.sent.append(("zalo", body))
@@ -130,6 +135,8 @@ class Platforms:
                 return httpx2.Response(200, json={"data": [conv]})
             if url.path.endswith("/t_1/messages"):
                 return httpx2.Response(200, json={"data": self.fb_msgs})
+            if url.path.endswith("/psid-77"):
+                return httpx2.Response(200, json={"name": "Tuấn Trần", "id": "psid-77"})
             if url.path.endswith("/me/messages"):
                 body = json.loads(r.content)
                 self.sent.append(("facebook", body))
@@ -185,6 +192,8 @@ def env(monkeypatch):
         "T_ZALO_REFRESH": "r1",
         "T_FB_TOKEN": "fbtoken",
         "T_HOOK_SECRET": "hook-secret-1",
+        "T_ZALO_OA_SECRET": "zalo-oa-secret-key",
+        "T_FB_APP_SECRET": "fb-app-secret",
         "T_GW_KEY": "gw-key-0123456789",
         "T_GW_HOOK": "gw-hook-0123456789",
     }.items():
@@ -406,9 +415,8 @@ async def test_webhook_channel_and_inbox_api(ui):
 
     assert (await client.post("/hooks/website", json=body)).status == 401
     assert (await client.post("/hooks/website", json=body, headers={"X-Hook-Secret": "nope"})).status == 401
-    assert (
-        await client.post("/hooks/fanpage", json=body, headers=hook)
-    ).status == 404  # not a webhook channel
+    # Messenger checks its own signature, not the bridge secret
+    assert (await client.post("/hooks/fanpage", json=body, headers=hook)).status == 401
     assert (await client.post("/hooks/website", json={"conversation_id": "x"}, headers=hook)).status == 400
     llm.responses.append(text("Dạ có COD toàn quốc ạ."))
     r = await client.post("/hooks/website", json=body, headers=hook)
@@ -964,3 +972,123 @@ async def test_a_sent_reply_is_kept_even_if_the_platform_reuses_its_id(setup, mo
     hub.push_inbound("website", {"conversation_id": "r1", "text": "b"})
     await settle(hub)
     assert [m["text"] for m in hub.inbox.messages(conv.id)] == ["a", "một", "b", "hai"]
+
+
+async def test_messenger_official_webhook(ui):
+    import hashlib
+    import hmac as hm
+
+    client, office, llm, platforms = ui
+    hub = office.hub
+
+    def signed(payload: dict) -> tuple[bytes, dict]:
+        body = json.dumps(payload).encode()
+        sig = "sha256=" + hm.new(b"fb-app-secret", body, hashlib.sha256).hexdigest()
+        return body, {"X-Hub-Signature-256": sig, "Content-Type": "application/json"}
+
+    q = {"hub.mode": "subscribe", "hub.verify_token": "verify-me-123", "hub.challenge": "c-42"}
+    r = await client.get("/hooks/fanpage", params=q)
+    assert r.status == 200 and await r.text() == "c-42"
+    assert (await client.get("/hooks/fanpage", params={**q, "hub.verify_token": "nope"})).status == 403
+
+    def event(mid: str, text: str, echo: bool = False) -> dict:
+        user, page = {"id": "psid-77"}, {"id": "1000"}
+        msg = {"mid": mid, "text": text, **({"is_echo": True} if echo else {})}
+        ts = ms(datetime.now(UTC))
+        return {
+            "object": "page",
+            "entry": [
+                {
+                    "id": "1000",
+                    "time": ts,
+                    "messaging": [
+                        {
+                            "sender": page if echo else user,
+                            "recipient": user if echo else page,
+                            "timestamp": ts,
+                            "message": msg,
+                        }
+                    ],
+                }
+            ],
+        }
+
+    body, headers = signed(event("m_1", "Shop còn hàng MA-100 không?"))
+    assert (
+        await client.post("/hooks/fanpage", data=body, headers={"Content-Type": "application/json"})
+    ).status == 401
+    forged = {**headers, "X-Hub-Signature-256": "sha256=" + "0" * 64}
+    assert (await client.post("/hooks/fanpage", data=body, headers=forged)).status == 401
+
+    llm.responses.append(text("Dạ còn hàng ạ."))
+    r = await client.post("/hooks/fanpage", data=body, headers=headers)
+    cid = (await r.json())["conversation"]
+    await settle(hub)
+    assert platforms.sent[-1] == (
+        "facebook",
+        {"recipient": {"id": "psid-77"}, "messaging_type": "RESPONSE", "message": {"text": "Dạ còn hàng ạ."}},
+    )
+    assert hub.inbox.conversation(cid).customer_name == "Tuấn Trần"  # looked up from the Graph API
+    # our reply echoed back by Meta: ignored; a page admin typing in Meta Business Suite: takes over
+    body, headers = signed(event("m_2", "Dạ còn hàng ạ.", echo=True))
+    await client.post("/hooks/fanpage", data=body, headers=headers)
+    assert hub.inbox.conversation(cid).mode == "ai" and len(hub.inbox.messages(cid)) == 2
+    body, headers = signed(event("m_3", "Em gọi lại cho anh nhé", echo=True))
+    await client.post("/hooks/fanpage", data=body, headers=headers)
+    assert hub.inbox.conversation(cid).mode == "human"
+    # a redelivered event is not answered twice
+    body, headers = signed(event("m_1", "Shop còn hàng MA-100 không?"))
+    await client.post("/hooks/fanpage", data=body, headers=headers)
+    assert len(hub.inbox.messages(cid)) == 3
+
+
+async def test_zalo_oa_official_webhook(ui):
+    import hashlib
+
+    client, office, llm, platforms = ui
+    hub = office.hub
+
+    def signed(payload: dict, secret: str = "zalo-oa-secret-key") -> tuple[bytes, dict]:
+        body = json.dumps(payload).encode()
+        mac = hashlib.sha256(("42" + body.decode() + str(payload["timestamp"]) + secret).encode()).hexdigest()
+        return body, {"X-ZEvent-Signature": f"mac={mac}", "Content-Type": "application/json"}
+
+    now = str(ms(datetime.now(UTC)))
+    image = {
+        "app_id": "42",
+        "event_name": "user_send_image",
+        "timestamp": now,
+        "sender": {"id": "u-555"},
+        "recipient": {"id": "oa-1"},
+        "message": {
+            "msg_id": "zm-1",
+            "text": "Máy nhà mình đây",
+            "attachments": [
+                {
+                    "type": "image",
+                    "payload": {"url": "https://zdn.vn/a.jpg", "thumbnail": "https://zdn.vn/t.jpg"},
+                }
+            ],
+        },
+    }
+    body, headers = signed(image, secret="wrong")
+    assert (await client.post("/hooks/zalo-shop", data=body, headers=headers)).status == 401
+    llm.responses.append(text("Dạ em xem ảnh rồi ạ."))
+    body, headers = signed(image)
+    r = await client.post("/hooks/zalo-shop", data=body, headers=headers)
+    cid = (await r.json())["conversation"]
+    await settle(hub)
+    [m, _reply] = hub.inbox.messages(cid)
+    assert m["attachments"] == [
+        {"kind": "image", "url": "https://zdn.vn/a.jpg", "thumb": "https://zdn.vn/t.jpg"}
+    ]
+    assert platforms.sent[-1] == (
+        "zalo",
+        {"recipient": {"user_id": "u-555"}, "message": {"text": "Dạ em xem ảnh rồi ạ."}},
+    )
+    assert hub.inbox.conversation(cid).customer_name == "Hoa Nguyễn"
+    follow = {"app_id": "42", "event_name": "follow", "timestamp": now, "follower": {"id": "u-555"}}
+    body, headers = signed(follow)
+    assert (await (await client.post("/hooks/zalo-shop", data=body, headers=headers)).json())[
+        "conversation"
+    ] is None

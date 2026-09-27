@@ -64,6 +64,8 @@ staff_language: vi
 #     app_secret_env: ZALO_APP_SECRET
 #     access_token_env: ZALO_ACCESS_TOKEN
 #     refresh_token_env: ZALO_REFRESH_TOKEN
+#     webhook_secret_env: ZALO_OA_SECRET  # official webhook: POST /hooks/zalo-shop
+#     poll_seconds: 0                     # with the webhook, no polling needed
 #   - id: zalo-canhan               # a personal Zalo account via zalo-gateway/ (QR login)
 #     type: zalo_personal
 #     employee: sales
@@ -75,6 +77,9 @@ staff_language: vi
 #     employee: sales
 #     page_id: "100000000000000"
 #     access_token_env: FB_PAGE_TOKEN
+#     app_secret_env: FB_APP_SECRET       # official webhook: /hooks/fanpage
+#     verify_token: choose-a-long-random-string
+#     poll_seconds: 0
 #   - id: website                   # anything else: your bridge POSTs to /hooks/website
 #     type: webhook
 #     employee: sales
