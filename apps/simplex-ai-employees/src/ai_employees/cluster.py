@@ -34,6 +34,8 @@ CREATE TABLE IF NOT EXISTS simplex_outbox (
   id {id}, employee TEXT NOT NULL, contact {int} NOT NULL, text TEXT NOT NULL,
   created TEXT NOT NULL, sent {int} NOT NULL DEFAULT 0)
 """
+# simplex_outbox.sent: 0 waiting, 1 sent (or being sent), 2 failed (retried up to OUTBOX_TRIES)
+OUTBOX_TRIES = 3
 
 
 class Cluster:
@@ -48,6 +50,7 @@ class Cluster:
             raise ConfigError("cluster.shards > 1 needs a PostgreSQL database_url")
         if self.shards > 1:
             office.office_db.script(OUTBOX)
+            office.office_db.add_columns("simplex_outbox", {"attempts": "{int} NOT NULL DEFAULT 0"})
 
     @property
     def active(self) -> bool:
@@ -96,18 +99,34 @@ class Cluster:
 
     async def _drain_outbox(self) -> None:
         db = self.office.office_db
-        for row in db.rows("SELECT id, employee, contact, text FROM simplex_outbox WHERE sent=0 ORDER BY id"):
+        pending = db.rows(
+            "SELECT id, employee, contact, text FROM simplex_outbox "
+            "WHERE sent=0 OR (sent=2 AND attempts<?) ORDER BY id",
+            (OUTBOX_TRIES,),
+        )
+        for row in pending:
             # claim it first: never send twice, even if two notifications race
             claimed = db.execute(
-                "UPDATE simplex_outbox SET sent=1 WHERE id=? AND sent=0 RETURNING id", (row["id"],)
+                "UPDATE simplex_outbox SET sent=1, attempts=attempts+1 "
+                "WHERE id=? AND (sent=0 OR sent=2) AND attempts<? RETURNING attempts",
+                (row["id"], OUTBOX_TRIES),
             )
-            employee = self.office.employees.get(row["employee"])
-            if claimed is None or employee is None:
+            if claimed is None:
                 continue
+            employee = self.office.employees.get(row["employee"])
             try:
+                if employee is None:
+                    raise LookupError(f"no employee {row['employee']}")
                 await self.simplex_send(employee, int(row["contact"]), row["text"])
             except Exception:
-                log.exception("cluster: outbox message %s to %s failed", row["id"], row["contact"])
+                db.execute("UPDATE simplex_outbox SET sent=2 WHERE id=?", (row["id"],))
+                log.exception(
+                    "cluster: outbox message %s to %s failed (try %s of %s)",
+                    row["id"],
+                    row["contact"],
+                    claimed,
+                    OUTBOX_TRIES,
+                )
 
     # listening
 

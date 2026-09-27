@@ -100,14 +100,19 @@ _VOCAB = {
 }
 _WORDS: dict[str, set[str]] = {code: set(words.split()) for code, words in _VOCAB.items()}
 _TOKEN = re.compile(r"[^\W\d_]+", re.UNICODE)
+_AMOUNT = re.compile(r"\d[\d.,]*\s?(?:vnđ|vnd|đ|₫|k)(?![^\W\d_])", re.IGNORECASE)
 
 
-def detect(text: str) -> str | None:
-    """The language of a customer message, or None when unsure."""
+def detect(text: str, amounts: bool = False) -> str | None:
+    """The language of a customer message, or None when unsure. Prices ("4.500.000đ", "500k")
+    are ignored: an English message quoting one is not Vietnamese. `amounts`: count their đ
+    too (a translation still writing Vietnamese prices has not left Vietnamese)."""
     text = unicodedata.normalize("NFC", text or "")
     for code, rx in _SCRIPTS:
         if rx.search(text):
             return code
+    if not amounts:
+        text = _AMOUNT.sub(" ", text)
     if _VI_LETTERS.search(text):
         return "vi"
     words = [w.casefold() for w in _TOKEN.findall(text)]
@@ -209,9 +214,12 @@ def text(key: str, code: str | None, **values: object) -> str:
 
 # Prices and product codes must survive translation exactly (small models turn "4.500.000đ"
 # into "4,500,000円" or katakana-ise "MA-100"): they are swapped for placeholders first.
+# Whole numbers only: not part of a longer number, a phone (090.123.4567) or a date
+# (12.05.2026); one separator throughout; no leading 0 (phones, codes).
 _PRICE = re.compile(
-    r"\d{1,3}(?:[.,]\d{3})+(?:\s?(?:đồng|đ|vnđ|vnd)\b|\s?(?:đồng|đ|vnđ|vnd)(?=\W|$))?"
-    r"|\d+\s?(?:đồng|vnđ|vnd)\b",
+    r"(?<![\d.,])(?!0)\d{1,3}([.,])\d{3}(?:\1\d{3})*(?![.,]?\d)"
+    r"(?:\s?(?:đồng|đ|vnđ|vnd)\b|\s?(?:đồng|đ|vnđ|vnd)(?=\W|$))?"
+    r"|(?<![\d.,])(?!0\d)\d+(?![.,]?\d)\s?(?:đồng|vnđ|vnd)\b",
     re.IGNORECASE,
 )
 _CODE = re.compile(r"\b[A-Z]{1,5}-\d+[A-Za-z0-9]*(?:\s(?:Pro|Plus|Max|Mini|Lite))?\b")
@@ -260,6 +268,24 @@ def restore(text: str, values: list[str]) -> tuple[str, int]:
     return out, len(lost)
 
 
+_NUMBER = re.compile(r"\d+(?:[.,\s]\d{3})*")
+
+
+def missing(text: str, values: list[str]) -> list[str]:
+    """Protected values a translation made without placeholders dropped or changed: a price
+    counts as kept in any grouping (4,500,000 / 4.500.000), a code only exactly."""
+    numbers = {re.sub(r"\D", "", n) for n in _NUMBER.findall(text)}
+    out = []
+    for v in values:
+        plain = v.removesuffix(" VND")
+        if plain in text:
+            continue
+        if re.fullmatch(r"[\d.,\s]+", plain) and re.sub(r"\D", "", plain) in numbers:
+            continue
+        out.append(v)
+    return out
+
+
 _KANA = re.compile(r"[\u3040-\u30ff]")
 _HAN = re.compile(r"[\u4e00-\u9fff]")
 # Simplified Chinese characters Japanese writes differently (価, 浄, 個, 請...) or never uses.
@@ -269,7 +295,7 @@ _SIMPLIFIED_ONLY = "这们个请谢说为价净吗您呢吧对时间现实问题
 def is_in(text: str, code: str) -> bool:
     """Whether a translation really is in the language asked for. Unclear text passes;
     text clearly in another language (or Japanese drifting into Chinese) does not."""
-    found = detect(text)
+    found = detect(text, amounts=True)
     if code == "ja":
         kana, han = len(_KANA.findall(text)), len(_HAN.findall(text))
         chinese = sum(text.count(c) for c in _SIMPLIFIED_ONLY)

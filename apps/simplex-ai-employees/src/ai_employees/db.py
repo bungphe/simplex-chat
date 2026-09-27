@@ -9,13 +9,17 @@ writes); PostgreSQL connections are opened lazily, one per process.
 
 from __future__ import annotations
 
+import logging
 import os
 import sqlite3
 import threading
-from collections.abc import Iterable, Iterator, Sequence
-from contextlib import contextmanager
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from contextlib import contextmanager, suppress
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
+
+log = logging.getLogger(__name__)
+T = TypeVar("T")
 
 
 class IntegrityError(Exception):
@@ -28,6 +32,7 @@ class Database:
         self.postgres = url.startswith(("postgres://", "postgresql://"))
         self._lock = threading.RLock()
         self.closed = False
+        self._depth = 0  # open transaction() blocks
         if self.postgres:
             import psycopg  # optional dependency: pip install "psycopg[binary]"
 
@@ -55,58 +60,98 @@ class Database:
             sql = sql.replace("{real}", "REAL")
         return sql
 
-    def script(self, sql: str) -> None:
+    def _call(self, run: Callable[[], T]) -> T:
+        """Run against the connection. PostgreSQL may restart (or drop an idle connection):
+        outside a transaction a lost connection is reopened and the statement run once more;
+        inside one the error is raised (the transaction is gone) and the next statement reconnects."""
         with self._lock:
+            if not self.postgres:
+                return run()
+            if self._depth == 0 and self._conn.closed and not self.closed:
+                self._reconnect()
+            try:
+                return run()
+            except self._pg.OperationalError:
+                if self._depth or self.closed or not self._conn.closed:
+                    raise  # a transaction was lost, or the server refused the statement itself
+                log.warning("database: connection lost; reconnecting")
+                self._reconnect()
+                return run()
+
+    def _reconnect(self) -> None:
+        with suppress(self._pg.Error, OSError):
+            self._conn.close()
+        self._conn = self._pg.connect(self.url, autocommit=True)
+
+    def script(self, sql: str) -> None:
+        def run() -> None:
             for statement in (s.strip() for s in self.ddl(sql).split(";")):
                 if statement:
                     self._conn.execute(statement)
+
+        self._call(run)
 
     def _sql(self, sql: str) -> str:
         return sql.replace("?", "%s") if self.postgres else sql
 
     def execute(self, sql: str, params: Sequence[Any] = ()) -> int | None:
         """Run a statement; returns the new row id for `INSERT ... RETURNING id`, if any."""
-        with self._lock:
-            try:
-                cur = self._conn.execute(self._sql(sql), tuple(params))
-            except sqlite3.IntegrityError as e:
-                raise IntegrityError(str(e)) from e
-            except Exception as e:
-                if self.postgres and isinstance(e, self._pg.errors.UniqueViolation):
-                    raise IntegrityError(str(e)) from e
-                raise
+
+        def run() -> int | None:
+            cur = self._conn.execute(self._sql(sql), tuple(params))
             if "RETURNING" in sql.upper():
                 row = cur.fetchone()
                 return int(row[0]) if row else None
             return None
 
+        try:
+            return self._call(run)
+        except sqlite3.IntegrityError as e:
+            raise IntegrityError(str(e)) from e
+        except Exception as e:
+            if self.postgres and isinstance(e, self._pg.errors.UniqueViolation):
+                raise IntegrityError(str(e)) from e
+            raise
+
     def rows(self, sql: str, params: Sequence[Any] = ()) -> list[dict[str, Any]]:
-        with self._lock:
+        def run() -> list[dict[str, Any]]:
             cur = self._conn.execute(self._sql(sql), tuple(params))
             if self.postgres:
                 names = [d.name for d in cur.description or []]
                 return [dict(zip(names, r, strict=True)) for r in cur.fetchall()]
             return [dict(r) for r in cur.fetchall()]
 
+        return self._call(run)
+
     def row(self, sql: str, params: Sequence[Any] = ()) -> dict[str, Any] | None:
         found = self.rows(sql, params)
         return found[0] if found else None
 
     def many(self, sql: str, seq: Iterable[Sequence[Any]]) -> None:
-        with self._lock:
+        params = [tuple(p) for p in seq]
+
+        def run() -> None:
             if self.postgres:
                 with self._conn.cursor() as cur:
-                    cur.executemany(self._sql(sql), [tuple(p) for p in seq])
+                    cur.executemany(self._sql(sql), params)
             else:
-                self._conn.executemany(sql, [tuple(p) for p in seq])
+                self._conn.executemany(sql, params)
+
+        self._call(run)
 
     @contextmanager
     def transaction(self) -> Iterator[None]:
         """Statements inside run all-or-nothing (and no other thread interleaves)."""
         with self._lock:
             if self.postgres:
-                with self._conn.transaction():
-                    yield
+                if self._depth == 0 and self._conn.closed and not self.closed:
+                    self._reconnect()
+                self._depth += 1
+                try:
+                    with self._conn.transaction():
+                        yield
+                finally:
+                    self._depth -= 1
             else:
                 self._conn.execute("BEGIN")
                 try:
@@ -120,7 +165,7 @@ class Database:
         """Columns added after a table was first created ({int} in the DDL works here too)."""
         if self.postgres:
             for name, ddl in columns.items():
-                self._conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {name} {self.ddl(ddl)}")
+                self.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {name} {self.ddl(ddl)}")
             return
         have = {r["name"] for r in self.rows(f"PRAGMA table_info({table})")}
         for name, ddl in columns.items():

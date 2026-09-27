@@ -105,8 +105,12 @@ def parse_routine(raw: dict[str, Any]) -> Routine:
     task = str(raw.get("task") or "").strip()
     if not task:
         raise ValueError(f"routine {rid}: 'task' is required")
+    at_raw = raw.get("at", "")
+    if isinstance(at_raw, int) and not isinstance(at_raw, bool) and 0 <= at_raw < 24 * 60:
+        # YAML 1.1 reads an unquoted 10:00 as sexagesimal 600 (minutes): turn it back
+        at_raw = f"{at_raw // 60}:{at_raw % 60:02d}"
     try:
-        hh, mm = str(raw.get("at", "")).split(":")
+        hh, mm = str(at_raw).split(":")
         at = time(int(hh), int(mm))
     except ValueError:
         raise ValueError(f"routine {rid}: 'at' must be HH:MM, e.g. 08:00") from None
@@ -121,7 +125,10 @@ def parse_routine(raw: dict[str, Any]) -> Routine:
     deliver = raw.get("deliver", "admins")
     if deliver not in DELIVERY:
         raise ValueError(f"routine {rid}: deliver must be one of {DELIVERY}")
-    window = int(raw.get("window_minutes", 180))
+    try:
+        window = int(raw.get("window_minutes", 180))
+    except (TypeError, ValueError):
+        raise ValueError(f"routine {rid}: window_minutes must be a number") from None
     if not 1 <= window <= 24 * 60:
         raise ValueError(f"routine {rid}: window_minutes must be between 1 and 1440")
     return Routine(rid, task, at, days, window, period, deliver, days_spec)

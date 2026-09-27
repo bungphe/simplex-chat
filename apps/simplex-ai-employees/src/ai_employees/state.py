@@ -496,6 +496,27 @@ class EmployeeState:
         )
         return json.loads(row["data"]) if row else None
 
+    def claim_action(self, action_id: int, expect: str, **fields: Any) -> dict[str, Any] | None:
+        """Change a request only if it is still in status `expect` (e.g. pending -> executing),
+        atomically: of two processes approving (or approving and rejecting) at once, one wins.
+        Returns the updated request, or None when it was not in that status (or is gone)."""
+        with self.db.transaction():
+            action = self.action(action_id)
+            if action is None or action.get("status") != expect:
+                return None
+            action.update(fields)
+            won = self.db.execute(
+                "UPDATE actions SET status=?, data=? WHERE employee=? AND number=? AND status=? RETURNING number",
+                (
+                    action.get("status", ""),
+                    json.dumps(action, ensure_ascii=False),
+                    self.employee,
+                    action_id,
+                    expect,
+                ),
+            )
+        return action if won is not None else None
+
     def update_action(self, action_id: int, **fields: Any) -> dict[str, Any]:
         with self.db.transaction():
             action = self.action(action_id)

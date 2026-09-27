@@ -12,6 +12,7 @@ import yaml
 
 from .actions import ActionDef, parse_action
 from .channels import ChannelConfig, parse_channel
+from .i18n import LANGUAGES, normalize
 from .providers import PROVIDERS, ModelProfile, fallback_default
 from .routines import Routine, parse_routine
 
@@ -34,6 +35,17 @@ _TUPLES = ("skills", "releases", "corrections", "paused_routines")
 
 class ConfigError(Exception):
     pass
+
+
+def number(raw: dict[str, Any], key: str, default: Any, where: str = "", kind: type = int) -> Any:
+    """A numeric setting, or a ConfigError naming it (`max_steps: eight` is a mistake to report)."""
+    value = raw.get(key, default)
+    try:
+        if isinstance(value, bool):  # yes/no is not a number
+            raise TypeError
+        return kind(value)
+    except (TypeError, ValueError):
+        raise ConfigError(f"{where}{key} must be a number, not {value!r}") from None
 
 
 @dataclass(frozen=True)
@@ -210,9 +222,9 @@ def parse_config(raw: dict[str, Any], base_dir: Path) -> AppConfig:
                 system_prompt=merged["system_prompt"].strip(),
                 model=model,
                 effort=effort,
-                max_tokens=int(merged.get("max_tokens", 16000)),
-                max_steps=int(merged.get("max_steps", 8)),
-                history_messages=int(merged.get("history_messages", 40)),
+                max_tokens=number(merged, "max_tokens", 16000, f"employee {emp_id}: "),
+                max_steps=number(merged, "max_steps", 8, f"employee {emp_id}: "),
+                history_messages=number(merged, "history_messages", 40, f"employee {emp_id}: "),
                 translate_replies=bool(merged.get("translate_replies", False)),
                 translation_model=merged.get("translation_model") or None,
                 skills=tuple(merged.get("skills") or ()),
@@ -237,6 +249,11 @@ def parse_config(raw: dict[str, Any], base_dir: Path) -> AppConfig:
     if len({c.id for c in channels}) != len(channels):
         raise ConfigError("duplicate channel id")
 
+    staff_language = normalize(str(raw.get("staff_language") or "vi"))
+    if staff_language is None:
+        raise ConfigError(
+            f"staff_language '{raw.get('staff_language')}' is not supported; use one of {', '.join(LANGUAGES)}"
+        )
     servers = raw.get("servers") or {}
     return AppConfig(
         employees=tuple(employees),
@@ -249,12 +266,12 @@ def parse_config(raw: dict[str, Any], base_dir: Path) -> AppConfig:
         admin_ui=parse_admin_ui(raw.get("admin_ui")),
         storefront=parse_storefront(raw.get("storefront")),
         channels=tuple(channels),
-        catch_up_hours=float(raw.get("catch_up_hours", 12)),
-        staff_language=str(raw.get("staff_language") or "vi"),
+        catch_up_hours=number(raw, "catch_up_hours", 12, kind=float),
+        staff_language=staff_language,
         database_url=raw.get("database_url")
         or (os.environ.get(str(raw["database_url_env"])) if raw.get("database_url_env") else None)
         or None,
-        shards=int((raw.get("cluster") or {}).get("shards", 1)),
+        shards=number(raw.get("cluster") or {}, "shards", 1, "cluster."),
     )
 
 
@@ -266,7 +283,7 @@ def parse_storefront(raw: dict[str, Any] | None) -> StorefrontConfig | None:
         raise ConfigError("storefront.public_url must start with https://")
     return StorefrontConfig(
         host=os.environ.get("AI_STOREFRONT_HOST") or str(raw.get("host", "127.0.0.1")),
-        port=int(raw.get("port", 8081)),
+        port=number(raw, "port", 8081, "storefront."),
         public_url=url,
     )
 
@@ -280,7 +297,7 @@ def parse_admin_ui(raw: dict[str, Any] | None) -> AdminUIConfig | None:
     return AdminUIConfig(
         # AI_ADMIN_UI_HOST lets a container listen on 0.0.0.0 without editing the config
         host=os.environ.get("AI_ADMIN_UI_HOST") or str(raw.get("host", "127.0.0.1")),
-        port=int(raw.get("port", 8080)),
+        port=number(raw, "port", 8080, "admin_ui."),
         password=password,
     )
 
@@ -318,6 +335,6 @@ def parse_models(raw: dict[str, Any]) -> dict[str, ModelProfile]:
             headers={str(k): str(v) for k, v in (m.get("headers") or {}).items()},
             extra_body=dict(m.get("extra_body") or {}),
             refusal_fallback=bool(m.get("refusal_fallback", fallback_default(provider, m["model"]))),
-            timeout=float(m.get("timeout", 120.0)),
+            timeout=number(m, "timeout", 120.0, f"model {name}: ", float),
         )
     return models

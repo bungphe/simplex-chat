@@ -76,7 +76,11 @@ def best_match(accept_language: str | None) -> str | None:
     """The first supported language of an Accept-Language header."""
     ranked = []
     for i, part in enumerate((accept_language or "").split(",")):
-        tag, _, q = part.strip().partition(";q=")
+        tag, _, params = part.partition(";")
+        tag = tag.strip()
+        # "en;q=0.5", "en; q=0.5", "en ; Q = 0.5"
+        key, _, q = params.partition("=")
+        q = q.strip() if key.strip().lower() == "q" else ""
         try:
             weight = float(q) if q else 1.0
         except ValueError:

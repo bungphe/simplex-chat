@@ -151,8 +151,8 @@ class Agent:
 
     async def translate(self, text: str, target: str, purpose: str = "") -> str:
         """Translate for a customer or for staff. Prices and product codes are protected; an
-        output that is not in the target language is retried once, then refused, so a wrong
-        language never reaches a customer."""
+        output that is not in the target language (or lost a price) is retried once, then
+        refused, so a wrong language or a changed price never reaches a customer."""
         if not text.strip():
             return text
         model = self._translation_model()
@@ -166,6 +166,7 @@ class Agent:
         masked, values = lg.protect(text, target)
         started = time.monotonic()
         tokens = [0, 0]
+        dropped: list[str] = []
 
         async def attempt(protected: bool) -> str:
             system = (
@@ -183,7 +184,10 @@ class Agent:
             if turn.stop == "refusal":
                 return ""
             if not protected:
-                return lg.tidy(turn.text.strip(), target)
+                out = turn.text.strip()
+                # the plain retry must still carry every price and code, exactly
+                dropped[:] = lg.missing(out, values)
+                return "" if dropped else lg.tidy(out, target)
             out, lost = lg.restore(turn.text.strip(), values)
             return "" if lost else lg.tidy(out, target)
 
@@ -198,6 +202,8 @@ class Agent:
             raise TranslationError(str(e)) from e
         if not out or not lg.is_in(out, target):
             self.employee.log("translate", "error", to=target, model=model.profile.name)
+            if dropped:
+                raise TranslationError(f"the translation lost {', '.join(dropped)}")
             raise TranslationError(f"the model did not produce {lg.name(target)}")
         self.employee.log(
             "translate",
@@ -384,7 +390,14 @@ class Agent:
             f"Your colleague {asker} is asking you a question on behalf of a contact. "
             "Answer concisely and factually for your colleague."
         )
-        excluded = ("ask_colleague", "learn", *CONTACT_SKILLS)
+        # no side effects on a colleague's behalf: no orders, webhooks or handoffs from here
+        excluded = (
+            "ask_colleague",
+            "learn",
+            "handoff_to_human",
+            *CONTACT_SKILLS,
+            *self.employee.office.config.actions,
+        )
         tools = [t for t in sk.resolve(s.skills) if t.name not in excluded and not t.internal]
         r = await self._run(situation, [], question, tools, ctx)
         self.employee.log("consult", r.status, asker=asker, **r.log_fields())

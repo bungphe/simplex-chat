@@ -31,6 +31,7 @@ Only managers release; nothing an employee or a contact writes can.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -142,8 +143,17 @@ def parse_action(name: str, raw: dict[str, Any]) -> ActionDef:
         headers={str(k): str(v) for k, v in (raw.get("headers") or {}).items()},
         fields=fields,
         confirm_message=raw.get("confirm_message"),
-        timeout=float(raw.get("timeout", 30.0)),
+        timeout=_timeout(name, raw.get("timeout", 30.0)),
     )
+
+
+def _timeout(name: str, value: Any) -> float:
+    try:
+        if isinstance(value, bool):  # yes/no is not a number
+            raise TypeError
+        return float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"action {name}: timeout must be a number, not {value!r}") from None
 
 
 def expand_env(value: str) -> str:
@@ -196,6 +206,9 @@ class ActionDesk:
         if rec["status"] != "pending":
             return tr("Yêu cầu #{0} đang ở trạng thái '{1}', không thể duyệt.", action_id, rec["status"])
         ok, detail = await self._execute(action_id, decided_by=by)
+        if ok is None:  # another manager (or process) decided it first
+            rec = self.state.action(action_id) or rec
+            return tr("Yêu cầu #{0} đang ở trạng thái '{1}', không thể duyệt.", action_id, rec["status"])
         return (
             tr("Đã thực hiện #{0}: {1}", action_id, detail)
             if ok
@@ -208,44 +221,36 @@ class ActionDesk:
             return tr("Không có yêu cầu #{0}.", action_id)
         if rec["status"] != "pending":
             return tr("Yêu cầu #{0} đang ở trạng thái '{1}', không thể từ chối.", action_id, rec["status"])
-        self.state.update_action(
-            action_id, status="rejected", decided_by=by, decided=now_iso(), reason=reason
+        claimed = self.state.claim_action(
+            action_id, "pending", status="rejected", decided_by=by, decided=now_iso(), reason=reason
         )
+        if claimed is None:  # approved (or rejected) meanwhile
+            rec = self.state.action(action_id) or rec
+            return tr("Yêu cầu #{0} đang ở trạng thái '{1}', không thể từ chối.", action_id, rec["status"])
         self.employee.log("action", "rejected", action=rec["action"], request=action_id)
-        await self._tell_contact(rec, "request_rejected", reason=reason)
+        await self._tell_contact(claimed, "request_rejected", reason=reason)
         return tr("Đã từ chối #{0}.", action_id)
 
-    async def _execute(self, action_id: int, decided_by: str) -> tuple[bool, str]:
-        rec = self.state.update_action(
-            action_id, status="executing", decided_by=decided_by, decided=now_iso()
+    async def _execute(self, action_id: int, decided_by: str) -> tuple[bool | None, str]:
+        """Run a pending request once. (None, "") when it is no longer pending: someone else
+        approved or rejected it first, so it must not be sent again."""
+        rec = self.state.claim_action(
+            action_id, "pending", status="executing", decided_by=decided_by, decided=now_iso()
         )
+        if rec is None:
+            return None, ""
         action = self.employee.office.config.actions.get(rec["action"])
         if action is None:
             detail = f"action {rec['action']} is no longer configured"
-            self.state.update_action(action_id, status="failed", result=detail)
+            self.state.update_action(action_id, status="failed", result=detail, finished=now_iso())
             return False, detail
-        if action.kind == "stock_order":
-            ok, detail = self._stock_order(rec)
-            self.state.update_action(
-                action_id, status="done" if ok else "failed", result=detail, finished=now_iso()
-            )
-            self.employee.log(
-                "action", "ok" if ok else "error", action=action.name, request=action_id, by=decided_by
-            )
-            if ok and decided_by != "release":
-                await self._tell_contact(rec, "request_confirmed", message=action.confirm_message)
-            return ok, detail
-        headers = {k: expand_env(v) for k, v in action.headers.items()}
-        payload = {**rec["args"], "_request_id": action_id, "_employee": self.employee.id}
         try:
-            r = await self.employee.office.http_client.request(
-                action.method, expand_env(action.url), json=payload, headers=headers, timeout=action.timeout
-            )
-            ok = 200 <= r.status_code < 300
-            detail = (
-                (r.text or f"HTTP {r.status_code}")[:500] if ok else f"HTTP {r.status_code}: {r.text[:300]}"
-            )
-        except httpx2.HTTPError as e:
+            ok, detail = await self._send(action, rec)
+        except asyncio.CancelledError:  # shutting down: never leave it 'executing' forever
+            self.state.update_action(action_id, status="failed", result="cancelled", finished=now_iso())
+            raise
+        except Exception as e:  # a bad URL, a broken stock order...: failed, with the reason
+            log.exception("%s: action #%s %s crashed", self.employee.id, action_id, action.name)
             ok, detail = False, f"{type(e).__name__}: {e}"
         self.state.update_action(
             action_id, status="done" if ok else "failed", result=detail, finished=now_iso()
@@ -258,6 +263,21 @@ class ActionDesk:
         if not ok:
             log.warning("%s: action #%s %s failed: %s", self.employee.id, action_id, action.name, detail)
         return ok, detail
+
+    async def _send(self, action: ActionDef, rec: dict[str, Any]) -> tuple[bool, str]:
+        if action.kind == "stock_order":
+            return self._stock_order(rec)
+        headers = {k: expand_env(v) for k, v in action.headers.items()}
+        payload = {**rec["args"], "_request_id": rec["id"], "_employee": self.employee.id}
+        try:
+            r = await self.employee.office.http_client.request(
+                action.method, expand_env(action.url), json=payload, headers=headers, timeout=action.timeout
+            )
+        except httpx2.HTTPError as e:
+            return False, f"{type(e).__name__}: {e}"
+        if 200 <= r.status_code < 300:
+            return True, (r.text or f"HTTP {r.status_code}")[:500]
+        return False, f"HTTP {r.status_code}: {r.text[:300]}"
 
     def _stock_order(self, rec: dict[str, Any]) -> tuple[bool, str]:
         """An order in the office's own inventory: goods reserved at the customer's price."""
