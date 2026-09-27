@@ -15,7 +15,7 @@ MENU_TEXT: dict[str, dict[str, str]] = {
         "points": "Điểm tích luỹ & thẻ VIP",
         "shop": "Đăng nhập website",
         "staff": "Gặp nhân viên",
-        "forget": "Xoá lịch sử trò chuyện",
+        "forget": "Xoá trí nhớ trợ lý",
     },
     "en": {
         "products": "Products & prices",
@@ -27,7 +27,7 @@ MENU_TEXT: dict[str, dict[str, str]] = {
         "points": "Points & VIP card",
         "shop": "Sign in to the website",
         "staff": "Talk to a person",
-        "forget": "Delete chat history",
+        "forget": "Clear the assistant's memory",
     },
     "zh": {
         "products": "查找商品和价格",
@@ -39,7 +39,7 @@ MENU_TEXT: dict[str, dict[str, str]] = {
         "points": "积分和VIP卡",
         "shop": "登录网站",
         "staff": "联系人工客服",
-        "forget": "删除聊天记录",
+        "forget": "清除助手记忆",
     },
     "ja": {
         "products": "商品と価格を探す",
@@ -51,7 +51,7 @@ MENU_TEXT: dict[str, dict[str, str]] = {
         "points": "ポイントとVIPカード",
         "shop": "ウェブサイトにログイン",
         "staff": "スタッフと話す",
-        "forget": "チャット履歴を削除",
+        "forget": "アシスタントの記憶を消去",
     },
     "ko": {
         "products": "상품 및 가격 찾기",
@@ -63,7 +63,7 @@ MENU_TEXT: dict[str, dict[str, str]] = {
         "points": "포인트 및 VIP 카드",
         "shop": "웹사이트 로그인",
         "staff": "직원과 상담",
-        "forget": "대화 기록 삭제",
+        "forget": "어시스턴트 기억 지우기",
     },
     "th": {
         "products": "ค้นหาสินค้าและราคา",
@@ -75,7 +75,7 @@ MENU_TEXT: dict[str, dict[str, str]] = {
         "points": "คะแนนและบัตร VIP",
         "shop": "เข้าสู่ระบบเว็บไซต์",
         "staff": "คุยกับพนักงาน",
-        "forget": "ลบประวัติการแชท",
+        "forget": "ล้างความจำของผู้ช่วย",
     },
     "id": {
         "products": "Produk & harga",
@@ -87,7 +87,7 @@ MENU_TEXT: dict[str, dict[str, str]] = {
         "points": "Poin & kartu VIP",
         "shop": "Masuk ke situs web",
         "staff": "Bicara dengan staf",
-        "forget": "Hapus riwayat obrolan",
+        "forget": "Hapus memori asisten",
     },
     "ms": {
         "products": "Produk & harga",
@@ -99,7 +99,7 @@ MENU_TEXT: dict[str, dict[str, str]] = {
         "points": "Mata ganjaran & kad VIP",
         "shop": "Log masuk laman web",
         "staff": "Bercakap dengan staf",
-        "forget": "Padam sejarah sembang",
+        "forget": "Padam memori pembantu",
     },
     "km": {
         "products": "ស្វែងរកផលិតផល និងតម្លៃ",
@@ -111,7 +111,7 @@ MENU_TEXT: dict[str, dict[str, str]] = {
         "points": "ពិន្ទុ និងកាត VIP",
         "shop": "ចូលគេហទំព័រ",
         "staff": "និយាយជាមួយបុគ្គលិក",
-        "forget": "លុបប្រវត្តិជជែក",
+        "forget": "លុបការចងចាំរបស់ជំនួយការ",
     },
     "lo": {
         "products": "ຊອກຫາສິນຄ້າ ແລະ ລາຄາ",
@@ -123,7 +123,7 @@ MENU_TEXT: dict[str, dict[str, str]] = {
         "points": "ຄະແນນ ແລະ ບັດ VIP",
         "shop": "ເຂົ້າສູ່ລະບົບເວັບໄຊ",
         "staff": "ລົມກັບພະນັກງານ",
-        "forget": "ລຶບປະຫວັດການສົນທະນາ",
+        "forget": "ລຶບຄວາມຈຳຂອງຜູ້ຊ່ວຍ",
     },
     "fr": {
         "products": "Produits et prix",
@@ -135,7 +135,7 @@ MENU_TEXT: dict[str, dict[str, str]] = {
         "points": "Points et carte VIP",
         "shop": "Se connecter au site",
         "staff": "Parler à un conseiller",
-        "forget": "Effacer l'historique",
+        "forget": "Effacer la mémoire de l'assistant",
     },
     "de": {
         "products": "Produkte & Preise",
@@ -147,7 +147,7 @@ MENU_TEXT: dict[str, dict[str, str]] = {
         "points": "Punkte & VIP-Karte",
         "shop": "Auf der Website anmelden",
         "staff": "Mit Personal sprechen",
-        "forget": "Chatverlauf löschen",
+        "forget": "Gedächtnis des Assistenten löschen",
     },
     "es": {
         "products": "Productos y precios",
@@ -159,7 +159,7 @@ MENU_TEXT: dict[str, dict[str, str]] = {
         "points": "Puntos y tarjeta VIP",
         "shop": "Entrar en la web",
         "staff": "Hablar con una persona",
-        "forget": "Borrar historial",
+        "forget": "Borrar la memoria del asistente",
     },
     "pt": {
         "products": "Produtos e preços",
@@ -171,7 +171,7 @@ MENU_TEXT: dict[str, dict[str, str]] = {
         "points": "Pontos e cartão VIP",
         "shop": "Entrar no site",
         "staff": "Falar com uma pessoa",
-        "forget": "Apagar histórico",
+        "forget": "Apagar a memória do assistente",
     },
     "ru": {
         "products": "Товары и цены",
@@ -183,7 +183,7 @@ MENU_TEXT: dict[str, dict[str, str]] = {
         "points": "Баллы и VIP-карта",
         "shop": "Войти на сайт",
         "staff": "Связаться с сотрудником",
-        "forget": "Удалить историю чата",
+        "forget": "Очистить память ассистента",
     },
     "ar": {
         "products": "المنتجات والأسعار",
@@ -195,7 +195,7 @@ MENU_TEXT: dict[str, dict[str, str]] = {
         "points": "النقاط وبطاقة VIP",
         "shop": "تسجيل الدخول إلى الموقع",
         "staff": "التحدث إلى موظف",
-        "forget": "حذف سجل المحادثة",
+        "forget": "مسح ذاكرة المساعد",
     },
     "hi": {
         "products": "उत्पाद और कीमतें",
@@ -207,6 +207,6 @@ MENU_TEXT: dict[str, dict[str, str]] = {
         "points": "पॉइंट्स और VIP कार्ड",
         "shop": "वेबसाइट में लॉग इन",
         "staff": "कर्मचारी से बात करें",
-        "forget": "चैट इतिहास हटाएं",
+        "forget": "सहायक की स्मृति मिटाएं",
     },
 }

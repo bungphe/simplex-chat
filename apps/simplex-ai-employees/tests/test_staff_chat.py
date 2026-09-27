@@ -230,7 +230,7 @@ async def test_the_customer_menu_and_replies_in_the_customer_language(office, mo
     # the menu follows the customer's language, set once per language
     await sales.staff.localize_menu(50)
     labels = [c["label"] for c in chat.prefs[50]["commands"]]
-    assert labels[0] == "🛋 Products & prices" and labels[-1] == "Delete chat history"
+    assert labels[0] == "🛋 Products & prices" and labels[-1] == "Clear the assistant's memory"
     chat.prefs.clear()
     await sales.staff.localize_menu(50)
     assert 50 not in chat.prefs

@@ -7,7 +7,9 @@ import asyncio
 import hmac
 import json
 import logging
+import time
 from collections import defaultdict
+from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 from datetime import UTC, datetime
 from pathlib import Path
@@ -32,6 +34,11 @@ from .state import EmployeeState, now_iso
 log = logging.getLogger(__name__)
 
 MAX_MESSAGE_CHARS = 4000
+ADMIN_TRIES = 5  # wrong /admin tokens a contact may send per hour
+ADMIN_LOCK_SECONDS = 3600
+# commands that carry a secret (the admin token, a link code): never mirrored to the inbox
+# or shown to a model, however they are typed
+SECRET_WORDS = ("admin", "link")
 
 ADMIN_HELP = """\
 *Lệnh quản trị nhân viên AI*
@@ -88,13 +95,14 @@ class Employee:
         self.actions = ActionDesk(self)
         self._locks: defaultdict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._tasks: set[asyncio.Task[Any]] = set()
+        self._admin_failures: dict[int, list[float]] = {}  # contact -> times of wrong /admin tokens
         Path(cfg.db).parent.mkdir(parents=True, exist_ok=True)
         self.bot = EmployeeBot(
             smp_servers=office.config.smp_servers,
             profile=BotProfile(display_name=cfg.display_name, short_descr=cfg.short_descr),
             db=SqliteDb(file_prefix=cfg.db),
             welcome=cfg.welcome,
-            commands=[BotCommand(keyword="forget", label=tr("Xoá lịch sử trò chuyện / Forget me"))],
+            commands=[BotCommand(keyword="forget", label=tr("Xoá trí nhớ trợ lý / Forget me"))],
         )
         from .chat_menu import ChatMenu
 
@@ -137,23 +145,39 @@ class Employee:
         cid: int = contact["contactId"]
         name: str = contact["profile"].get("displayName") or contact["localDisplayName"]
         text = (msg.text or "").strip()
-        if text.startswith("/"):
-            word, _, rest = text[1:].partition(" ")
-            if word in ("admin", "ai", "forget"):
-                await msg.reply(await self.command(cid, word, rest.strip(), by=name))
-                return
-            from .chat_menu import CUSTOMER_WORDS
-
-            if word in CUSTOMER_WORDS:
-                await msg.reply(await self.menu.handle(cid, word, rest, name))
-                return
-            from .staff_chat import STAFF_WORDS
-
-            if word in STAFF_WORDS:
-                await msg.reply(await self.staff.handle(cid, word, rest))
-                return
-        if text:
+        if not await self._chat_command(msg, cid, name, text) and text:
             await self._incoming(msg, cid, name, text, [])
+
+    async def _chat_command(self, msg: Message[Any], cid: int, name: str, text: str) -> bool:
+        """Answer a /command (True), or leave the text to the inbox and the AI (False).
+        Commands that may wait on a model run beside the receive loop, one at a time per
+        contact (the lock the AI replies use), so a slow one never holds up other chats."""
+        command = parse_command(text)
+        if command is None:
+            return False
+        word, rest = command
+        if word == "admin":  # quick, and checked before anything else from this contact
+            await msg.reply(await self.command(cid, word, rest, by=name))
+            return True
+        from .chat_menu import CUSTOMER_WORDS
+        from .staff_chat import STAFF_WORDS
+
+        if word in ("ai", "forget"):
+            self._spawn(self._reply(msg, cid, lambda: self.command(cid, word, rest, by=name)))
+        elif word in CUSTOMER_WORDS:
+            self._spawn(self._reply(msg, cid, lambda: self.menu.handle(cid, word, rest, name)))
+        elif word in STAFF_WORDS:
+            self._spawn(self._reply(msg, cid, lambda: self.staff.handle(cid, word, rest)))
+        else:
+            return False
+        return True
+
+    async def _reply(self, msg: Message[Any], cid: int, answer: Callable[[], Awaitable[str]]) -> None:
+        async with self._locks[cid]:
+            try:
+                await msg.reply(await answer())
+            except Exception:
+                log.exception("%s: command from contact %s failed", self.id, cid)
 
     async def _on_other(self, msg: Message[Any]) -> None:
         """Images, files, voice, video and link previews: mirrored to the inbox with the
@@ -163,6 +187,9 @@ class Employee:
         name: str = contact["profile"].get("displayName") or contact["localDisplayName"]
         content: dict[str, Any] = dict(msg.content or {})  # type: ignore[call-overload]
         text = str(content.get("text") or "").strip()
+        if text.lower().startswith(tuple("/" + w for w in SECRET_WORDS)):
+            await self._chat_command(msg, cid, name, text)  # a token sent as a link, say
+            return
         kind = {"image": "image", "video": "video", "voice": "audio", "file": "file", "link": "link"}.get(
             str(content.get("type")), "file"
         )
@@ -301,13 +328,22 @@ class Employee:
     async def command(self, cid: int, word: str, args: str, by: str = "") -> str:
         if word == "forget":
             self.state.forget(cid)
-            return tr("Đã xoá lịch sử trò chuyện của bạn. / Your conversation history was deleted.")
+            return tr(
+                "Trợ lý AI đã quên cuộc trò chuyện với bạn. Cửa hàng vẫn lưu tin nhắn và đơn hàng của bạn. / The assistant's memory of this chat was cleared; the shop still keeps your messages and orders."
+            )
         if word == "admin":
             token = self.base.admin_token
             if not token:
                 return tr("Chức năng quản trị chưa được bật (thiếu admin_token).")
+            now = time.monotonic()
+            failures = [t for t in self._admin_failures.pop(cid, []) if now - t < ADMIN_LOCK_SECONDS]
+            if len(failures) >= ADMIN_TRIES:
+                self._admin_failures[cid] = failures
+                wait = ADMIN_LOCK_SECONDS - (now - failures[-ADMIN_TRIES])
+                return tr("Sai mã quá nhiều lần. Thử lại sau {0} phút.", int(wait // 60) + 1)
             if not hmac.compare_digest(args.encode(), token.encode()):
                 log.warning("%s: wrong admin token from contact %s", self.id, cid)
+                self._admin_failures[cid] = [*failures, now]
                 return tr("Mã quản trị không đúng.")
             self.state.add_admin(cid)
             if by:
@@ -318,7 +354,9 @@ class Employee:
             return tr("Lệnh này chỉ dành cho quản trị viên. Gửi /admin <mã> để đăng nhập.")
         return await self._admin(args, by=by or f"contact #{cid}")
 
-    async def _admin(self, args: str, by: str) -> str:
+    async def _admin(self, args: str, by: str, prefix: str = "/ai ") -> str:
+        """An admin command; `prefix`: how the asker types the commands named in the replies
+        ("/ai approve 3" in an AI admin's chat, "/approve 3" in a linked staff member's)."""
         sub, _, rest = args.partition(" ")
         rest = rest.strip()
         s = self.settings
@@ -428,12 +466,15 @@ class Employee:
                 for a in pending
             )
         if sub in ("approve", "reject"):
+            from .staff_chat import small_int
+
             num, _, reason = rest.partition(" ")
-            if not num.lstrip("#").isdigit():
-                return tr("Cú pháp: /ai {0} <số>", sub) + (tr(" [lý do]") if sub == "reject" else "")
+            aid = small_int(num.lstrip("#"))
+            if aid is None:
+                return tr("Cú pháp: {0} <số>", prefix + sub) + (tr(" [lý do]") if sub == "reject" else "")
             if sub == "approve":
-                return await self.actions.approve(int(num.lstrip("#")), by=by)
-            return await self.actions.reject(int(num.lstrip("#")), by=by, reason=reason.strip())
+                return await self.actions.approve(aid, by=by)
+            return await self.actions.reject(aid, by=by, reason=reason.strip())
         if sub == "releases":
             names = list(self.office.config.actions)
             return tr(
@@ -507,6 +548,21 @@ class Employee:
     def set_routine_paused(self, routine_id: str, paused: bool) -> None:
         ids = [r for r in self.settings.paused_routines if r != routine_id] + ([routine_id] if paused else [])
         self.state.set_override("paused_routines", ids)
+
+
+def parse_command(text: str) -> tuple[str, str] | None:
+    """ "/Word args" -> ("word", "args"): the command word in lower case; None for text that is
+    not a command. Text starting with a secret command ("/admin", "/link") is always that
+    command, even run together with its argument ("/ADMIN:token")."""
+    if not text.startswith("/"):
+        return None
+    for word in SECRET_WORDS:
+        if text[1 : 1 + len(word)].lower() == word:
+            return word, text[1 + len(word) :].strip()
+    parts = text[1:].split(None, 1)
+    if not parts:
+        return None
+    return parts[0].lower(), (parts[1].strip() if len(parts) > 1 else "")
 
 
 def split_message(text: str, limit: int = MAX_MESSAGE_CHARS) -> list[str]:

@@ -13,9 +13,10 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import secrets
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -29,8 +30,16 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 KEY = "simplex_staff"
-MENU_LANG_KEY = "simplex_menu_lang"  # "employee:contact" -> the language of that customer's menu
+MENU_LANG_KEY = "simplex_menu_lang"  # before the table below: "employee:contact" -> language
 CODE_MINUTES = 15
+MENU_LANG_TABLE = """
+CREATE TABLE IF NOT EXISTS simplex_menu_lang (
+  employee TEXT NOT NULL, contact {int} NOT NULL, lang TEXT NOT NULL,
+  PRIMARY KEY (employee, contact)
+)
+"""
+# a phone number typed in /sell: digits with spaces, dots or dashes between them
+_PHONE_RUN = re.compile(r"\+?\d[\d .-]*\d")
 
 # command -> (area it belongs to, menu entry); area "*" : any linked staff member,
 # "approve": admins and managers
@@ -75,6 +84,30 @@ def _sha(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 
+def small_int(text: str, digits: int = 12) -> int | None:
+    """A number typed in a chat command (an order, a conversation, a quantity...): plain
+    digits, at most `digits` of them (a longer one would not fit the database); else None."""
+    text = text.strip()
+    return int(text) if text.isascii() and text.isdigit() and len(text) <= digits else None
+
+
+def sale_customer(who: str) -> tuple[str, str]:
+    """The customer of a /sell: "<phone> <name>", "<name> <phone>" or "<name>; <phone>"
+    -> (name, phone); the phone is "" when none of it is a valid phone number."""
+    from .crm import find_phone, phone_key
+
+    text = " ".join(" ".join(p.split()) for p in who.split(";") if p.strip())
+    found = find_phone(text)
+    candidates = [found] if found else []
+    candidates += [m.group(0) for m in _PHONE_RUN.finditer(text)]
+    for phone in candidates:
+        if phone_key(phone):
+            start = text.index(phone)
+            name = f"{text[:start]} {text[start + len(phone) :]}"
+            return " ".join(name.split()).strip(" ,"), phone.strip()
+    return text.strip(" ,"), ""
+
+
 def allowed(user: User, command: str) -> bool:
     area = COMMANDS[command][0]
     if user.is_admin or area == "*":
@@ -101,9 +134,14 @@ def staff_menu(user: User) -> list[dict[str, Any]]:
         for label, words in GROUPS:
             items = [entry(w) for w in words if allowed(user, w)]
             if items:
-                menu.append({"type": "menu", "label": tr(label), "commands": items})
+                menu.append({"type": "menu", "label": _group_label(label), "commands": items})
         menu += [entry(w) for w in ("me", "unlink")]
     return menu
+
+
+def _group_label(label: str) -> str:
+    # "Kho" has no accent for scripts/i18n_extract.py to find it in GROUPS: named here
+    return tr("🏬 Kho") if label == "🏬 Kho" else tr(label)
 
 
 class StaffLinks:
@@ -112,6 +150,33 @@ class StaffLinks:
     def __init__(self, office: Office):
         self.office = office
         self.users = Users(office.docs, "")
+        self.db = office.office_db
+        self.db.script(MENU_LANG_TABLE)
+        if old := office.docs.get(MENU_LANG_KEY):  # the languages kept in one document before
+            self.db.many(
+                "INSERT INTO simplex_menu_lang (employee, contact, lang) VALUES (?, ?, ?) "
+                "ON CONFLICT (employee, contact) DO NOTHING",
+                [
+                    (k.rpartition(":")[0], int(k.rpartition(":")[2]), lang)
+                    for k, lang in old.items()
+                    if k.rpartition(":")[2].isdigit()
+                ],
+            )
+            office.docs.update(MENU_LANG_KEY, lambda d: d.clear(), {})
+
+    def menu_language(self, employee: str, contact_id: int) -> str:
+        """The language of the menu this customer was last given ("vi": the profile's own)."""
+        row = self.db.row(
+            "SELECT lang FROM simplex_menu_lang WHERE employee=? AND contact=?", (employee, contact_id)
+        )
+        return str(row["lang"]) if row else "vi"
+
+    def set_menu_language(self, employee: str, contact_id: int, lang: str) -> None:
+        self.db.execute(
+            "INSERT INTO simplex_menu_lang (employee, contact, lang) VALUES (?, ?, ?) "
+            "ON CONFLICT (employee, contact) DO UPDATE SET lang=excluded.lang",
+            (employee, contact_id, lang),
+        )
 
     def _doc(self) -> dict[str, Any]:
         return self.office.docs.get(KEY) or {}
@@ -131,18 +196,51 @@ class StaffLinks:
     def redeem(self, code: str, employee: str, contact_id: int) -> User | None:
         key = _sha(code.strip().upper())
 
-        def change(d: dict[str, Any]) -> str | None:
+        def take(d: dict[str, Any]) -> str | None:
             found = d.setdefault("codes", {}).pop(key, None)
-            if not found or found["expires"] < time.time():
-                return None
+            return str(found["username"]) if found and found["expires"] >= time.time() else None
+
+        username = self.office.docs.update(KEY, take, {})
+        user = self.users.get(username) if username else None
+        if user is None:  # no code, or the account was removed or disabled since
+            return None
+
+        def link(d: dict[str, Any]) -> None:
             d.setdefault("contacts", {})[f"{employee}:{contact_id}"] = {
-                "username": found["username"],
+                "username": user.username,
                 "since": datetime.now().astimezone().isoformat(timespec="seconds"),
             }
-            return str(found["username"])
 
-        username = self.office.docs.update(KEY, change, {})
-        return self.users.get(username) if username else None
+        self.office.docs.update(KEY, link, {})
+        return user
+
+    def drop_user(self, username: str) -> list[tuple[str, int]]:
+        """Forget every chat linked to this account and its unused codes (the account was
+        removed, or its password or role changed); returns the (employee, contact) chats
+        that were linked, whose menus should then be synced again (`resync`)."""
+
+        def change(d: dict[str, Any]) -> list[tuple[str, int]]:
+            contacts = d.setdefault("contacts", {})
+            gone = [k for k, link in contacts.items() if link["username"] == username]
+            for k in gone:
+                del contacts[k]
+            d["codes"] = {k: v for k, v in d.setdefault("codes", {}).items() if v["username"] != username}
+            return [(k.rsplit(":", 1)[0], int(k.rsplit(":", 1)[1])) for k in gone]
+
+        return list(self.office.docs.update(KEY, change, {}) or [])
+
+    async def resync(self, username: str = "", chats: Iterable[tuple[str, int]] = ()) -> int:
+        """Send again the menu of every chat linked to this account (after a role or language
+        change) and of the given (employee, contact) chats (e.g. from `drop_user`)."""
+        todo = {(e, cid) for e, cid, user in self.linked() if username and user.username == username}
+        todo |= set(chats)
+        done = 0
+        for employee_id, cid in sorted(todo):
+            employee = self.office.employees.get(employee_id)
+            if employee is not None:
+                await employee.staff.sync_menu(cid)
+                done += 1
+        return done
 
     def user(self, employee: str, contact_id: int) -> User | None:
         link = self._doc().get("contacts", {}).get(f"{employee}:{contact_id}")
@@ -189,13 +287,16 @@ class StaffLinks:
                 out.append((employee, int(cid), user))
         return out
 
-    async def notify(self, area: str, text: str | Callable[[], str]) -> int:
-        """Tell the linked staff whose role covers `area` (inbox, pos, ...); a callable text
-        is made for each of them, in their own language."""
+    async def notify(self, area: str, text: str | Callable[[], str], channel: str | None = None) -> int:
+        """Tell the linked staff whose role covers `area` (inbox, pos, ...) and, for news of
+        one conversation, who see its `channel`; a callable text is made for each of them,
+        in their own language."""
         sent = 0
         for employee_id, cid, user in self.linked():
             employee = self.office.employees.get(employee_id)
             if employee is None or not (user.is_admin or area in ROLE_AREAS.get(user.role, ())):
+                continue
+            if channel is not None and not user.sees(channel):
                 continue
             with use_language(user.lang or None):
                 message = text() if callable(text) else text
@@ -246,8 +347,15 @@ class StaffChat:
             try:
                 result = getattr(self, f"cmd_{word}")(user, args.strip(), cid)
                 return await result if hasattr(result, "__await__") else result
-            except (InventoryError, ValueError) as e:
+            except InventoryError as e:
                 return str(e)
+            except ValueError as e:  # never Python's own words ("invalid literal for int()")
+                log.info("staff: /%s %r: %s", word, args, e)
+                return tr("Cú pháp: {0}", f"/{word} {tr(COMMANDS[word][1].get('params', ''))}".strip())
+
+    async def resync(self, username: str) -> int:
+        """The menus of every chat linked to this staff account, sent again."""
+        return await self.links.resync(username)
 
     async def sync_menu(self, cid: int) -> None:
         """This contact's menu: their role's commands (plus the admin menu for AI admins), or
@@ -272,10 +380,10 @@ class StaffChat:
         profile's own menu is Vietnamese); set once per language change."""
         if self.employee.state.is_admin(cid) or self.links.user(self.employee.id, cid):
             return
-        code, key = self._menu_language(cid), f"{self.employee.id}:{cid}"
-        if (self.office.docs.get(MENU_LANG_KEY) or {}).get(key, "vi") == code:
+        code = self._menu_language(cid)
+        if self.links.menu_language(self.employee.id, cid) == code:
             return
-        self.office.docs.update(MENU_LANG_KEY, lambda d: d.__setitem__(key, code), {})
+        self.links.set_menu_language(self.employee.id, cid, code)
         await self.sync_menu(cid)
 
     # ------------------------------------------------------------------ #
@@ -293,7 +401,7 @@ class StaffChat:
 
     def _conv(self, user: User, ref: str) -> Any:
         num = ref.strip().lstrip("#")
-        conv = self.office.hub.inbox.conversation(int(num)) if num.isdigit() else None
+        conv = self.office.hub.inbox.conversation(n) if (n := small_int(num)) is not None else None
         if conv is None or not user.sees(conv.channel):
             raise InventoryError(tr("Không có hội thoại #{0}. Xem danh sách: /inbox", num))
         return conv
@@ -362,9 +470,10 @@ class StaffChat:
     # the counter
 
     def _order(self, user: User, code: str) -> dict[str, Any]:
+        oid = small_int(code.strip().upper().removeprefix("DH"))
         try:
-            order = self.office.inventory.order(int(code.strip().upper().removeprefix("DH")))
-        except (ValueError, InventoryError):
+            order = self.office.inventory.order(oid if oid is not None else -1)
+        except InventoryError:
             raise InventoryError(tr("Không có đơn {0}", code)) from None
         if not (user.is_admin or user.role == "manager"):
             today = datetime.now().astimezone().date().isoformat()
@@ -396,25 +505,26 @@ class StaffChat:
             words = part.split()
             if not words:
                 continue
-            qty = int(words[-1]) if len(words) > 1 and words[-1].isdigit() else 1
-            sku = words[0]
-            items.append({"sku": sku, "qty": qty})
+            qty = small_int(words[-1], 6) if len(words) > 1 and words[-1].isdigit() else 1
+            if qty is None:
+                return tr("Cú pháp: /sell SOFA-01 1, GHE-02 4; 0901234567 Chị Lan")
+            items.append({"sku": words[0], "qty": qty})
         if not items:
             return tr("Cú pháp: /sell SOFA-01 1, GHE-02 4; 0901234567 Chị Lan")
-        phone, _, name = who.strip().partition(" ")
+        name, phone = sale_customer(who)
         crm = self.office.hub.crm
         contact = None
-        if phone:
+        if phone:  # a valid number only: a blank key would match any contact without a phone
             from .crm import phone_key
 
             row = crm.db.row(
                 "SELECT id FROM crm_contacts WHERE phone_key=? ORDER BY id LIMIT 1", (phone_key(phone),)
             )
-            contact = crm.contact(int(row["id"])) if row else crm.create_contact(name.strip(), phone)
+            contact = crm.contact(int(row["id"])) if row else crm.create_contact(name, phone)
         order = self.office.inventory.create_order(
             items,
             contact_id=int(contact["id"]) if contact else None,
-            customer_name=name.strip() or (contact or {}).get("name", ""),
+            customer_name=name or (contact or {}).get("name", ""),
             phone=phone,
             vip=bool(contact and contact["vip"]),
             source="pos",
@@ -437,13 +547,17 @@ class StaffChat:
                 "|".join(m for m in PAYMENT_METHODS if m != "refund"),
             )
         order = self._order(user, words[0])
-        o = self.office.inventory.add_payment(
-            int(order["id"]),
-            words[1],
-            amount=words[2].replace(".", "") if len(words) > 2 else None,
-            cashier=user.username,
-            # the same command twice within 30 s (a double tap) records one payment
-            idempotency_key=f"chat-{cid}-{_sha(args)[:16]}-{int(time.time() // 30)}",
+        inv = self.office.inventory
+        amount = words[2] if len(words) > 2 else None
+        if amount is not None and inv.settings()["decimals"] == 0:
+            amount = amount.replace(".", "")  # 5.000.000: thousands separators (_dec drops ",")
+        # the same payment on the same order state (a double tap, a resent message) is
+        # recorded once; the next payment, made after it, has a different key
+        key = f"chat-{order['id']}-{_sha(amount or 'rest')[:16]}-{inv.minor(order['paid'])}"
+        if inv.db.row("SELECT 1 AS x FROM inv_payments WHERE idempotency_key=?", (key,)):
+            return tr("Khoản thu này đã được ghi rồi, không ghi thêm.\n") + self._describe(order)
+        o = inv.add_payment(
+            int(order["id"]), words[1], amount=amount, cashier=user.username, idempotency_key=key
         )
         return self._describe(o)
 
@@ -472,7 +586,7 @@ class StaffChat:
     # the warehouse
 
     def cmd_stock(self, user: User, args: str, cid: int) -> str:
-        return self.employee.menu.stock(args)
+        return self.employee.menu.stock(args, command="stock")
 
     def cmd_lowstock(self, user: User, args: str, cid: int) -> str:
         return self.employee.menu.low_stock()
@@ -549,10 +663,10 @@ class StaffChat:
         return "\n\n".join(out)
 
     def _route_id(self, ref: str) -> int:
-        num = ref.strip().upper().removeprefix("CX")
-        if not num.isdigit():
+        num = small_int(ref.strip().upper().removeprefix("CX"))
+        if num is None:
             raise InventoryError(tr("Cú pháp: /go CX00001"))
-        return int(num)
+        return num
 
     async def cmd_go(self, user: User, args: str, cid: int) -> str:
         r = await self.office.delivery.start_route(self._route_id(args), user.name)
@@ -560,14 +674,15 @@ class StaffChat:
 
     def _stop(self, ref: str) -> tuple[int, int]:
         num = ref.strip().lstrip("#")
+        bid = small_int(num)
         row = self.office.delivery.db.row(
             "SELECT s.route_id FROM dl_stops s JOIN dl_routes r ON r.id=s.route_id "
             "WHERE s.booking_id=? AND r.status='in_progress' ORDER BY s.id DESC LIMIT 1",
-            (int(num) if num.isdigit() else -1,),
+            (bid if bid is not None else -1,),
         )
-        if row is None:
+        if row is None or bid is None:
             raise InventoryError(tr("Lịch giao #{0} không thuộc chuyến nào đang chạy. Xem: /trips", num))
-        return int(row["route_id"]), int(num)
+        return int(row["route_id"]), bid
 
     def cmd_delivered(self, user: User, args: str, cid: int) -> str:
         rid, bid = self._stop(args)
@@ -592,10 +707,10 @@ class StaffChat:
         return self.employee.menu.open_orders()
 
     async def cmd_approvals(self, user: User, args: str, cid: int) -> str:
-        return await self.employee._admin("pending", by=user.name)
+        return await self.employee._admin("pending", by=user.name, prefix="/")
 
     async def cmd_approve(self, user: User, args: str, cid: int) -> str:
-        return await self.employee._admin(f"approve {args}", by=user.name)
+        return await self.employee._admin(f"approve {args}", by=user.name, prefix="/")
 
     async def cmd_reject(self, user: User, args: str, cid: int) -> str:
-        return await self.employee._admin(f"reject {args}", by=user.name)
+        return await self.employee._admin(f"reject {args}", by=user.name, prefix="/")

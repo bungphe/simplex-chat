@@ -15,6 +15,7 @@ employee's own settings.
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -22,11 +23,15 @@ from .i18n import has_catalog, number, tr, use_language
 from .inventory import InventoryError, order_code
 from .loyalty import vip_card
 from .menu_i18n import MENU_TEXT
+from .staff_chat import small_int
 
 if TYPE_CHECKING:
     from .employee import Employee
 
 log = logging.getLogger(__name__)
+
+STAFF_COOLDOWN = 600  # seconds: "talk to a person" tells the staff once per 10 minutes a customer
+INVOICE_EMAIL_COOLDOWN = 600  # an order's invoice is emailed at most once per 10 minutes
 
 # keyword -> the menu entry; `params` puts "/keyword <params>" in the message field to fill in
 ICONS = {
@@ -114,6 +119,16 @@ class ChatMenu:
     def __init__(self, employee: Employee):
         self.employee = employee
         self.office = employee.office
+        self._staff_called: dict[int, float] = {}  # conversation -> when the staff were last told
+        self._invoice_emailed: dict[int, float] = {}  # order -> when its invoice was last emailed
+
+    @staticmethod
+    def _recent(seen: dict[int, float], key: int, seconds: float) -> bool:
+        """Whether `key` was marked in the last `seconds` (older marks are dropped)."""
+        now = time.monotonic()
+        for k in [k for k, t in seen.items() if now - t >= seconds]:
+            del seen[k]
+        return key in seen
 
     def _money(self, v: Any) -> str:
         cur = self.office.inventory.settings()["currency"]
@@ -213,10 +228,10 @@ class ChatMenu:
         return "\n".join(lines)
 
     def _own_order(self, contact: dict[str, Any], code: str) -> dict[str, Any]:
+        oid = small_int(code.strip().upper().removeprefix("DH"))
         try:
-            oid = int(code.strip().upper().removeprefix("DH"))
-            order = self.office.inventory.order(oid)
-        except (ValueError, InventoryError):
+            order = self.office.inventory.order(oid) if oid is not None else None
+        except InventoryError:
             order = None
         if order is None or order["contact_id"] != contact["id"]:
             raise InventoryError(
@@ -233,8 +248,11 @@ class ChatMenu:
         if address and self.office.mailer.ready:
             from .invoices import email_invoice
 
+            if self._recent(self._invoice_emailed, int(order["id"]), INVOICE_EMAIL_COOLDOWN):
+                return text + tr("\n\n📧 Hoá đơn vừa được gửi tới {0} ít phút trước.", _mask(address))
             try:
                 await email_invoice(self.office, int(order["id"]))
+                self._invoice_emailed[int(order["id"])] = time.monotonic()
                 text += tr("\n\n📧 Hoá đơn cũng đã được gửi tới {0}.", _mask(address))
             except InventoryError as e:
                 log.info("chat: invoice %s not emailed: %s", order["code"], e)
@@ -273,6 +291,9 @@ class ChatMenu:
 
     async def cmd_staff(self, conv: Any, contact: dict[str, Any], args: str) -> str:
         hub = self.office.hub
+        if self._recent(self._staff_called, int(conv.id), STAFF_COOLDOWN):
+            return tr("Nhân viên đã được báo rồi, quý khách vui lòng chờ thêm chút nhé. 🙏")
+        self._staff_called[int(conv.id)] = time.monotonic()
         hub.inbox.set_mode(conv.id, "human")
         hub.inbox.set_status(conv.id, "open")
         with use_language(None):  # for the shop's staff: the office's language
@@ -299,6 +320,7 @@ class ChatMenu:
                 ": " + args if args else "",
                 conv.id,
             ),
+            channel=conv.channel,
         )
         return tr("Đã báo nhân viên, quý khách vui lòng chờ trong giây lát. 🙏")
 
@@ -334,9 +356,10 @@ class ChatMenu:
             for o in orders
         )
 
-    def stock(self, query: str) -> str:
+    def stock(self, query: str, command: str = "ai stock") -> str:
+        """Stock of the products matching `query`; `command`: how the asker typed it."""
         if not query:
-            return tr("Cú pháp: {0}", tap(tr("ai stock <mã hoặc tên>")))
+            return tr("Cú pháp: {0}", tap(f"{command} {tr('<mã hoặc tên>')}"))
         rows = self.office.inventory.products(query, limit=8)
         if not rows:
             return tr("Không có sản phẩm “{0}”.", query)
