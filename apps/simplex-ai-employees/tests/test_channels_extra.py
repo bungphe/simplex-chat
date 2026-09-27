@@ -307,6 +307,7 @@ def inbound_mail(**fields: str) -> FormData:
         "subject": "Hỏi giá máy lọc nước",
         "text": "Chào shop, máy MA-100 giá bao nhiêu?\n\nOn Mon, 1 Jan 2026 Shop wrote:\n> old text",
         "headers": "Message-ID: <abc@example.vn>\nFrom: mai@example.vn\n",
+        "SPF": "pass",  # SendGrid's checks of the sender
     }
     for k, v in {**defaults, **fields}.items():
         form.add_field(k, v)

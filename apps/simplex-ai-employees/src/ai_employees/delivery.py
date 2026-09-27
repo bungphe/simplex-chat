@@ -23,8 +23,11 @@ import io
 import logging
 import math
 import os
+import re
 from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
+
+import httpx2
 
 from .i18n import tr
 from .inventory import InventoryError, _int, order_code
@@ -78,6 +81,16 @@ SLOTS = {
     "flexible": "Cả ngày",
 }
 MAPS = "https://maps.googleapis.com/maps/api"
+# the key is refused or the quota is used up: every further address would fail the same way
+GEOCODE_STOP = ("REQUEST_DENIED", "OVER_QUERY_LIMIT", "OVER_DAILY_LIMIT")
+
+
+def start_time(value: Any) -> str:
+    """A trip's start time as HH:MM (the timetable counts from it)."""
+    m = re.fullmatch(r"([01]?\d|2[0-3]):([0-5]\d)", str(value or "08:00").strip())
+    if m is None:
+        raise InventoryError(tr("Giờ xuất phát: dạng HH:MM, ví dụ 08:00"))
+    return f"{int(m[1]):02d}:{m[2]}"
 
 
 def haversine_km(a: tuple[float, float], b: tuple[float, float]) -> float:
@@ -301,39 +314,57 @@ class Delivery:
         except (ValueError, KeyError):
             log.debug("delivery: could not store the location of contact %s", order.get("contact_id"))
 
-    async def geocode_address(self, address: str) -> tuple[float, float]:
-        """Coordinates of an address (Google Geocoding; needs GOOGLE_MAPS_API_KEY)."""
+    async def _geocode(self, address: str) -> tuple[str, tuple[float, float] | None]:
+        """(Google's status, coordinates or None). Network and format errors are a status too."""
         if not self.maps_key:
             raise InventoryError(
                 tr("Chưa có GOOGLE_MAPS_API_KEY: nhập toạ độ tay, hoặc để hệ thống giữ thứ tự bạn xếp")
             )
-        r = await self.office.http_client.get(
-            f"{MAPS}/geocode/json",
-            params={"address": address, "region": "vn", "key": self.maps_key},
-            timeout=15,
-        )
-        data = r.json()
-        if data.get("status") != "OK":
-            raise InventoryError(tr("Không tìm được địa chỉ: {0}", data.get("status")))
-        loc = data["results"][0]["geometry"]["location"]
-        return float(loc["lat"]), float(loc["lng"])
+        try:
+            r = await self.office.http_client.get(
+                f"{MAPS}/geocode/json",
+                params={"address": address, "region": "vn", "key": self.maps_key},
+                timeout=15,
+            )
+            data = r.json()
+            status = str(data.get("status") or f"HTTP {r.status_code}")
+            if status != "OK":
+                return status, None
+            loc = data["results"][0]["geometry"]["location"]
+            return status, (float(loc["lat"]), float(loc["lng"]))
+        except (httpx2.HTTPError, ValueError, KeyError, IndexError, TypeError, AttributeError) as e:
+            return type(e).__name__, None
 
-    async def geocode_customers(self, limit: int = 100) -> dict[str, int]:
-        """Locate customers who have an address but no coordinates yet."""
+    async def geocode_address(self, address: str) -> tuple[float, float]:
+        """Coordinates of an address (Google Geocoding; needs GOOGLE_MAPS_API_KEY)."""
+        status, point = await self._geocode(address)
+        if point is None:
+            raise InventoryError(tr("Không tìm được địa chỉ: {0}", status))
+        return point
+
+    async def geocode_customers(self, limit: int = 100) -> dict[str, Any]:
+        """Locate customers who have an address but no coordinates yet. An address Google
+        does not know is not asked again until it changes; a refused key or a used-up
+        quota stops the batch ("stopped": the status)."""
         crm = self.office.hub.crm
         done = failed = 0
         for c in crm.db.rows(
-            "SELECT id, address FROM crm_contacts WHERE lat IS NULL AND address<>'' ORDER BY id LIMIT ?",
+            "SELECT id, address FROM crm_contacts WHERE lat IS NULL AND address<>'' "
+            "AND (geocode_failed IS NULL OR geocode_failed<>address) ORDER BY id LIMIT ?",
             (limit,),
         ):
-            try:
-                lat, lng = await self.geocode_address(c["address"])
-            except InventoryError as e:
-                if "GOOGLE_MAPS_API_KEY" in str(e):
-                    raise
+            status, point = await self._geocode(c["address"])
+            if point is None:
+                if status in GEOCODE_STOP:
+                    log.warning("delivery: geocoding stopped: %s", status)
+                    return {"located": done, "failed": failed, "stopped": status}
+                if status == "ZERO_RESULTS":
+                    crm.db.execute(
+                        "UPDATE crm_contacts SET geocode_failed=? WHERE id=?", (c["address"], c["id"])
+                    )
                 failed += 1
                 continue
-            crm.update(int(c["id"]), lat=lat, lng=lng)
+            crm.update(int(c["id"]), lat=point[0], lng=point[1])
             done += 1
         return {"located": done, "failed": failed}
 
@@ -388,6 +419,8 @@ class Delivery:
             fields["slot"] = data["slot"]
         if "lat" in data or "lng" in data:
             fields["lat"], fields["lng"] = self._coords(data)
+        elif "address" in fields and fields["address"].strip() != b["address"].strip():
+            fields["lat"] = fields["lng"] = ""  # the old point is another place: locate again
         if "floors" in data or "assembling" in data:
             s = self._raw()
             floors = _int(data.get("floors", b["floors"]) or 0, tr("Số tầng"))
@@ -409,13 +442,36 @@ class Delivery:
         b = self._row(bid)
         if b["status"] not in ("booked", "assigned"):
             raise InventoryError(tr("Chỉ huỷ được lịch chưa giao"))
+        trips = [
+            int(r["route_id"])
+            for r in self.db.rows(
+                "SELECT DISTINCT route_id FROM dl_stops WHERE booking_id=? AND status='pending'", (bid,)
+            )
+        ]
         with self.db.transaction():
             self.db.execute("DELETE FROM dl_stops WHERE booking_id=? AND status='pending'", (bid,))
             self.db.execute(
                 "UPDATE dl_bookings SET status='cancelled', updated=? WHERE id=?", (now_iso(), bid)
             )
             self._set_fee(int(b["order_id"]), -int(b["surcharge"]))
+        for rid in trips:
+            self._stop_removed(rid)
         return self.booking(bid)
+
+    def _stop_removed(self, rid: int) -> None:
+        """A planned trip lost a stop: its cost and timetable follow; with no stop left it is
+        cancelled (a trip to nobody would still be charged per trip)."""
+        route = self._route_row(rid)
+        if route["status"] != "planned":
+            return
+        if not self._stops(rid):
+            self.db.execute(
+                "UPDATE dl_routes SET status='cancelled', cost=0, distance_km='0', duration_min=0 WHERE id=?",
+                (rid,),
+            )
+            return
+        self._price(rid)
+        self._timetable(rid, None)
 
     def _row(self, bid: int) -> dict[str, Any]:
         b = self.db.row("SELECT * FROM dl_bookings WHERE id=?", (bid,))
@@ -481,11 +537,12 @@ class Delivery:
         ids = [int(x) for x in data.get("booking_ids") or []]
         if not ids:
             raise InventoryError(tr("Chọn các lịch giao cho chuyến"))
+        start = start_time(data.get("start_time"))
         with self.db.transaction():
             rid = self.db.execute(
                 "INSERT INTO dl_routes (delivery_date, carrier_id, driver_id, origin_wh, start_time, created_by, created) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id",
-                (day, carrier, driver, origin, str(data.get("start_time") or "08:00")[:5], actor, now_iso()),
+                (day, carrier, driver, origin, start, actor, now_iso()),
             )
             for seq, bid in enumerate(ids, 1):
                 b = self._row(bid)

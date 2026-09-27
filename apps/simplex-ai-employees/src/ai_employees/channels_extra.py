@@ -50,6 +50,9 @@ import httpx2
 
 from .channels import Channel, ChannelError, InboundMessage
 from .i18n import tr
+from .media import MediaError, read_limited
+
+log = logging.getLogger(__name__)
 
 
 class _HideBotToken(logging.Filter):
@@ -66,6 +69,20 @@ class _HideBotToken(logging.Filter):
 
 for _name in ("httpx", "httpx2"):
     logging.getLogger(_name).addFilter(_HideBotToken())
+
+
+async def _download(http: httpx2.AsyncClient, url: str, what: str, **kwargs: Any) -> tuple[str, bytes]:
+    """A platform's file, streamed with the media size cap (never a silently cut file)."""
+    try:
+        async with http.stream("GET", url, timeout=30, **kwargs) as r:
+            if r.status_code != 200:
+                raise ChannelError(f"{what}: HTTP {r.status_code}")
+            body = await read_limited(r)
+            return r.headers.get("content-type", "").split(";")[0].strip().lower(), body
+    except MediaError as e:
+        raise ChannelError(f"{what}: {e}") from None
+    except httpx2.HTTPError as e:
+        raise ChannelError(f"{what}: {type(e).__name__}") from None  # no URL: it may hold a token
 
 
 def _secs(ts: Any) -> datetime:
@@ -178,10 +195,7 @@ class TelegramChannel(Channel):
         path = (info or {}).get("file_path")
         if not path:
             raise ChannelError("telegram: file not available")
-        r = await self.http.get(f"{self._api}/file/bot{self._token}/{path}", timeout=30)
-        if r.status_code != 200:
-            raise ChannelError(f"telegram file: HTTP {r.status_code}")
-        return r.headers.get("content-type", "").split(";")[0].strip().lower(), r.content[: 15 * 1024 * 1024]
+        return await _download(self.http, f"{self._api}/file/bot{self._token}/{path}", "telegram file")
 
 
 # --------------------------------------------------------------------------- #
@@ -277,10 +291,7 @@ class WhatsAppChannel(Channel):
         """WAHA serves media itself (often on the internal network), with its API key."""
         if not self._base or not url.startswith(self._base + "/"):
             return None
-        r = await self.http.get(url, headers=self._headers(), timeout=30)
-        if r.status_code != 200:
-            raise ChannelError(f"whatsapp media: HTTP {r.status_code}")
-        return r.headers.get("content-type", "").split(";")[0].strip().lower(), r.content[: 15 * 1024 * 1024]
+        return await _download(self.http, url, "whatsapp media", headers=self._headers())
 
 
 # --------------------------------------------------------------------------- #
@@ -291,6 +302,13 @@ _QUOTE_START = re.compile(
     r"^(On .{5,200} wrote:|Vào .{5,200} đã viết:|-----Original Message-----|>+ ?)", re.MULTILINE
 )
 _NOREPLY = re.compile(r"^(no-?reply|mailer-daemon|postmaster|bounce)", re.IGNORECASE)
+_DKIM_PASS = re.compile(r"@?([\w.-]+)\s*:\s*pass\b", re.IGNORECASE)  # SendGrid: "{@example.vn : pass}"
+
+
+def _one_line(value: Any) -> str:
+    """A header value on one line: folded headers keep their line breaks, which
+    EmailMessage refuses when the value is set again."""
+    return " ".join(str(value or "").split())
 
 
 def _strip_quote(text: str) -> str:
@@ -336,7 +354,7 @@ class EmailChannel(Channel):
             or _NOREPLY.match(address)
         ):
             return []  # auto-replies, bounces and mailing lists: never answered (no mail loops)
-        subject = str(payload.get("subject") or "").strip()
+        subject = _one_line(payload.get("subject"))[:300]
         body = _strip_quote(str(payload.get("text") or ""))
         if not body and payload.get("html"):
             body = _strip_quote(re.sub(r"<[^>]+>", " ", str(payload["html"])))
@@ -351,12 +369,18 @@ class EmailChannel(Channel):
                 )
         except (ValueError, AttributeError):
             pass
-        message_id = str(raw_headers.get("Message-ID") or "").strip() or f"<{uuid.uuid4()}@inbound>"
-        # remember the thread, to answer in it
-        refs = " ".join(x for x in (str(raw_headers.get("References") or "").strip(), message_id) if x)
-        self.hub.inbox.set_channel_state(
-            f"{self.id}:{address}", subject=subject, message_id=message_id, references=refs[-2000:]
-        )
+        message_id = _one_line(raw_headers.get("Message-ID"))[:300] or f"<{uuid.uuid4()}@inbound>"
+        verified = self._sender_verified(payload, address)
+        if verified:
+            # remember the thread, to answer in it (never from a mail that may be forged)
+            refs = _one_line(f"{raw_headers.get('References') or ''} {message_id}").split(" ")
+            while len(refs) > 1 and len(" ".join(refs)) > 2000:
+                refs.pop(0)  # whole ids only
+            self.hub.inbox.set_channel_state(
+                f"{self.id}:{address}", subject=subject, message_id=message_id, references=" ".join(refs)
+            )
+        else:
+            log.warning("%s: mail from %s failed SPF/DKIM; kept for staff, not answered", self.id, address)
         text = (
             body
             if not subject or subject.lower().startswith(("re:", "aw:", "tr:"))
@@ -373,21 +397,45 @@ class EmailChannel(Channel):
                 external_id=message_id[:300],
                 ts=datetime.now(UTC),
                 attachments=files,
+                unverified=not verified,
             )
         ]
 
+    def _sender_verified(self, payload: dict[str, Any], address: str) -> bool:
+        """SendGrid checked SPF and DKIM: without either passing for the sender's domain,
+        anyone could write as a customer (their orders, their data)."""
+        if not self.cfg.opt("require_sender_auth", True):
+            return True
+        domain = address.rpartition("@")[2]
+
+        def aligned(d: str) -> bool:  # the same domain, or one inside the other (DMARC "relaxed")
+            d = d.lower().strip(".")
+            return bool(d) and (domain == d or domain.endswith("." + d) or d.endswith("." + domain))
+
+        if str(payload.get("SPF") or "").strip().lower() == "pass":
+            try:
+                envelope = json.loads(str(payload.get("envelope") or "{}"))
+            except ValueError:
+                envelope = {}
+            sender = str(envelope.get("from") or "") if isinstance(envelope, dict) else ""
+            if not sender or aligned(sender.rpartition("@")[2]):
+                return True
+        return any(aligned(d) for d in _DKIM_PASS.findall(str(payload.get("dkim") or "")))
+
     def _message(self, to: str, text: str) -> EmailMessage:
         thread = self.hub.inbox.channel_state(f"{self.id}:{to}")
-        subject = thread.get("subject") or str(self.cfg.opt("default_subject", tr("Phản hồi từ cửa hàng")))
+        subject = _one_line(
+            thread.get("subject") or self.cfg.opt("default_subject", tr("Phản hồi từ cửa hàng"))
+        )
         sender = str(self.cfg.opt("smtp_from") or self.cfg.opt("smtp_user") or "")
         msg = EmailMessage()
         msg["From"] = sender
         msg["To"] = to
         msg["Subject"] = subject if subject.lower().startswith("re:") else f"Re: {subject}"
         msg["Message-ID"] = make_msgid(domain=(parseaddr(sender)[1].partition("@")[2] or None))
-        if thread.get("message_id"):
-            msg["In-Reply-To"] = thread["message_id"]
-            msg["References"] = thread.get("references") or thread["message_id"]
+        if message_id := _one_line(thread.get("message_id")):
+            msg["In-Reply-To"] = message_id
+            msg["References"] = _one_line(thread.get("references")) or message_id
         msg["Auto-Submitted"] = "auto-replied" if self.cfg.opt("mark_auto_replied", True) else "no"
         msg.set_content(text)
         return msg
@@ -409,7 +457,10 @@ class EmailChannel(Channel):
             server.send_message(msg)
 
     async def send(self, conversation: str, text: str) -> str | None:
-        msg = self._message(conversation, text)
+        try:
+            msg = self._message(conversation, text)
+        except ValueError as e:  # a header EmailMessage refuses (stored before it was cleaned)
+            raise ChannelError(f"email: {e}") from None
         try:
             await asyncio.to_thread(self._smtp_send, msg)  # smtplib blocks: keep the event loop free
         except (OSError, smtplib.SMTPException) as e:

@@ -31,7 +31,7 @@ _ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,47}$")
 
 def fold(text: str) -> str:
     """Lower case without accents: "Khiếu nại" matches "khieu nai" and "KHIẾU NẠI"."""
-    decomposed = unicodedata.normalize("NFD", text.casefold().replace(tr("đ"), "d"))
+    decomposed = unicodedata.normalize("NFD", text.casefold().replace("đ", "d"))
     return "".join(c for c in decomposed if unicodedata.category(c) != "Mn")
 
 
@@ -132,12 +132,17 @@ class Desk:
                     "name": _text(x.get("name"), tr("Tên quy tắc"), 80),
                     "enabled": bool(x.get("enabled", True)),
                     "channels": _names(x.get("channels"), tr("Kênh")),
-                    "keywords": [k for k in _names(x.get("keywords"), tr("Từ khoá")) if len(k) <= 80],
+                    "keywords": _names(x.get("keywords"), tr("Từ khoá")),
                     "labels": _names(x.get("labels"), tr("Nhãn")),
                     "team": str(x.get("team") or ""),
                     "assignee": str(x.get("assignee") or ""),
                     "handoff": bool(x.get("handoff", False)),
                 }
+                for k in rule["keywords"]:
+                    # a keyword left out would turn the rule into "every message"
+                    _text(k, tr("Từ khoá"), 80)
+                    if not fold(k).strip():
+                        raise ValueError(tr("Từ khoá '{0}' không dùng được", k))
                 if unknown := set(rule["channels"]) - channels:
                     raise ValueError(tr("không có kênh: {0}", ", ".join(sorted(unknown))))
                 if unknown := set(rule["labels"]) - labels:

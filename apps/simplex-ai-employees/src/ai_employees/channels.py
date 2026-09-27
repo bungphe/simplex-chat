@@ -40,7 +40,6 @@ import json
 import logging
 import os
 import re
-import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -124,6 +123,9 @@ class InboundMessage:
     external_id: str
     ts: datetime
     attachments: list[dict[str, Any]] = field(default_factory=list)
+    # the platform could not confirm the sender (an email failing SPF and DKIM): kept for
+    # staff with a warning, never answered by the AI
+    unverified: bool = False
 
 
 def attachment(kind: str, url: Any = None, thumb: Any = None, name: Any = None) -> dict[str, Any]:
@@ -651,11 +653,19 @@ class WebhookChannel(Channel):
                 customer_name=str(payload.get("customer_name") or "")[:80],
                 text=text[:4000],
                 sender="customer",
-                external_id=str(payload.get("message_id") or uuid.uuid4()),
+                external_id=str(payload.get("message_id") or self._retry_id(payload, conv_key, text, files)),
                 ts=datetime.now(UTC),
                 attachments=files,
             )
         ]
+
+    def _retry_id(self, payload: dict[str, Any], conv_key: str, text: str, files: list[Any]) -> str:
+        """A bridge that sends no message_id: the same message retried gets the same id (and
+        is stored once). Without its own timestamp, the same text within ~5 minutes is taken
+        as a retry."""
+        ts = payload.get("timestamp") or payload.get("ts") or int(datetime.now(UTC).timestamp() // 300)
+        key = json.dumps([self.id, conv_key, text, files, str(ts)], ensure_ascii=False, sort_keys=True)
+        return "h-" + hashlib.sha256(key.encode()).hexdigest()[:32]
 
     async def send(self, conversation: str, text: str) -> str | None:
         url = self.cfg.opt("reply_url")

@@ -124,10 +124,17 @@ class ChannelHub:
             return  # push-only channel (webhook)
         if not self.office.cluster.is_primary:
             return  # one shard polls; the owners answer
+        failures = 0
         while not stopping.is_set():
-            await self.poll_once(ch.id)
             try:
-                await asyncio.wait_for(stopping.wait(), timeout=ch.cfg.poll_seconds)
+                await self.poll_once(ch.id)
+                failures = 0
+            except Exception:  # storing what was fetched failed (the database): retry later
+                failures += 1
+                log.exception("%s: storing polled messages failed (%d in a row)", ch.id, failures)
+            wait = ch.cfg.poll_seconds * min(2 ** min(failures, 5), 20)  # back off while failing
+            try:
+                await asyncio.wait_for(stopping.wait(), timeout=wait)
             except TimeoutError:
                 pass
 
@@ -159,6 +166,10 @@ class ChannelHub:
                     conv.id, "customer", m.text, m.customer_name, m.external_id, iso(m.ts), m.attachments
                 ):
                     added += 1
+                    if m.unverified:
+                        self._hold_unverified(conv, ch)
+                        to_answer.discard(conv.id)
+                        continue
                     self._observe(conv, m.text, ch.type)
                     if self.triage(conv, m.text):
                         to_answer.discard(conv.id)
@@ -184,6 +195,23 @@ class ChannelHub:
                 if conv is not None:
                     self.office.cluster.request_reply(conv, ch.cfg.debounce_seconds)
         return added
+
+    def _hold_unverified(self, conv: Conversation, ch: Channel) -> None:
+        """A message whose sender the platform could not confirm (a possibly forged email):
+        the AI does not answer it (nor the conversation, until staff hand it back) and
+        staff see why. Its contact details are not taken into the customer list."""
+        self.inbox.set_mode(conv.id, "human")
+        self.inbox.add(
+            conv.id,
+            "note",
+            tr(
+                "⚠️ Không xác minh được người gửi tin này trên {0} (có thể bị giả mạo): AI không tự trả lời. "
+                "Hãy kiểm tra trước khi trả lời hoặc chuyển lại cho AI.",
+                ch.type,
+            ),
+            tr("Hệ thống"),
+        )
+        log.warning("%s: unverified message in conversation %s left for staff", ch.id, conv.id)
 
     def push_inbound(self, channel_id: str, payload: dict[str, Any]) -> Conversation | None:
         """A message pushed to /hooks/<channel id> (webhook bridges, the Zalo gateway)."""

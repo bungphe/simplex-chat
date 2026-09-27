@@ -66,16 +66,43 @@ function loadSession(id) {
   }
 }
 
+// Messages not yet accepted by the AI employees (restarting, briefly unreachable) are
+// retried a few times with a growing delay; the inbox drops duplicates by message id.
+const FORWARD_ATTEMPTS = 5;
+const FORWARD_MAX_PENDING = 1000;
+let forwardPending = 0;
+
 async function forward(id, data) {
+  if (forwardPending >= FORWARD_MAX_PENDING) {
+    console.error(`[${id}] webhook: ${forwardPending} messages waiting; message ${data.id} dropped`);
+    return;
+  }
+  forwardPending++;
+  const body = JSON.stringify({ event: "message", account: id, data });
   try {
-    const r = await fetch(`${WEBHOOK_URL}/${id}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Hook-Secret": WEBHOOK_SECRET },
-      body: JSON.stringify({ event: "message", account: id, data }),
-    });
-    if (!r.ok) console.warn(`[${id}] webhook answered HTTP ${r.status}`);
-  } catch (e) {
-    console.error(`[${id}] webhook failed: ${e.message}`);
+    for (let attempt = 1; attempt <= FORWARD_ATTEMPTS; attempt++) {
+      let retry;
+      try {
+        const r = await fetch(`${WEBHOOK_URL}/${id}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Hook-Secret": WEBHOOK_SECRET },
+          body,
+          signal: AbortSignal.timeout(15000),
+        });
+        if (r.ok) return;
+        // 4xx (bad secret, unknown channel) will not get better; 429 and 5xx may
+        retry = r.status === 429 || r.status >= 500;
+        console.warn(`[${id}] webhook answered HTTP ${r.status} (attempt ${attempt})`);
+      } catch (e) {
+        retry = true;
+        console.error(`[${id}] webhook failed (attempt ${attempt}): ${e.message}`);
+      }
+      if (!retry || attempt === FORWARD_ATTEMPTS) break;
+      await new Promise((resolve) => setTimeout(resolve, 1000 * 2 ** (attempt - 1))); // 1, 2, 4, 8 s
+    }
+    console.error(`[${id}] webhook: message ${data.id} not delivered`);
+  } finally {
+    forwardPending--;
   }
 }
 

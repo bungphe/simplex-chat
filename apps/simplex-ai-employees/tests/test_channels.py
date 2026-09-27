@@ -152,7 +152,7 @@ class Platforms:
                 return httpx2.Response(200, json={"state": "qr_pending"})
             if url.path == "/zalo-canhan/api/qr":
                 return httpx2.Response(200, json={"state": "qr_pending", "qr": "data:image/png;base64,AAAA"})
-        if url.host == "cdn.example":
+        if url.host == "cdn.example" or r.headers.get("host") == "cdn.example":  # pinned to its address
             if url.path == "/p.jpg":
                 return httpx2.Response(200, content=b"\xff\xd8jpeg", headers={"content-type": "image/jpeg"})
             if url.path == "/page.html":

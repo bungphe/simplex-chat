@@ -59,6 +59,8 @@ CREATE INDEX IF NOT EXISTS crm_links_contact ON crm_links (contact_id)
 _PHONE = re.compile(r"(?<![\w+])(?:\+?84|0)(?:[ .-]?\d){9}(?!\d)|(?<![\w+])\+\d(?:[ .-]?\d){7,13}(?!\d)")
 _EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)*\.[a-zA-Z]{2,}")
 FREE_MAIL = {"gmail.com", "yahoo.com", "yahoo.com.vn", "hotmail.com", "outlook.com", "icloud.com", "live.com"}
+# other modules' rows that point at a contact (orders, loyalty points, web shop logins)
+MERGED_TABLES = ("inv_orders", "crm_points", "sf_sessions", "sf_codes")
 FIELDS = ("name", "phone", "email", "company_id", "notes", "vip", "address", "lat", "lng")
 
 
@@ -106,6 +108,18 @@ class CRM:
         )
         # the customer's address and where it is (for delivery and "customers near a showroom")
         db.add_columns("crm_contacts", {"address": "TEXT NOT NULL DEFAULT ''", "lat": "REAL", "lng": "REAL"})
+        # the address the geocoder could not find (not asked again until the address changes)
+        db.add_columns("crm_contacts", {"geocode_failed": "TEXT"})
+
+    def _has_table(self, name: str) -> bool:
+        if self.db.postgres:
+            sql = (
+                "SELECT 1 AS x FROM information_schema.tables "
+                "WHERE table_schema=current_schema() AND table_name=?"
+            )
+        else:
+            sql = "SELECT 1 AS x FROM sqlite_master WHERE type='table' AND name=?"
+        return self.db.row(sql, (name,)) is not None
 
     # contacts of conversations
 
@@ -317,8 +331,19 @@ class CRM:
             filled.update(lat=b["lat"], lng=b["lng"])
         if b["notes"]:
             filled["notes"] = f"{a['notes']}\n{b['notes']}".strip()[:4000]
+        # loyalty: points and purchases add up; VIP if either was, since the earlier date
+        for k in ("points", "total_spent", "orders_count"):
+            filled[k] = int(a[k] or 0) + int(b[k] or 0)
+        if a["vip"] or b["vip"]:
+            filled["vip"] = 1
+            since = [x for x in (a["vip_since"], b["vip_since"]) if x]
+            filled["vip_since"] = min(since) if since else None
+        # everything else that belongs to the customer follows (tables of modules not in use are skipped)
+        owned = [t for t in MERGED_TABLES if self._has_table(t)]
         with self.db.transaction():
             self.db.execute("UPDATE crm_links SET contact_id=? WHERE contact_id=?", (keep, other))
+            for table in owned:
+                self.db.execute(f"UPDATE {table} SET contact_id=? WHERE contact_id=?", (keep, other))
             if filled:
                 sets = ", ".join(f"{k}=?" for k in filled)
                 self.db.execute(f"UPDATE crm_contacts SET {sets} WHERE id=?", (*filled.values(), keep))
