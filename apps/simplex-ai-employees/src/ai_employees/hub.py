@@ -291,6 +291,25 @@ class ChannelHub:
             )
         return "\n".join(lines)
 
+    async def notify_customer(self, conv_id: int, text: str) -> bool:
+        """A notice from the shop (order on its way, VIP card, receipt) on the customer's own
+        channel, in their language. False when it could not be sent."""
+        conv = self.inbox.conversation(conv_id)
+        employee = self.employee_for(conv) if conv else None
+        if conv is None or employee is None:
+            return False
+        try:
+            text = await employee.agent.for_contact(conv.contact_id, text)
+            await self.deliver(conv, text, "system", employee.settings.display_name)
+        except Exception as e:  # noqa: BLE001 - a platform refusing a message is reported, not raised
+            log.warning("inbox: notice to conversation %s not sent: %s", conv_id, e)
+            return False
+        return True
+
+    def spawn(self, coro: Any) -> None:
+        """Run a notice in the background (callers may be synchronous)."""
+        self._spawn(coro)
+
     def add_note(self, conv_id: int, text: str, author: str) -> int | None:
         """An internal note: staff only, never sent to the customer or shown to the AI."""
         return self.inbox.add(conv_id, "note", text, author)

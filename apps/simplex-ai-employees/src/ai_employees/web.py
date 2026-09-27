@@ -55,11 +55,48 @@ USERS: web.AppKey[Users] = web.AppKey("users")
 USER: web.RequestKey[User] = web.RequestKey("user")
 
 
-def _agent_may(method: str, path: str) -> bool:
-    """What an "agent" (sales staff) account may call: its own account and the inbox."""
-    if path in ("/api/me", "/api/me/password", "/api/logout", "/api/inbox") or path.startswith("/api/inbox/"):
+# What each staff role may call besides its own account (admins: everything).
+ROLE_AREAS: dict[str, tuple[str, ...]] = {
+    "manager": ("inbox", "pos", "inventory", "delivery", "marketing", "reports", "crm"),
+    "agent": ("inbox", "pos"),
+    "cashier": ("pos",),
+    "warehouse": ("inventory",),
+    "delivery": ("delivery",),
+    "marketing": ("marketing", "reports", "crm-read", "inventory-read"),
+}
+_AREA_PREFIXES = {
+    "inbox": ("/api/inbox",),
+    "pos": ("/api/pos",),
+    "inventory": ("/api/inventory",),
+    "delivery": ("/api/delivery",),
+    "marketing": ("/api/marketing",),
+    "reports": ("/api/reports",),
+    "crm": ("/api/crm",),
+}
+
+
+def _may(user: User, method: str, path: str) -> bool:
+    if user.is_admin:
         return True
-    return method == "GET" and path == "/api/channels"
+    if path in ("/api/me", "/api/me/password", "/api/logout", "/api/notices") or path.startswith(
+        "/api/notices/"
+    ):
+        return True
+    if method == "GET" and path == "/api/channels":
+        return True
+    areas = ROLE_AREAS.get(user.role, ())
+    for area in areas:
+        if area.endswith("-read"):
+            if method == "GET" and any(path.startswith(p) for p in _AREA_PREFIXES[area[:-5]]):
+                return True
+        elif any(path == p or path.startswith(p + "/") for p in _AREA_PREFIXES[area]):
+            # settings and the marketplace credentials stay with admins
+            if area == "inventory" and path.startswith(
+                ("/api/inventory/settings", "/api/inventory/marketplaces")
+            ):
+                return method == "GET" and user.role == "manager"
+            return True
+    return False
 
 
 def _user(request: web.Request) -> User:
@@ -87,7 +124,7 @@ async def guard(request: web.Request, handler: Any) -> web.StreamResponse:
                 user = _session_user(request)
                 if user is None:
                     raise ApiError(401, "not logged in")
-                if not user.is_admin and not _agent_may(request.method, path):
+                if not _may(user, request.method, path):
                     raise ApiError(403, "Tài khoản của bạn không có quyền này")
                 request[USER] = user
         resp = await handler(request)
@@ -1723,6 +1760,9 @@ def create_app(office: Office, password: str) -> web.Application:
     r.add_post("/api/inbox/{cid}/assignee", inbox_assignee)
     r.add_post("/api/inbox/{cid}/labels", inbox_labels)
     r.add_post("/api/inbox/{cid}/summary", inbox_summary)
+    from .web_business import add_routes
+
+    add_routes(r)
     r.add_get("/api/inbox/{cid}/products", inbox_products)
     r.add_get("/api/inventory", inv_overview)
     r.add_put("/api/inventory/settings", inv_settings)

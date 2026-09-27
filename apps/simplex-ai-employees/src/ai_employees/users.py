@@ -4,8 +4,15 @@
   account always works, so a lost staff password can never lock the owner out.
 - Staff accounts are kept in the office database (shared by all processes), passwords as
   salted scrypt hashes. Roles:
-    admin  everything the owner can do;
-    agent  sales staff: the unified inbox only, optionally limited to some channels.
+    admin      everything the owner can do;
+    manager    store manager: inbox, point of sale, inventory, delivery, marketing and
+               reports; cancels and takes back sales (not accounts, models or AI settings);
+    agent      sales staff: the unified inbox (optionally limited to some channels) and the
+               point of sale;
+    cashier    the point of sale only;
+    warehouse  inventory: products, purchasing, transfers, stock counts;
+    delivery   delivery bookings, trips and drivers;
+    marketing  promotions, vouchers, combos, advertising, customer segments, reports.
 """
 
 from __future__ import annotations
@@ -24,7 +31,7 @@ from .db import Database, DocStore
 from .state import now_iso
 
 OWNER = "admin"
-ROLES = ("admin", "agent")
+ROLES = ("admin", "manager", "agent", "cashier", "warehouse", "delivery", "marketing")
 MIN_PASSWORD = 10
 _USERNAME = re.compile(r"^[a-z0-9][a-z0-9._-]{1,31}$")
 _SCRYPT = {"n": 2**14, "r": 8, "p": 1, "dklen": 32}

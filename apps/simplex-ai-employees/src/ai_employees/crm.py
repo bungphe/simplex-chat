@@ -92,15 +92,17 @@ class CRM:
     def __init__(self, db: Database):
         self.db = db
         db.script(SCHEMA)
-        # added later: VIP customers get VIP prices (see inventory.py)
-        if db.postgres:
-            db.execute(
-                "ALTER TABLE crm_contacts ADD COLUMN IF NOT EXISTS vip {int} NOT NULL DEFAULT 0".replace(
-                    "{int}", "BIGINT"
-                )
-            )
-        elif "vip" not in {r["name"] for r in db.rows("PRAGMA table_info(crm_contacts)")}:
-            db.execute("ALTER TABLE crm_contacts ADD COLUMN vip INTEGER NOT NULL DEFAULT 0")
+        # added later: VIP customers get VIP prices; loyalty points (see loyalty.py)
+        db.add_columns(
+            "crm_contacts",
+            {
+                "vip": "{int} NOT NULL DEFAULT 0",
+                "vip_since": "TEXT",
+                "points": "{int} NOT NULL DEFAULT 0",
+                "total_spent": "{int} NOT NULL DEFAULT 0",
+                "orders_count": "{int} NOT NULL DEFAULT 0",
+            },
+        )
 
     # contacts of conversations
 
@@ -164,6 +166,21 @@ class CRM:
         return self.contact(int(contact["id"])) or contact
 
     # contacts
+
+    def create_contact(self, name: str, phone: str = "", email: str = "") -> dict[str, Any]:
+        """A customer met at the counter (no chat yet); their chats can be merged in later."""
+        if not (name.strip() or phone.strip()):
+            raise ValueError("Cần tên hoặc số điện thoại")
+        now = now_iso()
+        cid = self.db.execute(
+            "INSERT INTO crm_contacts (name, phone, phone_key, email, created, updated) VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
+            (name.strip()[:120], phone.strip()[:40], phone_key(phone), email.strip().lower()[:200], now, now),
+        )
+        contact = self.contact(int(cid or 0))
+        assert contact is not None
+        if contact["email"]:
+            self._link_company(contact)
+        return self.contact(int(contact["id"])) or contact
 
     def contact(self, contact_id: int) -> dict[str, Any] | None:
         return self.db.row("SELECT * FROM crm_contacts WHERE id=?", (contact_id,))

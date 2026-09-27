@@ -60,7 +60,23 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "velocity_days": 30,
     "safety_days": 7,
     "cover_days": 30,  # a reorder covers the lead time plus this many days of sales
+    # shop details on receipts; VAT is shown as included in prices when set
+    "shop_name": "",
+    "shop_address": "",
+    "shop_phone": "",
+    "tax_code": "",
+    "bank_info": "",
+    "receipt_footer": "Cảm ơn quý khách!",
+    "vat_pct": 0,
+    "undo_hours": 24,  # a completed sale can be taken back (returned) within this time
+    # loyalty: 1 point per this amount spent; VIP from this many points (0: never automatic)
+    "points_per": 100000,
+    "vip_points": 500,
+    # product sets: items must be in stock or arriving within this many days
+    "set_eta_days": 30,
 }
+PAYMENT_METHODS = ("cash", "card", "transfer", "wallet", "cod", "other")
+MONEY_FIELDS = ("subtotal", "discount", "voucher_discount", "shipping_fee", "total", "paid", "cost", "profit")
 PO_STATUSES = ("draft", "ordered", "shipping", "arrived", "partial", "received", "cancelled")
 LEVELS = ("empty", "reorder", "low", "medium", "good")
 
@@ -140,6 +156,60 @@ CREATE TABLE IF NOT EXISTS inv_order_allocs (
 CREATE INDEX IF NOT EXISTS inv_order_allocs_item ON inv_order_allocs (order_item_id)
 """
 
+SALES_SCHEMA = """
+CREATE TABLE IF NOT EXISTS inv_payments (
+  id {id}, order_id {int} NOT NULL, method TEXT NOT NULL, amount {int} NOT NULL, tendered {int},
+  change_given {int}, ref TEXT NOT NULL DEFAULT '', idempotency_key TEXT UNIQUE, cashier TEXT NOT NULL DEFAULT '',
+  ts TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS inv_payments_order ON inv_payments (order_id);
+CREATE TABLE IF NOT EXISTS inv_promotions (
+  id {id}, name TEXT NOT NULL, badge TEXT NOT NULL DEFAULT '', discount_type TEXT NOT NULL, value {int} NOT NULL,
+  starts TEXT NOT NULL, ends TEXT NOT NULL, all_products {int} NOT NULL DEFAULT 0, category TEXT NOT NULL DEFAULT '',
+  active {int} NOT NULL DEFAULT 1, created TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS inv_promo_products (
+  promotion_id {int} NOT NULL, product_id {int} NOT NULL, PRIMARY KEY (promotion_id, product_id));
+CREATE TABLE IF NOT EXISTS inv_vouchers (
+  id {id}, code TEXT NOT NULL UNIQUE, discount_type TEXT NOT NULL, value {int} NOT NULL,
+  min_order {int} NOT NULL DEFAULT 0, max_discount {int} NOT NULL DEFAULT 0, max_uses {int} NOT NULL DEFAULT 0,
+  used {int} NOT NULL DEFAULT 0, starts TEXT NOT NULL DEFAULT '', ends TEXT NOT NULL DEFAULT '',
+  active {int} NOT NULL DEFAULT 1, note TEXT NOT NULL DEFAULT '', created TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS inv_combos (
+  id {id}, code TEXT NOT NULL UNIQUE, name TEXT NOT NULL, price {int} NOT NULL, badge TEXT NOT NULL DEFAULT '',
+  description TEXT NOT NULL DEFAULT '', starts TEXT NOT NULL DEFAULT '', ends TEXT NOT NULL DEFAULT '',
+  active {int} NOT NULL DEFAULT 1, created TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS inv_combo_items (
+  combo_id {int} NOT NULL, product_id {int} NOT NULL, qty {int} NOT NULL, PRIMARY KEY (combo_id, product_id))
+"""
+SETS_KEY = "inventory_sets"
+DEFAULT_SETS = [  # room sets from the sale-management spec; slots match a category or name words
+    {
+        "id": "phong-khach",
+        "name": "Phòng khách",
+        "slots": [
+            {"label": "Sofa", "match": "sofa", "qty": 1},
+            {"label": "Bàn trà", "match": "bàn trà", "qty": 1},
+            {"label": "Kệ TV", "match": "kệ tv", "qty": 1},
+        ],
+    },
+    {
+        "id": "phong-ngu",
+        "name": "Phòng ngủ",
+        "slots": [
+            {"label": "Giường", "match": "giường", "qty": 1},
+            {"label": "Nệm", "match": "nệm", "qty": 1},
+            {"label": "Tủ đầu giường", "match": "tủ đầu giường", "qty": 2},
+        ],
+    },
+    {
+        "id": "phong-an",
+        "name": "Phòng ăn",
+        "slots": [
+            {"label": "Bàn ăn", "match": "bàn ăn", "qty": 1},
+            {"label": "Ghế ăn", "match": "ghế ăn", "qty": 6},
+        ],
+    },
+]
+
 
 class InventoryError(ValueError):
     """A request that cannot be done (not enough stock, a wrong status...); the message is for staff."""
@@ -192,6 +262,42 @@ class Inventory:
         self.db = db
         self.docs = docs
         db.script(SCHEMA)
+        db.script(SALES_SCHEMA)
+        db.add_columns(
+            "inv_orders",
+            {
+                "salesperson": "TEXT NOT NULL DEFAULT ''",
+                "channel": "TEXT NOT NULL DEFAULT ''",
+                "shipping_fee": "{int} NOT NULL DEFAULT 0",
+                "voucher": "TEXT NOT NULL DEFAULT ''",
+                "voucher_discount": "{int} NOT NULL DEFAULT 0",
+                "paid": "{int} NOT NULL DEFAULT 0",
+                "payment_status": "TEXT NOT NULL DEFAULT 'unpaid'",
+                "delivery_date": "TEXT NOT NULL DEFAULT ''",
+                "external_ref": "TEXT NOT NULL DEFAULT ''",
+                "returned": "TEXT",
+            },
+        )
+        db.add_columns(
+            "inv_order_items",
+            {"list_price": "{int}", "promo": "TEXT NOT NULL DEFAULT ''", "combo": "TEXT NOT NULL DEFAULT ''"},
+        )
+        db.add_columns(
+            "inv_products",
+            {"box_count": "{int} NOT NULL DEFAULT 1", "external_skus": "TEXT NOT NULL DEFAULT '{}'"},
+        )
+        # Other parts of the office react to sales and stock changes (loyalty points,
+        # marketplace sync): listener(event, data), called after the change is committed.
+        self.listeners: list[Any] = []
+
+    def _emit(self, event: str, **data: Any) -> None:
+        import logging
+
+        for listener in list(self.listeners):
+            try:
+                listener(event, data)
+            except Exception:  # a listener must never undo a sale
+                logging.getLogger(__name__).exception("inventory: listener failed on %s", event)
 
     # ------------------------------------------------------------------ #
     # settings and money
@@ -214,7 +320,22 @@ class Inventory:
             if decimals != current["decimals"] and self.db.row("SELECT 1 AS x FROM inv_lots LIMIT 1"):
                 raise InventoryError("Không đổi được số chữ số thập phân khi đã có hàng nhập")
             clean["decimals"] = decimals
+        for key, limit in (
+            ("shop_name", 120),
+            ("shop_address", 300),
+            ("shop_phone", 40),
+            ("tax_code", 40),
+            ("bank_info", 300),
+            ("receipt_footer", 300),
+        ):
+            if key in changes:
+                clean[key] = str(changes[key] or "").strip()[:limit]
         for key, what, lo, hi in (
+            ("vat_pct", "Thuế VAT (%)", 0, 50),
+            ("undo_hours", "Số giờ được hoàn tác đơn", 0, 24 * 90),
+            ("points_per", "Số tiền cho 1 điểm", 1, None),
+            ("vip_points", "Số điểm lên VIP", 0, None),
+            ("set_eta_days", "Số ngày hàng về cho gợi ý bộ", 0, 365),
             ("round_to", "Làm tròn giá", 0, None),
             ("price_hour", "Giờ chạy định giá", 0, 23),
             ("velocity_days", "Số ngày tính tốc độ bán", 1, 365),
@@ -509,21 +630,38 @@ class Inventory:
         lots = self._lots(pid)
         return lots[0] if lots else None
 
-    def current_price(self, pid: int, vip: bool = False) -> dict[str, Any] | None:
-        """{price, stage, lot_id, vip}: the active lot's stage price. VIP customers: the VIP
-        price if one is set, else the next stage's price (never more than the normal price)."""
+    def current_price(self, pid: int, vip: bool = False, at: datetime | None = None) -> dict[str, Any] | None:
+        """{price, stage, lot_id, vip, promo, list_price}: the active lot's stage price
+        (list_price), or less: a running promotion (a % promotion follows the stage price
+        as it changes), and for VIP customers the VIP price if one is set, else the next
+        stage's price. The best single offer applies; offers are never added up."""
         lot = self.pricing_lot(pid)
         if lot is None:
             return None
         stage = int(lot["stage"])
-        price = int(lot[f"price{stage}"])
+        base = int(lot[f"price{stage}"])
+        offers = [(base, False, "")]
         if vip:
             product = self.product_row(pid)
             special = lot["vip_price"] if lot["vip_price"] is not None else product["vip_price"]
-            candidate = int(special) if special is not None else int(lot[f"price{min(stage + 1, 5)}"])
-            if candidate < price:
-                return {"price": candidate, "stage": stage, "lot_id": lot["id"], "vip": True}
-        return {"price": price, "stage": stage, "lot_id": lot["id"], "vip": False}
+            offers.append(
+                (int(special) if special is not None else int(lot[f"price{min(stage + 1, 5)}"]), True, "")
+            )
+        for promo in self.active_promotions(pid, at):
+            if promo["discount_type"] == "pct":
+                cut = self._round_price(Decimal(base) * (1 - Decimal(str(promo["value"])) / 100))
+            else:
+                cut = base - int(promo["value"])
+            offers.append((max(0, cut), False, promo["badge"] or promo["name"]))
+        price, is_vip, promo = min(offers, key=lambda o: o[0])
+        return {
+            "price": price,
+            "stage": stage,
+            "lot_id": lot["id"],
+            "vip": is_vip,
+            "promo": promo,
+            "list_price": base,
+        }
 
     def _stock_rows(self, pid: int | None = None) -> list[dict[str, Any]]:
         sql = "SELECT s.*, w.code, w.name AS warehouse_name, w.kind FROM inv_stock s JOIN inv_warehouses w ON w.id=s.warehouse_id"
@@ -1311,6 +1449,7 @@ class Inventory:
             )
         out = self.po(po_id)
         out["served_preorders"] = sorted(set(served))
+        self._emit("stock", product_ids=[int(i["product_id"]) for i in out["items"]])
         return out
 
     def _serve_preorders(self, po_item_id: int, lot_id: int, wh: int, pid: int, actor: str) -> list[int]:
@@ -1400,6 +1539,12 @@ class Inventory:
                 reason[:500],
             ),
         )
+
+    def run_pricing_and_notify(self, **kw: Any) -> list[dict[str, Any]]:
+        changes = self.run_pricing(**kw)
+        if changes:
+            self._emit("prices", product_ids=sorted({int(c["product_id"]) for c in changes}))
+        return changes
 
     def run_pricing(
         self, now: datetime | None = None, actor: str = "", product_id: int | None = None
@@ -1598,7 +1743,7 @@ class Inventory:
                 claimed.append(True)
 
         self.docs.update("inventory_runs", claim, {})
-        return self.run_pricing(now) if claimed else None
+        return self.run_pricing_and_notify(now=now) if claimed else None
 
     def price_log(self, limit: int = 200) -> list[dict[str, Any]]:
         rows = self.db.rows(
@@ -1626,17 +1771,26 @@ class Inventory:
         note: str = "",
         source: str = "",
         actor: str = "",
+        salesperson: str = "",
+        channel: str = "",
+        voucher: str = "",
+        shipping_fee: Any = 0,
+        delivery_date: str = "",
+        external_ref: str = "",
     ) -> dict[str, Any]:
         """Confirm a sale and reserve its goods. `kind` "now": from stock in the warehouse;
         "preorder": on incoming purchase orders (`po_id` per item, or the earliest ETA),
         served automatically when the goods arrive. A line may carry its own `unit_price`
-        (a once-off special price)."""
+        (a once-off special price) or `discount_pct`; `{"combo": code, "qty": n}` sells a
+        package at its package price. A voucher code takes its discount off the total."""
         if kind not in ("now", "preorder"):
             raise InventoryError("Loại đơn là now (có sẵn) hoặc preorder (đặt trước)")
         if not items:
             raise InventoryError("Đơn hàng cần ít nhất một sản phẩm")
         wh = int(warehouse_id) if warehouse_id else int(self.default_warehouse()["id"])
-        self.warehouse(wh)
+        if not self.warehouse(wh)["active"]:
+            raise InventoryError("Kho này đang tạm dừng")
+        items, combo_saving = self._expand_combos(items, vip)
         lines = []
         for it in items:
             p = (
@@ -1652,7 +1806,8 @@ class Inventory:
         with self.db.transaction():
             oid = self.db.execute(
                 "INSERT INTO inv_orders (kind, warehouse_id, contact_id, conversation_id, customer_name, phone, address, note, "
-                "source, created_by, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+                "source, created_by, created, salesperson, channel, delivery_date, external_ref) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
                 (
                     kind,
                     wh,
@@ -1665,6 +1820,10 @@ class Inventory:
                     source[:40],
                     actor[:80],
                     now,
+                    salesperson[:80],
+                    channel[:20],
+                    str(delivery_date or "")[:10],
+                    external_ref[:80],
                 ),
             )
             assert oid is not None
@@ -1672,19 +1831,29 @@ class Inventory:
             for p, qty, it in lines:
                 pid = int(p["id"])
                 price = self.current_price(pid, vip)
+                promo, combo = (price or {}).get("promo", ""), str(it.get("combo") or "")
+                list_price = (price or {}).get("list_price")
                 if it.get("unit_price") not in (None, ""):
                     unit = self.minor(it["unit_price"], "Giá bán")
-                    stage, is_vip = (price or {}).get("stage"), False
+                    stage, is_vip, promo = (price or {}).get("stage"), False, ""
                 elif price is not None:
                     unit, stage, is_vip = price["price"], price["stage"], price["vip"]
                 else:
                     unit, stage, is_vip = 0, None, False
+                if it.get("discount_pct") not in (None, "", 0) and not combo:
+                    pct = _dec(it["discount_pct"], "Giảm %")
+                    if not 0 <= pct <= 100:
+                        raise InventoryError("Giảm % phải từ 0 đến 100")
+                    unit = self._round_price(Decimal(unit) * (1 - pct / 100))
+                    promo = f"-{pct.normalize():f}%"
                 if kind == "now":
                     if not self._reserve(wh, pid, qty):
                         raise InventoryError(
                             f"{p['sku']}: kho chỉ còn {self._available(wh, pid)} có thể bán, cần {qty}"
                         )
-                    line_id = self._order_line(oid, pid, qty, unit, stage, is_vip, None, "reserved")
+                    line_id = self._order_line(
+                        oid, pid, qty, unit, stage, is_vip, None, "reserved", list_price, promo, combo
+                    )
                     cost += self._allocate(line_id, pid, qty)
                     self._move(
                         wh, pid, "reserve", 0, "order", oid, None, actor, f"Giữ {qty} cho {order_code(oid)}"
@@ -1697,15 +1866,34 @@ class Inventory:
                         "UPDATE inv_po_items SET qty_preordered=qty_preordered+? WHERE id=?",
                         (qty, po_item["id"]),
                     )
-                    self._order_line(oid, pid, qty, unit, stage or 1, is_vip, int(po_item["id"]), "awaiting")
+                    self._order_line(
+                        oid,
+                        pid,
+                        qty,
+                        unit,
+                        stage or 1,
+                        is_vip,
+                        int(po_item["id"]),
+                        "awaiting",
+                        list_price,
+                        promo,
+                        combo,
+                    )
                 subtotal += unit * qty
             disc = self.minor(discount, "Giảm giá") if discount not in (None, "", 0) else 0
-            if disc > subtotal:
+            disc += combo_saving
+            code, vdisc = "", 0
+            if voucher.strip():
+                code, vdisc = self._use_voucher(voucher, subtotal - disc)
+            if disc + vdisc > subtotal:
                 raise InventoryError("Giảm giá lớn hơn tổng tiền")
+            ship = self.minor(shipping_fee, "Phí giao hàng") if shipping_fee not in (None, "", 0) else 0
             self.db.execute(
-                "UPDATE inv_orders SET subtotal=?, discount=?, total=?, cost=? WHERE id=?",
-                (subtotal, disc, subtotal - disc, cost, oid),
+                "UPDATE inv_orders SET subtotal=?, discount=?, voucher=?, voucher_discount=?, shipping_fee=?, "
+                "total=?, cost=? WHERE id=?",
+                (subtotal, disc, code, vdisc, ship, subtotal - disc - vdisc + ship, cost, oid),
             )
+        self._emit("stock", product_ids=[int(p["id"]) for p, _, _ in lines])
         return self.order(int(oid))
 
     def _order_line(
@@ -1718,11 +1906,27 @@ class Inventory:
         vip: bool,
         po_item_id: int | None,
         status: str,
+        list_price: int | None = None,
+        promo: str = "",
+        combo: str = "",
     ) -> int:
         line_id = self.db.execute(
-            "INSERT INTO inv_order_items (order_id, product_id, qty, unit_price, stage, vip, po_item_id, status, line_total) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
-            (oid, pid, qty, unit, stage, 1 if vip else 0, po_item_id, status, unit * qty),
+            "INSERT INTO inv_order_items (order_id, product_id, qty, unit_price, stage, vip, po_item_id, status, line_total, "
+            "list_price, promo, combo) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+            (
+                oid,
+                pid,
+                qty,
+                unit,
+                stage,
+                1 if vip else 0,
+                po_item_id,
+                status,
+                unit * qty,
+                list_price if list_price is not None else unit,
+                promo[:80],
+                combo[:40],
+            ),
         )
         assert line_id is not None
         return line_id
@@ -1798,10 +2002,13 @@ class Inventory:
                     )
                 self.db.execute("UPDATE inv_order_items SET status='done' WHERE id=?", (line["id"],))
             self.db.execute(
-                "UPDATE inv_orders SET status='completed', completed=?, cost=?, profit=total-? WHERE id=?",
+                "UPDATE inv_orders SET status='completed', completed=?, cost=?, profit=total-shipping_fee-? WHERE id=?",
                 (now_iso(), cost, cost, oid),
             )
-        return self.order(oid)
+        done = self.order(oid)
+        self._emit("order_completed", order=done)
+        self._emit("stock", product_ids=[int(x["product_id"]) for x in lines])
+        return done
 
     def cancel_order(self, oid: int, actor: str = "") -> dict[str, Any]:
         order = self._order_row(oid)
@@ -1845,7 +2052,15 @@ class Inventory:
             self.db.execute(
                 "UPDATE inv_orders SET status='cancelled', cancelled=? WHERE id=?", (now_iso(), oid)
             )
-        return self.order(oid)
+            self._refund(oid, actor, "Huỷ đơn")
+            if order["voucher"]:
+                self.db.execute(
+                    "UPDATE inv_vouchers SET used=used-1 WHERE code=? AND used>0", (order["voucher"],)
+                )
+        out = self.order(oid)
+        self._emit("order_cancelled", order=out)
+        self._emit("stock", product_ids=[int(x["product_id"]) for x in out["items"]])
+        return out
 
     def _order_row(self, oid: int) -> dict[str, Any]:
         row = self.db.row("SELECT * FROM inv_orders WHERE id=?", (oid,))
@@ -1855,6 +2070,15 @@ class Inventory:
 
     def order(self, oid: int) -> dict[str, Any]:
         o = self._order_row(oid)
+        payments = [
+            {
+                **x,
+                "amount": self.major(x["amount"]),
+                "tendered": self.major(x["tendered"]),
+                "change": self.major(x["change_given"]),
+            }
+            for x in self.db.rows("SELECT * FROM inv_payments WHERE order_id=? ORDER BY id", (oid,))
+        ]
         items = self.db.rows(
             "SELECT i.*, p.sku, p.name, po.po_number, po.eta FROM inv_order_items i JOIN inv_products p ON p.id=i.product_id "
             "LEFT JOIN inv_po_items pi ON pi.id=i.po_item_id LEFT JOIN inv_purchase_orders po ON po.id=pi.po_id "
@@ -1864,20 +2088,39 @@ class Inventory:
         return {
             **o,
             "code": order_code(oid),
-            **{k: self.major(o[k]) for k in ("subtotal", "discount", "total", "cost", "profit")},
+            **{k: self.major(o[k]) for k in MONEY_FIELDS},
+            "due": self.major(max(0, int(o["total"]) - int(o["paid"]))) if o["status"] != "cancelled" else 0,
+            "expected_profit": self.major(int(o["total"]) - int(o["shipping_fee"]) - int(o["cost"])),
+            "payments": payments,
             "items": [
-                {**i, "unit_price": self.major(i["unit_price"]), "line_total": self.major(i["line_total"])}
+                {
+                    **i,
+                    "unit_price": self.major(i["unit_price"]),
+                    "line_total": self.major(i["line_total"]),
+                    "list_price": self.major(i["list_price"]),
+                }
                 for i in items
             ],
         }
 
     def orders(
-        self, status: str | None = None, contact_id: int | None = None, limit: int = 300
+        self,
+        status: str | None = None,
+        contact_id: int | None = None,
+        limit: int = 300,
+        salesperson: str | None = None,
+        since: str | None = None,
     ) -> list[dict[str, Any]]:
         sql, args = (
             "SELECT o.*, w.code AS warehouse_code FROM inv_orders o JOIN inv_warehouses w ON w.id=o.warehouse_id WHERE 1=1",
             [],
         )
+        if salesperson:
+            sql += " AND o.salesperson=?"
+            args.append(salesperson)
+        if since:
+            sql += " AND o.created>=?"
+            args.append(since)
         if status:
             sql += " AND o.status=?"
             args.append(status)
@@ -1889,7 +2132,7 @@ class Inventory:
             {
                 **r,
                 "code": order_code(int(r["id"])),
-                **{k: self.major(r[k]) for k in ("subtotal", "discount", "total", "cost", "profit")},
+                **{k: self.major(r[k]) for k in MONEY_FIELDS},
             }
             for r in rows
         ]
@@ -2120,3 +2363,542 @@ class Inventory:
                 }
             )
         return out
+
+    # ------------------------------------------------------------------ #
+    # payments (point of sale)
+
+    def add_payment(
+        self,
+        oid: int,
+        method: str,
+        amount: Any = None,
+        tendered: Any = None,
+        ref: str = "",
+        idempotency_key: str = "",
+        cashier: str = "",
+    ) -> dict[str, Any]:
+        """Take a payment (a deposit or the rest). Cash: the change is worked out from what the
+        customer handed over. The same idempotency key never records a payment twice."""
+        if method not in PAYMENT_METHODS:
+            raise InventoryError(f"Hình thức thanh toán: {', '.join(PAYMENT_METHODS)}")
+        order = self._order_row(oid)
+        if order["status"] not in ("confirmed", "completed"):
+            raise InventoryError("Đơn đã huỷ hoặc đã trả hàng")
+        if idempotency_key and self.db.row(
+            "SELECT 1 AS x FROM inv_payments WHERE idempotency_key=?", (idempotency_key,)
+        ):
+            return self.order(oid)
+        due = int(order["total"]) - int(order["paid"])
+        if due <= 0:
+            raise InventoryError("Đơn đã thanh toán đủ")
+        given = self.minor(tendered, "Tiền khách đưa") if tendered not in (None, "") else None
+        pay = (
+            self.minor(amount, "Số tiền")
+            if amount not in (None, "")
+            else min(due, given if given is not None else due)
+        )
+        if pay <= 0:
+            raise InventoryError("Số tiền phải lớn hơn 0")
+        if pay > due:
+            raise InventoryError(f"Chỉ còn phải trả {self.major(due):,}")
+        change = None
+        if method == "cash" and given is not None:
+            if given < pay:
+                raise InventoryError("Tiền khách đưa ít hơn số tiền thanh toán")
+            change = given - pay
+        with self.db.transaction():
+            self.db.execute(
+                "INSERT INTO inv_payments (order_id, method, amount, tendered, change_given, ref, idempotency_key, cashier, ts) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    oid,
+                    method,
+                    pay,
+                    given,
+                    change,
+                    ref[:120],
+                    idempotency_key[:80] or None,
+                    cashier[:80],
+                    now_iso(),
+                ),
+            )
+            paid = int(order["paid"]) + pay
+            status = "paid" if paid >= int(order["total"]) else "partial"
+            self.db.execute("UPDATE inv_orders SET paid=?, payment_status=? WHERE id=?", (paid, status, oid))
+        return self.order(oid)
+
+    def _refund(self, oid: int, actor: str, reason: str) -> None:
+        order = self._order_row(oid)
+        if int(order["paid"]) > 0:
+            self.db.execute(
+                "INSERT INTO inv_payments (order_id, method, amount, ref, cashier, ts) VALUES (?, 'refund', ?, ?, ?, ?)",
+                (oid, -int(order["paid"]), reason[:120], actor[:80], now_iso()),
+            )
+            self.db.execute("UPDATE inv_orders SET paid=0, payment_status='refunded' WHERE id=?", (oid,))
+
+    @staticmethod
+    def change_hints(due: int, decimals: int = 0) -> list[int]:
+        """Notes a customer is likely to hand over for this amount (cash)."""
+        if decimals:
+            steps = [100, 500, 1000, 2000, 5000, 10000]
+        else:
+            steps = [10_000, 50_000, 100_000, 200_000, 500_000, 1_000_000]
+        hints = sorted({math.ceil(due / s) * s for s in steps if math.ceil(due / s) * s >= due})
+        return hints[:4]
+
+    def return_order(
+        self, oid: int, actor: str = "", reason: str = "", admin: bool = False
+    ) -> dict[str, Any]:
+        """Take back a completed sale (goods back into their lots and the shop's stock, money
+        refunded), within `undo_hours` of completion; admins can do it later too."""
+        order = self._order_row(oid)
+        if order["status"] != "completed":
+            raise InventoryError("Chỉ hoàn tác được đơn đã giao")
+        done = _parse_ts(order["completed"])
+        hours = self.settings()["undo_hours"]
+        if not admin and done and datetime.now().astimezone() - done > timedelta(hours=hours):
+            raise InventoryError(f"Quá {hours} giờ sau khi giao: cần quản lý hoàn tác")
+        wh = int(order["warehouse_id"])
+        pids = []
+        with self.db.transaction():
+            for line in self.db.rows("SELECT * FROM inv_order_items WHERE order_id=?", (oid,)):
+                pid = int(line["product_id"])
+                pids.append(pid)
+                self._add_on_hand(wh, pid, int(line["qty"]))
+                for a in self.db.rows("SELECT * FROM inv_order_allocs WHERE order_item_id=?", (line["id"],)):
+                    if a["lot_id"] is not None:
+                        # back into its own lot; a sold-out lot waits in line again
+                        self.db.execute(
+                            "UPDATE inv_lots SET remaining_qty=remaining_qty+?, "
+                            "status=CASE WHEN status='exhausted' THEN 'queued' ELSE status END WHERE id=?",
+                            (a["qty"], a["lot_id"]),
+                        )
+                    self._move(
+                        wh,
+                        pid,
+                        "return_in",
+                        int(a["qty"]),
+                        "order",
+                        oid,
+                        a["lot_id"],
+                        actor,
+                        f"Trả hàng {order_code(oid)}: {reason}"[:300],
+                    )
+                self.db.execute("UPDATE inv_order_items SET status='returned' WHERE id=?", (line["id"],))
+            self.db.execute(
+                "UPDATE inv_orders SET status='returned', returned=?, profit=0 WHERE id=?", (now_iso(), oid)
+            )
+            self._refund(oid, actor, reason or "Trả hàng")
+        out = self.order(oid)
+        self._emit("order_returned", order=out)
+        self._emit("stock", product_ids=pids)
+        return out
+
+    def receipt(self, oid: int) -> dict[str, Any]:
+        """What a printed receipt / invoice shows."""
+        order = self.order(oid)
+        s = self.settings()
+        vat = int(s["vat_pct"])
+        total = self.minor(order["total"]) if order["total"] else 0
+        vat_amount = round(total * vat / (100 + vat)) if vat else 0
+        return {
+            **order,
+            "shop": {
+                k: s[k]
+                for k in (
+                    "shop_name",
+                    "shop_address",
+                    "shop_phone",
+                    "tax_code",
+                    "bank_info",
+                    "receipt_footer",
+                    "currency",
+                )
+            },
+            "vat_pct": vat,
+            "vat_amount": self.major(vat_amount),
+        }
+
+    def receipt_text(self, oid: int) -> str:
+        r = self.receipt(oid)
+        cur = "đ" if r["shop"]["currency"] == "VND" else r["shop"]["currency"]
+        money = lambda v: f"{v:,}".replace(",", ".") + f" {cur}"
+        lines = [
+            r["shop"]["shop_name"] or "Hoá đơn bán hàng",
+            f"{r['code']} · {r['created'][:16].replace('T', ' ')}",
+        ]
+        for i in r["items"]:
+            lines.append(f"{i['name']} x{i['qty']}: {money(i['line_total'])}")
+        if r["discount"] or r["voucher_discount"]:
+            lines.append(f"Giảm giá: -{money(r['discount'] + r['voucher_discount'])}")
+        if r["shipping_fee"]:
+            lines.append(f"Phí giao hàng: {money(r['shipping_fee'])}")
+        lines.append(
+            f"Tổng: {money(r['total'])}" + (f" (đã gồm VAT {r['vat_pct']}%)" if r["vat_pct"] else "")
+        )
+        lines.append(f"Đã trả: {money(r['paid'])}" + (f" · còn lại {money(r['due'])}" if r["due"] else ""))
+        if r["shop"]["bank_info"] and r["due"]:
+            lines.append(f"Chuyển khoản: {r['shop']['bank_info']}")
+        if r["shop"]["receipt_footer"]:
+            lines.append(r["shop"]["receipt_footer"])
+        return "\n".join(lines)
+
+    # ------------------------------------------------------------------ #
+    # promotions, vouchers and package deals (combos)
+
+    def _when(self, value: Any, what: str, end: bool = False) -> str:
+        v = str(value or "").strip()
+        if not v:
+            raise InventoryError(f"{what} là bắt buộc")
+        try:
+            d = datetime.fromisoformat(v)
+        except ValueError:
+            raise InventoryError(f"{what}: dạng YYYY-MM-DD hoặc YYYY-MM-DDTHH:MM") from None
+        if len(v) == 10 and end:
+            d = d.replace(hour=23, minute=59, second=59)
+        return (d if d.tzinfo else d.astimezone()).isoformat(timespec="seconds")
+
+    def _discount(self, data: dict[str, Any]) -> tuple[str, int]:
+        kind = data.get("discount_type")
+        if kind == "pct":
+            value = _int(data.get("value"), "Mức giảm (%)", 1)
+            if value > 100:
+                raise InventoryError("Mức giảm tối đa 100%")
+            return kind, value
+        if kind == "amount":
+            return kind, self.minor(data.get("value"), "Số tiền giảm")
+        raise InventoryError("Kiểu giảm là pct (%) hoặc amount (số tiền)")
+
+    def save_promotion(self, pid: int | None, data: dict[str, Any]) -> dict[str, Any]:
+        """A sale: a % (follows the automatic stage price) or an amount off, for some products,
+        a category or everything, between two dates, with a badge ("Hot Deal", "Xả kho")."""
+        kind, value = self._discount(data)
+        fields = {
+            "name": str(data.get("name") or "").strip()[:150],
+            "badge": str(data.get("badge") or "").strip()[:40],
+            "discount_type": kind,
+            "value": value,
+            "starts": self._when(data.get("starts"), "Ngày bắt đầu"),
+            "ends": self._when(data.get("ends"), "Ngày kết thúc", end=True),
+            "all_products": 1 if data.get("all_products") else 0,
+            "category": str(data.get("category") or "").strip()[:200],
+            "active": 1 if data.get("active", True) else 0,
+        }
+        if not fields["name"]:
+            raise InventoryError("Tên chương trình là bắt buộc")
+        if fields["ends"] < fields["starts"]:
+            raise InventoryError("Ngày kết thúc trước ngày bắt đầu")
+        ids = [int(x) for x in data.get("product_ids") or []]
+        if not (ids or fields["all_products"] or fields["category"]):
+            raise InventoryError("Chọn sản phẩm, danh mục, hoặc áp dụng cho mọi sản phẩm")
+        with self.db.transaction():
+            row = self._save("inv_promotions", pid, fields, "chương trình")
+            self.db.execute("DELETE FROM inv_promo_products WHERE promotion_id=?", (row["id"],))
+            for x in ids:
+                self.product_row(x)
+                self.db.execute(
+                    "INSERT INTO inv_promo_products (promotion_id, product_id) VALUES (?, ?)", (row["id"], x)
+                )
+        self._emit(
+            "prices", product_ids=ids or [int(r["id"]) for r in self.db.rows("SELECT id FROM inv_products")]
+        )
+        return self.promotion(int(row["id"]))
+
+    def promotion(self, pid: int) -> dict[str, Any]:
+        row = self.db.row("SELECT * FROM inv_promotions WHERE id=?", (pid,))
+        if row is None:
+            raise InventoryError("Không có chương trình này")
+        ids = [
+            int(r["product_id"])
+            for r in self.db.rows("SELECT product_id FROM inv_promo_products WHERE promotion_id=?", (pid,))
+        ]
+        value = row["value"] if row["discount_type"] == "pct" else self.major(row["value"])
+        return {**row, "value": value, "product_ids": ids}
+
+    def promotions(self) -> list[dict[str, Any]]:
+        return [
+            self.promotion(int(r["id"]))
+            for r in self.db.rows("SELECT id FROM inv_promotions ORDER BY id DESC")
+        ]
+
+    def active_promotions(self, pid: int, at: datetime | None = None) -> list[dict[str, Any]]:
+        now = (at or datetime.now().astimezone()).isoformat(timespec="seconds")
+        category = self.db.row("SELECT category FROM inv_products WHERE id=?", (pid,))
+        return self.db.rows(
+            "SELECT * FROM inv_promotions p WHERE active=1 AND starts<=? AND ends>=? AND (all_products=1 "
+            "OR (category<>'' AND LOWER(category)=LOWER(?)) "
+            "OR EXISTS (SELECT 1 FROM inv_promo_products x WHERE x.promotion_id=p.id AND x.product_id=?))",
+            (now, now, category["category"] if category else "", pid),
+        )
+
+    def save_voucher(self, vid: int | None, data: dict[str, Any]) -> dict[str, Any]:
+        kind, value = self._discount(data)
+        code = str(data.get("code") or "").strip().upper()[:40]
+        if not code:
+            raise InventoryError("Mã voucher là bắt buộc")
+        fields = {
+            "code": code,
+            "discount_type": kind,
+            "value": value,
+            "min_order": self.minor(data.get("min_order") or 0, "Đơn tối thiểu"),
+            "max_discount": self.minor(data.get("max_discount") or 0, "Giảm tối đa"),
+            "max_uses": _int(data.get("max_uses") or 0, "Số lượt dùng"),
+            "starts": self._when(data["starts"], "Ngày bắt đầu") if data.get("starts") else "",
+            "ends": self._when(data["ends"], "Ngày kết thúc", end=True) if data.get("ends") else "",
+            "active": 1 if data.get("active", True) else 0,
+            "note": str(data.get("note") or "")[:300],
+        }
+        row = self._save("inv_vouchers", vid, fields, "voucher")
+        return self._voucher_json(row)
+
+    def _voucher_json(self, v: dict[str, Any]) -> dict[str, Any]:
+        return {
+            **v,
+            "value": v["value"] if v["discount_type"] == "pct" else self.major(v["value"]),
+            "min_order": self.major(v["min_order"]),
+            "max_discount": self.major(v["max_discount"]),
+        }
+
+    def vouchers(self) -> list[dict[str, Any]]:
+        return [self._voucher_json(v) for v in self.db.rows("SELECT * FROM inv_vouchers ORDER BY id DESC")]
+
+    def _use_voucher(self, code: str, amount: int) -> tuple[str, int]:
+        code = code.strip().upper()
+        v = self.db.row("SELECT * FROM inv_vouchers WHERE code=?", (code,))
+        now = now_iso()
+        if (
+            v is None
+            or not v["active"]
+            or (v["starts"] and v["starts"] > now)
+            or (v["ends"] and v["ends"] < now)
+        ):
+            raise InventoryError(f"Voucher {code} không hợp lệ hoặc đã hết hạn")
+        if amount < int(v["min_order"]):
+            raise InventoryError(f"Voucher {code} cần đơn từ {self.major(v['min_order']):,}")
+        claimed = self.db.execute(
+            "UPDATE inv_vouchers SET used=used+1 WHERE id=? AND (max_uses=0 OR used<max_uses) RETURNING id",
+            (v["id"],),
+        )
+        if claimed is None:
+            raise InventoryError(f"Voucher {code} đã hết lượt dùng")
+        cut = amount * int(v["value"]) // 100 if v["discount_type"] == "pct" else int(v["value"])
+        if int(v["max_discount"]):
+            cut = min(cut, int(v["max_discount"]))
+        return code, min(cut, amount)
+
+    def save_combo(self, cid: int | None, data: dict[str, Any]) -> dict[str, Any]:
+        """A package (bed + mattress + 2 bedside tables) sold together at one price."""
+        items = data.get("items") or []
+        if len(items) < 2 and cid is None:
+            raise InventoryError("Combo cần ít nhất 2 sản phẩm")
+        fields = {
+            "code": str(data.get("code") or "").strip().upper()[:40],
+            "name": str(data.get("name") or "").strip()[:150],
+            "price": self.minor(data.get("price"), "Giá combo"),
+            "badge": str(data.get("badge") or "")[:40],
+            "description": str(data.get("description") or "")[:2000],
+            "starts": self._when(data["starts"], "Ngày bắt đầu") if data.get("starts") else "",
+            "ends": self._when(data["ends"], "Ngày kết thúc", end=True) if data.get("ends") else "",
+            "active": 1 if data.get("active", True) else 0,
+        }
+        if not fields["code"] or not fields["name"]:
+            raise InventoryError("Mã và tên combo là bắt buộc")
+        with self.db.transaction():
+            row = self._save("inv_combos", cid, fields, "combo")
+            if items:
+                self.db.execute("DELETE FROM inv_combo_items WHERE combo_id=?", (row["id"],))
+                for it in items:
+                    p = (
+                        self.product_row(_int(it["product_id"], "Sản phẩm", 1))
+                        if it.get("product_id")
+                        else self.by_sku(str(it.get("sku", "")))
+                    )
+                    if p is None:
+                        raise InventoryError(f"Không có SKU {it.get('sku')}")
+                    self.db.execute(
+                        "INSERT INTO inv_combo_items (combo_id, product_id, qty) VALUES (?, ?, ?)",
+                        (row["id"], p["id"], _int(it.get("qty") or 1, "Số lượng", 1)),
+                    )
+        return self.combo(str(row["code"]))
+
+    def combo(self, code: str, vip: bool = False) -> dict[str, Any]:
+        row = self.db.row("SELECT * FROM inv_combos WHERE code=?", (code.strip().upper(),))
+        if row is None:
+            raise InventoryError(f"Không có combo {code}")
+        items, separate, available = [], 0, None
+        for it in self.db.rows(
+            "SELECT c.qty, p.id, p.sku, p.name FROM inv_combo_items c JOIN inv_products p ON p.id=c.product_id WHERE c.combo_id=?",
+            (row["id"],),
+        ):
+            price = self.current_price(int(it["id"]), vip)
+            unit = price["price"] if price else 0
+            separate += unit * int(it["qty"])
+            stock = sum(int(x["on_hand"]) - int(x["reserved"]) for x in self._stock_rows(int(it["id"])))
+            can = max(0, stock) // int(it["qty"])
+            available = can if available is None else min(available, can)
+            items.append(
+                {
+                    "product_id": it["id"],
+                    "sku": it["sku"],
+                    "name": it["name"],
+                    "qty": it["qty"],
+                    "unit_price": self.major(unit),
+                }
+            )
+        now = now_iso()
+        live = (
+            bool(row["active"])
+            and (not row["starts"] or row["starts"] <= now)
+            and (not row["ends"] or row["ends"] >= now)
+        )
+        return {
+            **row,
+            "price": self.major(row["price"]),
+            "items": items,
+            "separate_price": self.major(separate),
+            "saving": self.major(max(0, separate - int(row["price"]))),
+            "available": available or 0,
+            "live": live,
+        }
+
+    def combos(self, vip: bool = False) -> list[dict[str, Any]]:
+        return [
+            self.combo(str(r["code"]), vip)
+            for r in self.db.rows("SELECT code FROM inv_combos ORDER BY id DESC")
+        ]
+
+    def _expand_combos(self, items: list[dict[str, Any]], vip: bool) -> tuple[list[dict[str, Any]], int]:
+        """Combo lines become their product lines at the usual prices; the package saving
+        (separate prices - package price) is returned, to come off the order."""
+        out, saving = [], 0
+        for it in items:
+            if not it.get("combo"):
+                out.append(it)
+                continue
+            c = self.combo(str(it["combo"]), vip)
+            if not c["live"]:
+                raise InventoryError(f"Combo {c['code']} không còn bán")
+            n = _int(it.get("qty") or 1, "Số lượng", 1)
+            for x in c["items"]:
+                out.append({"product_id": x["product_id"], "qty": int(x["qty"]) * n, "combo": c["code"]})
+            saving += max(0, self.minor(c["separate_price"]) - self.minor(c["price"])) * n
+        return out, saving
+
+    # ------------------------------------------------------------------ #
+    # room sets: suggestions within a budget
+
+    def set_templates(self) -> list[dict[str, Any]]:
+        return self.docs.get(SETS_KEY) or DEFAULT_SETS
+
+    def save_set_templates(self, templates: Any) -> list[dict[str, Any]]:
+        if not isinstance(templates, list) or not templates:
+            raise InventoryError("Cần ít nhất một bộ")
+        clean = []
+        for t in templates:
+            slots = [
+                {
+                    "label": str(x.get("label") or x.get("match"))[:60],
+                    "match": str(x.get("match") or "").strip().lower()[:80],
+                    "qty": _int(x.get("qty") or 1, "Số lượng", 1),
+                }
+                for x in t.get("slots") or []
+                if x.get("match")
+            ]
+            if not t.get("name") or not slots or len(slots) > 8:
+                raise InventoryError("Mỗi bộ cần tên và 1-8 món")
+            clean.append(
+                {
+                    "id": str(t.get("id") or t["name"]).strip().lower().replace(" ", "-")[:40],
+                    "name": str(t["name"])[:80],
+                    "slots": slots,
+                }
+            )
+        self.docs.update(SETS_KEY, lambda d: (d.clear(), d.extend(clean)), [])
+        return clean
+
+    def suggest_sets(self, template: str, budget: Any, vip: bool = False, limit: int = 3) -> dict[str, Any]:
+        """Sets of products for a room that fit the budget: every item in stock, or arriving
+        within `set_eta_days`. The fullest use of the budget first."""
+        tmpl = next(
+            (t for t in self.set_templates() if template.strip().lower() in (t["id"], t["name"].lower())),
+            None,
+        )
+        if tmpl is None:
+            raise InventoryError(
+                f"Không có bộ '{template}'. Có: {', '.join(t['name'] for t in self.set_templates())}"
+            )
+        cap = self.minor(budget, "Ngân sách")
+        horizon = (
+            (datetime.now().astimezone() + timedelta(days=self.settings()["set_eta_days"])).date().isoformat()
+        )
+        products = self.products(limit=100000)
+        slots = []
+        for slot in tmpl["slots"]:
+            words = slot["match"].split()
+            cands = []
+            for p in products:
+                text = f"{p['name']} {p['category']} {p['group_name']}".lower()
+                if not all(w in text for w in words):
+                    continue
+                price = self.current_price(int(p["id"]), vip)
+                if price is None:
+                    continue
+                ready_now = p["available"] >= slot["qty"]
+                coming = (
+                    p["incoming"] - p["preordered"] >= slot["qty"]
+                    and p["next_eta"]
+                    and p["next_eta"] <= horizon
+                )
+                if not (ready_now or coming):
+                    continue
+                cands.append(
+                    {
+                        "product_id": p["id"],
+                        "sku": p["sku"],
+                        "name": p["name"],
+                        "qty": slot["qty"],
+                        "unit_price": price["price"],
+                        "cost": price["price"] * slot["qty"],
+                        "ready": "now" if ready_now else p["next_eta"],
+                    }
+                )
+            cands.sort(key=lambda c: c["cost"])
+            slots.append((slot, cands[:8]))
+        missing = [s["label"] for s, c in slots if not c]
+        if missing:
+            return {"template": tmpl["name"], "sets": [], "missing": missing}
+        mins = [c[0]["cost"] for _, c in slots]
+        found: list[tuple[int, list[dict[str, Any]]]] = []
+        budget_steps = [0]
+
+        def walk(i: int, chosen: list[dict[str, Any]], total: int) -> None:
+            budget_steps[0] += 1
+            if budget_steps[0] > 50000:
+                return
+            if i == len(slots):
+                found.append((total, list(chosen)))
+                return
+            rest = sum(mins[i + 1 :])
+            for c in slots[i][1]:
+                if total + c["cost"] + rest > cap:
+                    break  # candidates are sorted: the rest cost more
+                chosen.append(c)
+                walk(i + 1, chosen, total + c["cost"])
+                chosen.pop()
+
+        walk(0, [], 0)
+        found.sort(key=lambda f: -f[0])
+        sets = []
+        for total, chosen in found[:limit]:
+            sets.append(
+                {
+                    "total": self.major(total),
+                    "left": self.major(cap - total),
+                    "all_ready_now": all(c["ready"] == "now" for c in chosen),
+                    "items": [
+                        {**c, "unit_price": self.major(c["unit_price"]), "cost": self.major(c["cost"])}
+                        for c in chosen
+                    ],
+                }
+            )
+        return {"template": tmpl["name"], "sets": sets, "missing": [], "cheapest": self.major(sum(mins))}

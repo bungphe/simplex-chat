@@ -284,6 +284,9 @@ class ActionDesk:
                 note="" if note == "-" else note,
                 source=f"ai:{self.employee.id}#{rec['id']}",
                 actor=self.employee.settings.display_name,
+                # the staff member looking after the conversation earns the sale; else the AI
+                salesperson=(conv.assignee if conv and conv.assignee else f"ai:{self.employee.id}"),
+                channel="chat",
             )
         except InventoryError as e:
             return False, str(e)

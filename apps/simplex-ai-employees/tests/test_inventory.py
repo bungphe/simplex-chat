@@ -129,6 +129,8 @@ def test_fifo_lots_and_the_pricing_engine(inv):
     lots = inv.product(inv.a)["lots"]
     assert [x["status"] for x in lots] == ["active", "exhausted"]
     assert inv.current_price(inv.a) == {
+        "list_price": second_price,
+        "promo": "",
         "price": second_price,
         "stage": 1,
         "lot_id": lots[0]["id"],

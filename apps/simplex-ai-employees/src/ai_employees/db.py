@@ -114,6 +114,17 @@ class Database:
                     raise
                 self._conn.execute("COMMIT")
 
+    def add_columns(self, table: str, columns: dict[str, str]) -> None:
+        """Columns added after a table was first created ({int} in the DDL works here too)."""
+        if self.postgres:
+            for name, ddl in columns.items():
+                self._conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {name} {self.ddl(ddl)}")
+            return
+        have = {r["name"] for r in self.rows(f"PRAGMA table_info({table})")}
+        for name, ddl in columns.items():
+            if name not in have:
+                self.execute(f"ALTER TABLE {table} ADD COLUMN {name} {self.ddl(ddl)}")
+
     def close(self) -> None:
         with self._lock:
             self._conn.close()

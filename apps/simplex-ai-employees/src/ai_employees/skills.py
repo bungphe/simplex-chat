@@ -452,3 +452,38 @@ def products(ctx: SkillContext, query: str) -> str:
             f"- {p['sku']} | {p['name']}{' (' + attrs + ')' if attrs else ''} | {price} | {stock}{coming}"
         )
     return "\n".join(lines)
+
+
+@skill(
+    "suggest_set",
+    "Suggest a furnished room set (e.g. 'Phòng khách', 'Phòng ngủ', 'Phòng ăn') within the "
+    "customer's budget: products that are in stock or arriving within a month, with today's "
+    "prices for this contact. Use when a customer wants a whole set for a room.",
+    {
+        "room": {"type": "string", "description": "The set: Phòng khách, Phòng ngủ, Phòng ăn..."},
+        "budget": {"type": "number", "description": "The customer's budget, in the shop's currency"},
+    },
+)
+def suggest_set(ctx: SkillContext, room: str, budget: float) -> str:
+    from .inventory import InventoryError
+
+    office = ctx.employee.office
+    vip = office.hub.is_vip(ctx.employee, ctx.contact_id) if ctx.contact_id is not None else False
+    try:
+        result = office.inventory.suggest_sets(room, budget, vip)
+    except InventoryError as e:
+        return str(e)
+    currency = office.inventory.settings()["currency"]
+    if result["missing"]:
+        return f"No {result['template']} set now: nothing in stock for {', '.join(result['missing'])}."
+    if not result["sets"]:
+        return f"No {result['template']} set fits this budget; the cheapest possible is {result['cheapest']:,} {currency}."
+    out = []
+    for n, s in enumerate(result["sets"], 1):
+        items = "; ".join(
+            f"{i['name']} ({i['sku']}) x{i['qty']} = {i['cost']:,}"
+            + ("" if i["ready"] == "now" else f", arrives {i['ready']}")
+            for i in s["items"]
+        )
+        out.append(f"Set {n}: total {s['total']:,} {currency} ({s['left']:,} under budget): {items}")
+    return "\n".join(out)

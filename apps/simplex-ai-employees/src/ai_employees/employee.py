@@ -512,6 +512,16 @@ class Office:
 
         # products and stock live with the inbox (the office database, or inbox.db)
         self.inventory = Inventory(self.hub.inbox.db, self.docs)
+        from .loyalty import Loyalty
+
+        self.loyalty = Loyalty(self)
+        from .delivery import Delivery
+        from .marketplace import Marketplaces
+        from .sales import Sales
+
+        self.sales = Sales(self)
+        self.delivery = Delivery(self)
+        self.marketplaces = Marketplaces(self)
 
     @property
     def http_client(self) -> httpx2.AsyncClient:
@@ -630,6 +640,7 @@ class Office:
                 *([self._scheduler()] if primary else []),
                 self.hub.run(self._stopping),
                 self.cluster.run(self._stopping),
+                *([self.marketplaces.run(self._stopping)] if primary else []),
                 *(e.bot.serve_forever() for e in self.employees.values() if primary),
             )
 
