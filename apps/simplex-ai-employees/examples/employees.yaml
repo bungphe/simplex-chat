@@ -46,6 +46,9 @@ actions:
     confirm_message: Đơn hàng của bạn đã được xác nhận. Cảm ơn bạn!
 
 # Admin web UI (optional). Open http://127.0.0.1:8080 and log in with the password.
+# After a restart, customer messages up to this many hours old still get an AI answer.
+catch_up_hours: 12
+
 # Chat channels besides SimpleX: every conversation appears in the admin "Hộp thư"
 # (unified inbox), and the assigned employee answers automatically until a person
 # takes over. Tokens only through environment variables. Uncomment what you use.

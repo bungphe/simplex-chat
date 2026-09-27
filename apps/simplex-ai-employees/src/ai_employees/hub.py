@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .channels import Channel, ChannelError, InboundMessage, make_channel
-from .inbox import EXTERNAL_BASE, Conversation, Inbox
+from .inbox import EXTERNAL_BASE, Conversation, Inbox, describe
 from .state import now_iso
 
 if TYPE_CHECKING:
@@ -27,6 +27,18 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 ECHO_WINDOW = timedelta(minutes=10)
+
+
+def customer_text(messages: list[dict[str, Any]]) -> str:
+    """What the AI reads for the customer's waiting messages. The model does not see
+    attachments, only that they were sent, so it can ask or hand over instead of guessing."""
+    lines = []
+    for m in messages:
+        line = describe(m["text"], m.get("attachments"))
+        if m.get("attachments"):
+            line += " (bạn không xem được tệp đính kèm; nếu cần, hỏi khách mô tả hoặc chuyển cho người thật)"
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def iso(ts: datetime) -> str:
@@ -44,6 +56,19 @@ class ChannelHub:
         )
         self.channels: dict[str, Channel] = {c.id: make_channel(c, self) for c in office.config.channels}
         self.started = datetime.now(UTC)
+        self.catch_up = timedelta(hours=office.config.catch_up_hours)
+        # Customer messages newer than this get an AI answer. A polled channel that ran
+        # before answers what arrived while we were down (since its last cursor); on its
+        # very first run it only imports the recent history, as context.
+        self.answer_from: dict[str, datetime] = {}
+        for ch in self.channels.values():
+            cursor = self.inbox.channel_state(ch.id).get("cursor")
+            polled = type(ch).poll is not Channel.poll
+            if polled and not cursor:
+                self.answer_from[ch.id] = self.started
+            else:
+                self.answer_from[ch.id] = self.started - self.catch_up
+        self.resume_delay = 2.0  # seconds before the first start-up catch-up answer
         self._timers: dict[int, asyncio.Task[None]] = {}
         self._tasks: set[asyncio.Task[Any]] = set()
 
@@ -63,7 +88,27 @@ class ChannelHub:
     # polling
 
     async def run(self, stopping: asyncio.Event) -> None:
+        self.resume_pending()
         await asyncio.gather(*(self._poll_loop(ch, stopping) for ch in self.channels.values()))
+
+    def resume_pending(self) -> list[int]:
+        """At start-up: answer customers left waiting by a restart or an unreachable model
+        (the reply timer does not survive a restart). Older messages stay for staff."""
+        since = iso(datetime.now(UTC) - self.catch_up)
+        resumed = []
+        for i, conv in enumerate(self.inbox.awaiting_answer(since)):
+            ch = self.channels.get(conv.channel)
+            if ch is not None and not ch.cfg.auto_reply:
+                continue
+            if ch is None and not (
+                conv.is_simplex and conv.channel.split(":", 1)[1] in self.office.employees
+            ):
+                continue  # a channel no longer configured
+            self.schedule_reply(conv.id, self.resume_delay + i)  # staggered, not all at once
+            resumed.append(conv.id)
+        if resumed:
+            log.info("inbox: answering %d conversation(s) left waiting before start-up", len(resumed))
+        return resumed
 
     async def _poll_loop(self, ch: Channel, stopping: asyncio.Event) -> None:
         if ch.cfg.poll_seconds <= 0 or type(ch).poll is Channel.poll:
@@ -97,9 +142,11 @@ class ChannelHub:
         for m in sorted(msgs, key=lambda m: m.ts):
             conv = self.inbox.upsert(ch.id, m.conversation, m.customer_name, ch.cfg.employee)
             if m.sender == "customer":
-                if self.inbox.add(conv.id, "customer", m.text, m.customer_name, m.external_id, iso(m.ts)):
+                if self.inbox.add(
+                    conv.id, "customer", m.text, m.customer_name, m.external_id, iso(m.ts), m.attachments
+                ):
                     added += 1
-                    if m.ts >= self.started:
+                    if m.ts >= self.answer_from.get(ch.id, self.started):
                         to_answer.add(conv.id)
                 continue
             # A message from the business side that we did not send: someone answered on
@@ -108,9 +155,11 @@ class ChannelHub:
                 continue
             if m.text in self.inbox.recent_outbound(conv.id, iso(m.ts - ECHO_WINDOW)):
                 continue
-            if self.inbox.add(conv.id, "human", m.text, f"trên {ch.type}", m.external_id, iso(m.ts)):
+            if self.inbox.add(
+                conv.id, "human", m.text, f"trên {ch.type}", m.external_id, iso(m.ts), m.attachments
+            ):
                 added += 1
-                if m.ts >= self.started:
+                if m.ts >= self.answer_from.get(ch.id, self.started):
                     self.inbox.set_mode(conv.id, "human")
                     to_answer.discard(conv.id)
         if ch.cfg.auto_reply:
@@ -169,7 +218,7 @@ class ChannelHub:
             pending = self.inbox.pending_customer_text(conv_id)  # may have been answered meanwhile
             if not pending:
                 return None
-            text = "\n".join(m["text"] for m in pending)
+            text = customer_text(pending)
             r = await employee.agent.respond_run(conv.contact_id, conv.customer_name or "khách", text)
             if r.status == "busy":
                 # No model reachable: don't send an apology on a business channel. The
@@ -205,7 +254,12 @@ class ChannelHub:
             except ChannelError as e:
                 self.inbox.set_channel_state(ch.id, last_error=f"gửi tin: {e}"[:300])
                 raise
-        self.inbox.add(conv.id, sender, text, author, external_id)
+        if self.inbox.add(conv.id, sender, text, author, external_id) is None:
+            # The platform reused a message id: never lose the record of what was sent.
+            log.warning(
+                "%s: message id %s already stored; keeping the reply without it", conv.channel, external_id
+            )
+            self.inbox.add(conv.id, sender, text, author)
 
     async def human_reply(self, conv_id: int, text: str, author: str, take_over: bool = True) -> None:
         conv = self.inbox.conversation(conv_id)
@@ -215,7 +269,7 @@ class ChannelHub:
             timer.cancel()
         if take_over:
             self.inbox.set_mode(conv_id, "human")
-        pending = "\n".join(m["text"] for m in self.inbox.pending_customer_text(conv_id)) or "(…)"
+        pending = customer_text(self.inbox.pending_customer_text(conv_id)) or "(…)"
         await self.deliver(conv, text, "human", author)
         self.inbox.mark_read(conv_id)
         # Keep the AI's memory complete, so it knows what staff said if it takes over again.
@@ -234,16 +288,23 @@ class ChannelHub:
         employee = self.employee_for(conv)
         if employee is None:
             raise KeyError(conv.employee)
-        pending = "\n".join(m["text"] for m in self.inbox.pending_customer_text(conv_id))
+        pending = customer_text(self.inbox.pending_customer_text(conv_id))
         return await employee.agent.suggest(conv.contact_id, conv.customer_name or "khách", pending)
 
     # ------------------------------------------------------------------ #
     # SimpleX conversations are answered by the employee's own bot; mirror them here
 
-    def simplex_inbound(self, employee: Employee, contact_id: int, name: str, text: str) -> Conversation:
+    def simplex_inbound(
+        self,
+        employee: Employee,
+        contact_id: int,
+        name: str,
+        text: str,
+        attachments: list[dict[str, Any]] | None = None,
+    ) -> tuple[Conversation, int | None]:
+        """Mirror a SimpleX message; returns the conversation and the stored message id."""
         conv = self.inbox.upsert(f"simplex:{employee.id}", str(contact_id), name, employee.id)
-        self.inbox.add(conv.id, "customer", text, name)
-        return conv
+        return conv, self.inbox.add(conv.id, "customer", text, name, attachments=attachments)
 
     def simplex_outbound(self, employee: Employee, contact_id: int, text: str, sender: str) -> None:
         conv = self.inbox.upsert(f"simplex:{employee.id}", str(contact_id), "", employee.id)

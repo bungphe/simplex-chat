@@ -1,7 +1,9 @@
 """Admin web UI: a JSON API plus a single page, served from the office process.
 
 Security model:
-- Password login; sessions are random tokens in HttpOnly, SameSite=Strict cookies.
+- Password login per account (users.py): the owner ("admin", password from the config)
+  and staff accounts with a role; "agent" accounts reach only the inbox, optionally only
+  some channels. Sessions are random tokens in HttpOnly, SameSite=Strict cookies.
 - Every state-changing request must carry `X-Requested-With: ai-employees`, which a
   cross-site form or image cannot send, so a logged-in browser cannot be driven by
   another site.
@@ -27,6 +29,7 @@ from aiohttp import web
 from . import skills as sk
 from .config import EFFORT_LEVELS, AdminUIConfig, ConfigError
 from .providers import PROVIDERS, ModelError
+from .users import User, Users
 
 if TYPE_CHECKING:
     from .employee import Employee, Office
@@ -48,7 +51,20 @@ SECURITY_HEADERS = {
 
 OFFICE: web.AppKey[Office] = web.AppKey("office")
 PASSWORD: web.AppKey[str] = web.AppKey("password")
-SESSIONS: web.AppKey[dict[str, float]] = web.AppKey("sessions")
+SESSIONS: web.AppKey[dict[str, tuple[float, str]]] = web.AppKey("sessions")  # token -> (expiry, user)
+USERS: web.AppKey[Users] = web.AppKey("users")
+USER: web.RequestKey[User] = web.RequestKey("user")
+
+
+def _agent_may(method: str, path: str) -> bool:
+    """What an "agent" (sales staff) account may call: its own account and the inbox."""
+    if path in ("/api/me", "/api/me/password", "/api/logout", "/api/inbox") or path.startswith("/api/inbox/"):
+        return True
+    return method == "GET" and path == "/api/channels"
+
+
+def _user(request: web.Request) -> User:
+    return request[USER]
 
 
 class ApiError(Exception):
@@ -68,8 +84,13 @@ async def guard(request: web.Request, handler: Any) -> web.StreamResponse:
         if path.startswith("/api/"):
             if request.method not in ("GET", "HEAD") and request.headers.get(CSRF_HEADER) != CSRF_VALUE:
                 raise ApiError(403, "missing request header")
-            if path != "/api/login" and not _session_valid(request):
-                raise ApiError(401, "not logged in")
+            if path != "/api/login":
+                user = _session_user(request)
+                if user is None:
+                    raise ApiError(401, "not logged in")
+                if not user.is_admin and not _agent_may(request.method, path):
+                    raise ApiError(403, "Tài khoản của bạn không có quyền này")
+                request[USER] = user
         resp = await handler(request)
     except ApiError as e:
         resp = _json({"error": str(e)}, status=e.status)
@@ -78,20 +99,29 @@ async def guard(request: web.Request, handler: Any) -> web.StreamResponse:
     except Exception:
         log.exception("admin UI: %s %s failed", request.method, path)
         resp = _json({"error": "internal error"}, status=500)
-    resp.headers.update(SECURITY_HEADERS)
+    for k, v in SECURITY_HEADERS.items():
+        resp.headers.setdefault(k, v)  # a handler may relax caching (attachments)
     return resp
 
 
-def _session_valid(request: web.Request) -> bool:
+def _session_user(request: web.Request) -> User | None:
     token = request.cookies.get(COOKIE, "")
     sessions = request.app[SESSIONS]
-    expiry = sessions.get(token)
-    if expiry is None:
-        return False
-    if expiry < time.time():
+    session = sessions.get(token)
+    if session is None:
+        return None
+    expiry, username = session
+    user = request.app[USERS].get(username)  # a disabled or deleted account loses its sessions
+    if expiry < time.time() or user is None:
         sessions.pop(token, None)
-        return False
-    return True
+        return None
+    return user
+
+
+def _drop_sessions(app: web.Application, username: str) -> None:
+    for token, (_, u) in list(app[SESSIONS].items()):
+        if u == username:
+            app[SESSIONS].pop(token, None)
 
 
 async def _body(request: web.Request) -> dict[str, Any]:
@@ -130,14 +160,16 @@ async def no_content(request: web.Request) -> web.Response:
 
 async def login(request: web.Request) -> web.Response:
     data = await _body(request)
-    password = str(data.get("password", ""))
-    if not hmac.compare_digest(password.encode(), request.app[PASSWORD].encode()):
+    username, password = str(data.get("username", "")), str(data.get("password", ""))
+    user = await asyncio.to_thread(request.app[USERS].authenticate, username, password)
+    if user is None:
         await asyncio.sleep(1.0)  # slow down guessing
-        log.warning("admin UI: failed login from %s", request.remote)
-        raise ApiError(401, "Sai mật khẩu")
+        log.warning("admin UI: failed login for %r from %s", username[:40], request.remote)
+        raise ApiError(401, "Sai tên đăng nhập hoặc mật khẩu")
     token = secrets.token_urlsafe(32)
-    request.app[SESSIONS][token] = time.time() + SESSION_TTL
-    resp = _json({"ok": True})
+    request.app[SESSIONS][token] = (time.time() + SESSION_TTL, user.username)
+    log.info("admin UI: %s logged in", user.username)
+    resp = _json({"ok": True, "user": user.to_dict()})
     resp.set_cookie(
         COOKIE, token, httponly=True, samesite="Strict", secure=request.secure, max_age=SESSION_TTL, path="/"
     )
@@ -149,6 +181,89 @@ async def logout(request: web.Request) -> web.Response:
     resp = _json({"ok": True})
     resp.del_cookie(COOKIE, path="/")
     return resp
+
+
+# --------------------------------------------------------------------------- #
+# Accounts
+
+
+async def me(request: web.Request) -> web.Response:
+    return _json({"user": _user(request).to_dict()})
+
+
+async def me_password(request: web.Request) -> web.Response:
+    user = _user(request)
+    data = await _body(request)
+    if user.username == "admin":
+        raise ApiError(400, "Mật khẩu của tài khoản chủ đặt trong file cấu hình (admin_ui)")
+    users = request.app[USERS]
+    if await asyncio.to_thread(users.authenticate, user.username, str(data.get("old", ""))) is None:
+        await asyncio.sleep(1.0)
+        raise ApiError(400, "Mật khẩu hiện tại không đúng")
+    try:
+        await asyncio.to_thread(users.update, user.username, password=str(data.get("new", "")))
+    except ValueError as e:
+        raise ApiError(400, str(e)) from None
+    return _json({"ok": True})
+
+
+def _channel_ids(office: Office) -> set[str]:
+    return {f"simplex:{e}" for e in office.employees} | set(office.hub.channels)
+
+
+async def users_list(request: web.Request) -> web.Response:
+    office = request.app[OFFICE]
+    channels = [{"id": c, **_channel_label(office, c)} for c in sorted(_channel_ids(office))]
+    return _json({"users": request.app[USERS].list(), "channels": channels})
+
+
+async def users_add(request: web.Request) -> web.Response:
+    data = await _body(request)
+    channels = data.get("channels") or []
+    if set(channels) - _channel_ids(request.app[OFFICE]):
+        raise ApiError(400, "Có kênh không tồn tại")
+    try:
+        user = await asyncio.to_thread(
+            request.app[USERS].add,
+            str(data.get("username", "")),
+            str(data.get("name", "")),
+            str(data.get("role", "agent")),
+            str(data.get("password", "")),
+            channels,
+        )
+    except ValueError as e:
+        raise ApiError(400, str(e)) from None
+    log.info("admin UI: %s added account %s (%s)", _user(request).username, user.username, user.role)
+    return await users_list(request)
+
+
+async def users_patch(request: web.Request) -> web.Response:
+    username = request.match_info["username"]
+    data = await _body(request)
+    if data.get("channels") is not None and set(data["channels"]) - _channel_ids(request.app[OFFICE]):
+        raise ApiError(400, "Có kênh không tồn tại")
+    fields = {k: data.get(k) for k in ("name", "role", "channels", "disabled", "password")}
+    if fields["password"] is not None:
+        fields["password"] = str(fields["password"])
+    try:
+        await asyncio.to_thread(request.app[USERS].update, username, **fields)
+    except KeyError:
+        raise ApiError(404, "Không có tài khoản này") from None
+    except ValueError as e:
+        raise ApiError(400, str(e)) from None
+    if any(fields[k] is not None for k in ("role", "channels", "disabled", "password")):
+        _drop_sessions(request.app, username)  # new rights or password: log in again
+    return await users_list(request)
+
+
+async def users_delete(request: web.Request) -> web.Response:
+    username = request.match_info["username"]
+    try:
+        request.app[USERS].remove(username)
+    except KeyError:
+        raise ApiError(404, "Không có tài khoản này") from None
+    _drop_sessions(request.app, username)
+    return await users_list(request)
 
 
 # --------------------------------------------------------------------------- #
@@ -522,6 +637,7 @@ def _conv_json(office: Office, conv: Any) -> dict[str, Any]:
 async def inbox_list(request: web.Request) -> web.Response:
     office = request.app[OFFICE]
     q = request.query
+    user = _user(request)
     convs = office.hub.inbox.list(
         channel=q.get("channel") or None, mode=q.get("mode") or None, query=q.get("q") or None
     )
@@ -529,12 +645,20 @@ async def inbox_list(request: web.Request) -> web.Response:
         {"id": f"simplex:{e.id}", **_channel_label(office, f"simplex:{e.id}")}
         for e in office.employees.values()
     ] + [{"id": c, **_channel_label(office, c)} for c in office.hub.channels]
-    return _json({"conversations": [_conv_json(office, c) for c in convs], "channels": channels})
+    return _json(
+        {
+            "conversations": [_conv_json(office, c) for c in convs if user.sees(c.channel)],
+            "channels": [c for c in channels if user.sees(c["id"])],
+        }
+    )
 
 
 def _inbox_conv(request: web.Request) -> Any:
-    conv = _hub(request).inbox.conversation(int(request.match_info["cid"]))
-    if conv is None:
+    try:
+        conv = _hub(request).inbox.conversation(int(request.match_info["cid"]))
+    except ValueError:
+        conv = None
+    if conv is None or not _user(request).sees(conv.channel):
         raise ApiError(404, "no such conversation")
     return conv
 
@@ -560,7 +684,7 @@ async def inbox_reply(request: web.Request) -> web.Response:
     text = str(data.get("text", "")).strip()
     if not text:
         raise ApiError(400, "Nội dung trống")
-    author = str(data.get("author") or "Nhân viên")[:40]
+    author = _user(request).name  # who replied is the logged-in account, not a typed name
     try:
         await _hub(request).human_reply(conv.id, text, author, take_over=bool(data.get("take_over", True)))
     except Exception as e:  # noqa: BLE001 - surface the platform's error to the agent
@@ -593,6 +717,36 @@ async def inbox_read(request: web.Request) -> web.Response:
     conv = _inbox_conv(request)
     _hub(request).inbox.mark_read(conv.id)
     return _json({"ok": True})
+
+
+async def inbox_media(request: web.Request) -> web.Response:
+    """An attachment of a stored message, fetched from the platform (see media.py)."""
+    from urllib.parse import quote
+
+    from .media import INLINE_TYPES, MediaError, fetch
+
+    conv = _inbox_conv(request)
+    m = _hub(request).inbox.message(conv.id, int(request.match_info["mid"]))
+    n = int(request.match_info["n"])
+    if m is None or not 0 <= n < len(m["attachments"]):
+        raise ApiError(404, "no such attachment")
+    a = m["attachments"][n]
+    url = a.get("thumb") if request.query.get("thumb") and a.get("thumb") else a.get("url") or a.get("thumb")
+    if not url or not url.startswith(("https://", "http://")):
+        raise ApiError(404, "no remote file for this attachment")
+    try:
+        ctype, body = await fetch(request.app[OFFICE].http_client, url)
+    except (MediaError, Exception) as e:  # noqa: BLE001 - expired links, platform errors
+        raise ApiError(502, f"Không tải được tệp: {e}") from None
+    cache = {"Cache-Control": "private, max-age=3600"}
+    if ctype in INLINE_TYPES:
+        return web.Response(body=body, content_type=ctype, headers=cache)
+    name = a.get("name") or "tep-dinh-kem"
+    return web.Response(
+        body=body,
+        content_type="application/octet-stream",
+        headers={**cache, "Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}"},
+    )
 
 
 async def inbox_suggest(request: web.Request) -> web.Response:
@@ -629,7 +783,8 @@ async def channels_get(request: web.Request) -> web.Response:
                 "state": hub.inbox.channel_state(c),
             }
         )
-    return _json({"channels": rows})
+    user = _user(request)
+    return _json({"channels": [r for r in rows if user.sees(r["id"])]})
 
 
 async def channel_poll(request: web.Request) -> web.Response:
@@ -744,12 +899,19 @@ def create_app(office: Office, password: str) -> web.Application:
     app[OFFICE] = office
     app[PASSWORD] = password
     app[SESSIONS] = {}
+    app[USERS] = Users(os.path.join(office.config.state_dir, "users.json"), password)
     r = app.router
     r.add_get("/", page)
     r.add_get("/static/{file}", page)
     r.add_get("/favicon.ico", no_content)
     r.add_post("/api/login", login)
     r.add_post("/api/logout", logout)
+    r.add_get("/api/me", me)
+    r.add_post("/api/me/password", me_password)
+    r.add_get("/api/users", users_list)
+    r.add_post("/api/users", users_add)
+    r.add_patch("/api/users/{username}", users_patch)
+    r.add_delete("/api/users/{username}", users_delete)
     r.add_get("/api/overview", overview)
     r.add_get("/api/employees/{emp}", employee_get)
     r.add_patch("/api/employees/{emp}", employee_patch)
@@ -776,6 +938,7 @@ def create_app(office: Office, password: str) -> web.Application:
     r.add_post("/api/inbox/{cid}/assign", inbox_assign)
     r.add_post("/api/inbox/{cid}/read", inbox_read)
     r.add_post("/api/inbox/{cid}/suggest", inbox_suggest)
+    r.add_get(r"/api/inbox/{cid:\d+}/media/{mid:\d+}/{n:\d+}", inbox_media)
     r.add_get("/api/channels", channels_get)
     r.add_post("/api/channels/{channel}/poll", channel_poll)
     r.add_get("/api/simplex", simplex_get)

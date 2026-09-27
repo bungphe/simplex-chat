@@ -40,7 +40,7 @@ import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import httpx2
 
@@ -116,6 +116,18 @@ class InboundMessage:
     sender: str  # "customer" or "agent" (someone answering on the platform itself)
     external_id: str
     ts: datetime
+    attachments: list[dict[str, Any]] = field(default_factory=list)
+
+
+def attachment(kind: str, url: Any = None, thumb: Any = None, name: Any = None) -> dict[str, Any]:
+    """One attachment in the inbox's shape; only http(s) URLs are kept."""
+    a: dict[str, Any] = {"kind": kind}
+    for key, value in (("url", url), ("thumb", thumb)):
+        if isinstance(value, str) and value.startswith(("https://", "http://")):
+            a[key] = value[:2000]
+    if isinstance(name, str) and name.strip():
+        a["name"] = name.strip()[:200]
+    return a
 
 
 class Channel:
@@ -227,8 +239,9 @@ class ZaloOAChannel(Channel):
                 )
                 for m in msgs:
                     ts = _ms(m.get("time", 0))
-                    text = m.get("message") or ""
-                    if ts < since or not isinstance(text, str) or not text.strip():
+                    text = m.get("message") if isinstance(m.get("message"), str) else ""
+                    files = self._attachments(m)
+                    if ts < since or not (text.strip() or files):
                         continue
                     out.append(
                         InboundMessage(
@@ -238,11 +251,33 @@ class ZaloOAChannel(Channel):
                             sender="agent" if m.get("src") == 0 else "customer",
                             external_id=str(m.get("message_id")),
                             ts=ts,
+                            attachments=files,
                         )
                     )
             if len(convs) < 10:
                 break
         return out
+
+    KINDS: ClassVar[dict[str, str]] = {
+        "photo": "image",
+        "gif": "image",
+        "sticker": "sticker",
+        "voice": "audio",
+        "audio": "audio",
+        "video": "video",
+        "file": "file",
+        "link": "link",
+    }
+
+    def _attachments(self, m: dict[str, Any]) -> list[dict[str, Any]]:
+        kind = self.KINDS.get(str(m.get("type", "text")))
+        if kind is None:
+            return []
+        links = m.get("links") if isinstance(m.get("links"), list) else []
+        url = m.get("url") or (links[0].get("url") if links and isinstance(links[0], dict) else None)
+        return [
+            attachment(kind, url, m.get("thumb"), m.get("description") if kind in ("file", "link") else None)
+        ]
 
     async def send(self, conversation: str, text: str) -> str | None:
         v3 = self.cfg.opt("api_v3", self.API_V3)
@@ -288,18 +323,46 @@ class FacebookChannel(Channel):
             )
             psid, name = str(customer.get("id", "")), customer.get("name", "")
             msgs = await self._get(
-                f"{graph}/{conv['id']}/messages", {"fields": "id,message,from,created_time", "limit": 25}
+                f"{graph}/{conv['id']}/messages",
+                {
+                    "fields": "id,message,from,created_time,sticker,"
+                    "attachments{mime_type,name,image_data,video_data,file_url}",
+                    "limit": 25,
+                },
             )
             for m in msgs.get("data", []):
                 ts = datetime.strptime(m["created_time"], "%Y-%m-%dT%H:%M:%S%z")
-                if ts < since or not m.get("message"):
+                files = self._attachments(m)
+                if ts < since or not (m.get("message") or files):
                     continue
                 from_page = str(m.get("from", {}).get("id")) == page_id
                 out.append(
                     InboundMessage(
-                        psid, name, m["message"], "agent" if from_page else "customer", m["id"], ts
+                        psid,
+                        name,
+                        m.get("message") or "",
+                        "agent" if from_page else "customer",
+                        m["id"],
+                        ts,
+                        files,
                     )
                 )
+        return out
+
+    @staticmethod
+    def _attachments(m: dict[str, Any]) -> list[dict[str, Any]]:
+        out = []
+        for a in (m.get("attachments") or {}).get("data", []):
+            mime = str(a.get("mime_type") or "")
+            if img := a.get("image_data"):
+                out.append(attachment("image", img.get("url"), img.get("preview_url"), a.get("name")))
+            elif vid := a.get("video_data"):
+                out.append(attachment("video", vid.get("url"), vid.get("preview_url"), a.get("name")))
+            else:
+                kind = "audio" if mime.startswith("audio/") else "file"
+                out.append(attachment(kind, a.get("file_url"), None, a.get("name")))
+        if m.get("sticker"):
+            out.append(attachment("sticker", m["sticker"], m["sticker"]))
         return out
 
     async def send(self, conversation: str, text: str) -> str | None:
@@ -351,11 +414,18 @@ class ZaloPersonalChannel(Channel):
 
     def parse_push(self, payload: dict[str, Any]) -> list[InboundMessage]:
         d = payload.get("data") or {}
-        text = d.get("content")
         if payload.get("event") != "message" or d.get("type") != "user":
             return []  # group chats are not handled
-        if not isinstance(text, str) or not text.strip():
-            text = "[khách gửi tệp/ảnh/sticker, xem trên Zalo]"
+        text = d.get("content") if isinstance(d.get("content"), str) else ""
+        files = []
+        if isinstance(a := d.get("attachment"), dict):
+            files.append(
+                attachment(
+                    self.KINDS.get(str(a.get("type")), "file"), a.get("url"), a.get("thumb"), a.get("name")
+                )
+            )
+        elif not text.strip():
+            files.append(attachment("file"))  # an attachment the gateway could not describe
         return [
             InboundMessage(
                 conversation=str(d.get("threadId") or ""),
@@ -364,8 +434,21 @@ class ZaloPersonalChannel(Channel):
                 sender="agent" if d.get("isSelf") else "customer",
                 external_id=str(d.get("id") or ""),
                 ts=_ms(d.get("timestamp") or datetime.now(UTC).timestamp() * 1000),
+                attachments=files,
             )
         ]
+
+    # zca-js msgType values
+    KINDS: ClassVar[dict[str, str]] = {
+        "chat.photo": "image",
+        "chat.gif": "image",
+        "chat.sticker": "sticker",
+        "chat.voice": "audio",
+        "chat.video.msg": "video",
+        "share.file": "file",
+        "chat.recommended": "link",
+        "chat.link": "link",
+    }
 
     async def send(self, conversation: str, text: str) -> str | None:
         data = await self._gateway("POST", "send-message", {"threadId": conversation, "message": text})
@@ -388,8 +471,20 @@ class WebhookChannel(Channel):
 
     def parse_push(self, payload: dict[str, Any]) -> list[InboundMessage]:
         conv_key, text = str(payload.get("conversation_id") or ""), str(payload.get("text") or "").strip()
-        if not conv_key or not text:
-            raise ValueError("conversation_id and text are required")
+        raw = payload.get("attachments") if isinstance(payload.get("attachments"), list) else []
+        kinds = ("image", "video", "audio", "file", "sticker", "link")
+        files = [
+            attachment(
+                a.get("kind") if a.get("kind") in kinds else "file",
+                a.get("url"),
+                a.get("thumb"),
+                a.get("name"),
+            )
+            for a in raw[:10]
+            if isinstance(a, dict)
+        ]
+        if not conv_key or not (text or files):
+            raise ValueError("conversation_id and text (or attachments) are required")
         return [
             InboundMessage(
                 conversation=conv_key,
@@ -398,6 +493,7 @@ class WebhookChannel(Channel):
                 sender="customer",
                 external_id=str(payload.get("message_id") or uuid.uuid4()),
                 ts=datetime.now(UTC),
+                attachments=files,
             )
         ]
 

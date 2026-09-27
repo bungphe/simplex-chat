@@ -66,7 +66,7 @@ label > input, label > select, label > textarea { margin-top: 4px; color: var(--
 .topbar { display: flex; align-items: center; gap: 16px; padding: 10px 20px; background: var(--surface); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 5; flex-wrap: wrap; }
 .brand { font-weight: 700; }
 #nav { display: flex; gap: 4px; flex: 1; flex-wrap: wrap; }
-#nav button { border-color: transparent; background: transparent; }
+#nav button { border-color: transparent; background: transparent; padding: 6px 9px; }
 #nav button.active { background: var(--surface-2); font-weight: 600; }
 .badge { background: var(--bad); color: #fff; border-radius: 999px; padding: 0 7px; font-size: 12px; margin-left: 4px; }
 
@@ -136,6 +136,11 @@ pre.output { white-space: pre-wrap; background: var(--surface-2); border-radius:
 .msg.ai .bubble { background: var(--accent); color: var(--accent-text); }
 .msg.human .bubble { background: var(--ok-bg); color: var(--text); border: 1px solid var(--ok); }
 .msg.system .bubble { background: var(--warn-bg); color: var(--text); }
+.atts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.atts:first-child { margin-top: 0; }
+.att-img { max-width: 220px; max-height: 220px; border-radius: 8px; display: block; background: var(--surface); }
+.att-file, .att-link { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 6px; background: var(--surface); color: var(--text); font-size: 13px; text-decoration: none; border: 1px solid var(--border); }
+.att-link img { width: 40px; height: 40px; object-fit: cover; border-radius: 4px; }
 .composer { display: flex; flex-direction: column; gap: 8px; }
 .composer textarea { min-height: 70px; font-family: inherit; font-size: 15px; }
 .composer .author { width: 160px; }

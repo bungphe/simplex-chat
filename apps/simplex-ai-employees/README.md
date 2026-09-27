@@ -241,7 +241,8 @@ admin_ui:
   password_env: AI_ADMIN_PASSWORD
 ```
 
-Mở `http://127.0.0.1:8080` và đăng nhập bằng mật khẩu. Giao diện gồm các trang:
+Mở `http://127.0.0.1:8080`. Chủ đăng nhập với tên `admin` và mật khẩu trong `admin_ui`; tài khoản này luôn dùng
+được, kể cả khi quên mật khẩu các tài khoản khác. Giao diện gồm các trang:
 
 | Trang | Làm được gì |
 |---|---|
@@ -253,9 +254,26 @@ Mở `http://127.0.0.1:8080` và đăng nhập bằng mật khẩu. Giao diện 
 | Model AI | Xem model, **thêm model mới kèm API key**, thử kết nối, xoá |
 | Hội thoại | Xem hội thoại và ghi chú về từng khách, xoá trí nhớ |
 | Nhật ký | Mọi việc đã làm, lọc theo nhân viên và loại việc |
+| Tài khoản | Tạo tài khoản cho từng nhân viên, vai trò, giới hạn kênh, khoá, đặt lại mật khẩu, xoá |
+
+**Tài khoản và phân quyền.** Mỗi người có tài khoản riêng; tên hiển thị của tài khoản được ghi vào từng câu trả
+lời gửi khách (không tự gõ được tên người khác).
+
+| Vai trò | Được làm |
+|---|---|
+| Quản trị | Mọi trang |
+| Nhân viên bán hàng | Chỉ Hộp thư: trả lời, gợi ý, tiếp quản, giao lại AI. Có thể giới hạn chỉ xem một số kênh (vd. chỉ Zalo OA) |
+
+Mỗi người tự đổi mật khẩu bằng cách bấm vào tên mình ở góc trên. Khi quản trị khoá tài khoản, đổi vai trò, đổi
+kênh hay đặt lại mật khẩu, người đó bị đăng xuất ngay. Tài khoản lưu trong `state_dir/users.json` (quyền `600`),
+mật khẩu băm bằng scrypt.
 
 Bảo mật của giao diện:
-- Đăng nhập bằng mật khẩu (nên dài ít nhất 12 ký tự). Phiên đăng nhập nằm trong cookie `HttpOnly`, `SameSite=Strict`.
+- Đăng nhập bằng tên và mật khẩu (tài khoản nhân viên cần ít nhất 10 ký tự; mật khẩu chủ nên dài ít nhất 12).
+  Phiên đăng nhập nằm trong cookie `HttpOnly`, `SameSite=Strict`.
+- Ảnh và tệp của khách được máy chủ tải hộ từ nền tảng: chỉ tải đúng địa chỉ đã lưu cùng tin nhắn, chỉ từ địa chỉ
+  Internet công khai (không vào mạng nội bộ), tối đa 15 MB; tệp không phải ảnh luôn được tải về chứ không mở
+  trong trang.
 - Mọi thao tác thay đổi đều cần một header riêng mà trang web khác không gửi được (chống CSRF).
 - API key chỉ nhập vào được, không bao giờ hiện lại. Key thêm từ giao diện được lưu trong `state_dir/office.json` với quyền `600`.
 - Muốn truy cập từ xa, đặt giao diện sau reverse proxy có HTTPS. Đừng mở cổng trực tiếp ra Internet.
@@ -297,7 +315,13 @@ channels:
 
 Cách hoạt động:
 - **AI trả lời trước.** Khách nhắn, nhân viên AI được gán trả lời (dùng skill, kho kiến thức, trí nhớ
-  riêng từng khách như trên SimpleX). Tin cũ có sẵn khi khởi động chỉ được nhập vào làm ngữ cảnh, không trả lời lại.
+  riêng từng khách như trên SimpleX). Lần đầu kết nối một kênh, tin cũ chỉ được nhập vào làm ngữ cảnh, không trả lời lại.
+- **Không bỏ sót khách khi hệ thống tắt hay khởi động lại.** Tin đến trong lúc tắt, tin đang chờ AI trả lời
+  lúc khởi động lại, hay tin chưa trả lời được vì model lỗi đều được AI trả lời khi hệ thống chạy lại, nếu tin
+  không cũ quá `catch_up_hours` (mặc định 12 giờ, khai báo ở đầu `employees.yaml`). Tin cũ hơn nằm chờ nhân viên.
+- **Ảnh, tệp, sticker, link** của khách hiện ngay trong Hộp thư (ảnh xem trực tiếp, tệp tải về). AI biết khách
+  đã gửi gì nhưng không xem được nội dung, nên sẽ hỏi khách mô tả hoặc chuyển cho người thật. Webhook gửi tệp
+  bằng `"attachments": [{"kind": "image", "url": "https://…", "name": "…"}]`.
 - **Người tiếp quản bất cứ lúc nào.** Nhân viên trả lời trong Hộp thư (hoặc trả lời thẳng trên Zalo/Facebook)
   thì hội thoại chuyển sang chế độ "người trả lời" và AI im lặng. Bấm **Giao lại cho AI** để AI tiếp tục; AI
   nhớ cả những gì nhân viên đã nói.

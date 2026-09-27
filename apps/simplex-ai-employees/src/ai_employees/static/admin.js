@@ -79,9 +79,9 @@ $("#login-form").addEventListener("submit", async (ev) => {
   ev.preventDefault();
   $("#login-error").textContent = "";
   try {
-    await api("POST", "/api/login", { password: $("#login-password").value });
+    await api("POST", "/api/login", { username: $("#login-username").value.trim(), password: $("#login-password").value });
     $("#login-password").value = "";
-    start();
+    await start();
   } catch (e) {
     $("#login-error").textContent = e.message;
   }
@@ -89,6 +89,8 @@ $("#login-form").addEventListener("submit", async (ev) => {
 
 $("#logout").addEventListener("click", async () => {
   await run(() => api("POST", "/api/logout", {}));
+  clearInterval(refreshTimer);
+  me = null;
   showLogin();
 });
 
@@ -108,9 +110,11 @@ for (const b of document.querySelectorAll("#nav button")) b.addEventListener("cl
 
 async function refreshBadge() {
   try {
-    const { pending } = await api("GET", "/api/approvals");
-    $("#badge").hidden = pending.length === 0;
-    $("#badge").textContent = pending.length;
+    if (me && me.role === "admin") {
+      const { pending } = await api("GET", "/api/approvals");
+      $("#badge").hidden = pending.length === 0;
+      $("#badge").textContent = pending.length;
+    }
     const { channels } = await api("GET", "/api/channels");
     const unread = channels.reduce((a, c) => a + ((c.stats || {}).unread || 0), 0);
     $("#inbox-badge").hidden = unread === 0;
@@ -118,6 +122,11 @@ async function refreshBadge() {
   } catch (_) { /* shown elsewhere */ }
 }
 setInterval(() => !$("#app").hidden && refreshBadge(), 20000);
+
+// The logged-in account: {username, name, role: admin|agent, channels}
+let me = null;
+const ROLE = { admin: "Quản trị", agent: "Nhân viên bán hàng" };
+$("#me").addEventListener("click", () => go("me"));
 
 // replaceChildren would print "null" for a skipped optional node, so drop them first.
 function put(el, ...nodes) {
@@ -439,10 +448,27 @@ function modePill(mode) {
   return mode === "human" ? h("span", { class: "pill warn" }, "người trả lời") : h("span", { class: "pill ok" }, "AI trả lời");
 }
 
-const store = {
-  get(k) { try { return localStorage.getItem(k); } catch (_) { return null; } },
-  set(k, v) { try { localStorage.setItem(k, v); } catch (_) { /* private mode */ } },
-};
+const ATT_LABEL = { image: "Ảnh", video: "Video", audio: "Ghi âm", file: "Tệp", sticker: "Sticker", link: "Link" };
+
+// One attachment of a customer message. Remote files come through this server
+// (/api/inbox/.../media/...), since the page may only load images from itself.
+function attachmentView(cid, m, a, i) {
+  const media = `/api/inbox/${cid}/media/${m.id}/${i}`;
+  const remote = (u) => typeof u === "string" && /^https?:\/\//.test(u);
+  const label = `${ATT_LABEL[a.kind] || "Tệp"}${a.name ? ": " + a.name : ""}`;
+  if (a.kind === "link" && remote(a.url)) {
+    return h("a", { class: "att-link", href: a.url, target: "_blank", rel: "noopener noreferrer" },
+      a.thumb && a.thumb.startsWith("data:image/") ? h("img", { src: a.thumb, alt: "" }) : null, label);
+  }
+  if (["image", "sticker", "video"].includes(a.kind) && (a.thumb || remote(a.url))) {
+    const src = a.thumb && a.thumb.startsWith("data:image/") ? a.thumb : remote(a.thumb) ? `${media}?thumb=1` : media;
+    const img = h("img", { src, alt: label, loading: "lazy", class: "att-img" });
+    img.addEventListener("error", () => img.replaceWith(h("span", { class: "att-file" }, `${label} (hết hạn hoặc không tải được)`)));
+    return remote(a.url) ? h("a", { href: media, target: "_blank", rel: "noopener", title: "Mở bản đầy đủ" }, img) : img;
+  }
+  if (remote(a.url)) return h("a", { class: "att-file", href: media, rel: "noopener" }, "⬇ " + label);
+  return h("span", { class: "att-file" }, `${label} — xem trên ứng dụng của kênh`);
+}
 
 views.inbox = async (arg) => {
   if (arg) inboxSel = arg;
@@ -474,12 +500,27 @@ views.inbox = async (arg) => {
   };
 
   const renderMessages = (d) => {
+    // Re-render only when something changed: keeps the scroll position and does not
+    // download attachments again on every refresh.
+    const last = d.messages[d.messages.length - 1];
+    const sig = `${d.messages.length}:${last ? last.id : 0}`;
+    if (thread.sig === sig) return;
+    thread.sig = sig;
     const nearBottom = thread.msgs.scrollHeight - thread.msgs.scrollTop - thread.msgs.clientHeight < 80;
     put(thread.msgs, d.messages.length ? d.messages.map((m) => h("div", { class: `msg ${m.sender}` },
       h("div", { class: "who" }, m.sender === "customer" ? (m.author || d.conversation.customer_name || "Khách")
         : `${SENDER[m.sender]}${m.author ? " · " + m.author : ""}`, " · ", fmtTime(m.ts)),
-      h("div", { class: "bubble" }, m.text))) : [h("p", { class: "muted" }, "Chưa có tin nhắn.")]);
-    if (nearBottom || thread.fresh) thread.msgs.scrollTop = thread.msgs.scrollHeight;
+      h("div", { class: "bubble" }, m.text || null,
+        (m.attachments || []).length ? h("div", { class: "atts" }, m.attachments.map((a, i) => attachmentView(d.conversation.id, m, a, i))) : null),
+    )) : [h("p", { class: "muted" }, "Chưa có tin nhắn.")]);
+    const stick = nearBottom || thread.fresh;
+    if (stick) {
+      thread.msgs.scrollTop = thread.msgs.scrollHeight;
+      // images take their height only once loaded: keep the newest message in view
+      for (const img of thread.msgs.querySelectorAll("img")) {
+        img.addEventListener("load", () => { thread.msgs.scrollTop = thread.msgs.scrollHeight; }, { once: true });
+      }
+    }
     thread.fresh = false;
   };
 
@@ -518,14 +559,12 @@ views.inbox = async (arg) => {
     if (!thread || thread.id !== d.conversation.id) {
       const cid = d.conversation.id;
       const text = h("textarea", { rows: 3, class: "composer-text", placeholder: "Nhập trả lời… (Enter để gửi, Shift+Enter xuống dòng)" });
-      const author = h("input", { class: "author", placeholder: "Tên bạn", value: store.get("aie-author") || "" });
       const takeOver = h("input", { type: "checkbox", checked: true });
       const sendBtn = h("button", { class: "primary" }, "Gửi");
       const suggestBtn = h("button", {}, "Gợi ý trả lời (AI)");
       const send = () => {
-        const body = { text: text.value.trim(), author: author.value.trim() || "Nhân viên", take_over: takeOver.checked };
+        const body = { text: text.value.trim(), take_over: takeOver.checked };
         if (!body.text) return;
-        store.set("aie-author", author.value.trim());
         run(async () => {
           sendBtn.disabled = true;
           try {
@@ -553,7 +592,8 @@ views.inbox = async (arg) => {
       put(pane, thread.head, thread.msgs,
         h("div", { class: "composer" }, text,
           h("div", { class: "row spread" },
-            h("div", { class: "row" }, author, h("label", { class: "check inline" }, takeOver, h("span", {}, "Tiếp quản (AI dừng trả lời)"))),
+            h("div", { class: "row" }, h("span", { class: "muted" }, `Trả lời với tên: ${me ? me.name : ""}`),
+              h("label", { class: "check inline" }, takeOver, h("span", {}, "Tiếp quản (AI dừng trả lời)"))),
             h("div", { class: "row" }, suggestBtn, sendBtn))));
       if (d.conversation.unread) api("POST", `/api/inbox/${cid}/read`, {}).then(refreshBadge).catch(() => {});
     }
@@ -713,16 +753,96 @@ views.runlog = async () => {
 
 // --------------------------------------------------------------------------
 
+// --------------------------------------------------------------------------
+// Accounts (admin) and my account
+
+views.accounts = async () => {
+  const data = await run(() => api("GET", "/api/users"));
+  if (!data) return;
+  const chName = Object.fromEntries(data.channels.map((c) => [c.id, c.name]));
+  const reload = (res) => { if (res) go("accounts"); };
+  const patch = (u, body, msg) => run(async () => reload(await api("PATCH", `/api/users/${encodeURIComponent(u.username)}`, body)), msg);
+  const f = {
+    username: h("input", { placeholder: "vd. thu.tran", autocomplete: "off" }),
+    name: h("input", { placeholder: "Tên hiện với khách và đồng nghiệp" }),
+    role: h("select", {}, Object.entries(ROLE).map(([k, v]) => h("option", { value: k, selected: k === "agent" }, v))),
+    password: h("input", { type: "password", autocomplete: "new-password", placeholder: "ít nhất 10 ký tự" }),
+  };
+  const boxes = data.channels.map((c) => {
+    const box = h("input", { type: "checkbox", value: c.id });
+    return { box, el: h("label", { class: "check" }, box, h("span", {}, c.name)) };
+  });
+  const add = () => run(async () => {
+    const body = Object.fromEntries(Object.entries(f).map(([k, el]) => [k, el.value.trim()]));
+    body.channels = boxes.filter((b) => b.box.checked).map((b) => b.box.value);
+    reload(await api("POST", "/api/users", body));
+  }, "Đã tạo tài khoản");
+  render(
+    h("h1", {}, "Tài khoản"),
+    h("div", { class: "card table-wrap" }, h("table", {},
+      h("thead", {}, h("tr", {}, ["Tên đăng nhập", "Tên", "Vai trò", "Kênh được xem", "Trạng thái", ""].map((t) => h("th", {}, t)))),
+      h("tbody", {}, data.users.map((u) => h("tr", {},
+        h("td", { class: "mono" }, u.username), h("td", {}, u.name), h("td", {}, ROLE[u.role] || u.role),
+        h("td", {}, u.role === "admin" || !u.channels.length ? "tất cả" : u.channels.map((c) => chName[c] || c).join(", ")),
+        h("td", {}, u.owner ? h("span", { class: "pill ok" }, "chủ") : u.disabled ? pill("skipped") : h("span", { class: "pill ok" }, "đang dùng")),
+        h("td", {}, u.owner ? h("span", { class: "muted" }, "mật khẩu trong file cấu hình") : h("div", { class: "row" },
+          h("button", { onclick: () => patch(u, { disabled: !u.disabled }, u.disabled ? "Đã mở lại" : "Đã khoá") }, u.disabled ? "Mở lại" : "Khoá"),
+          h("button", { onclick: () => { const p = prompt(`Mật khẩu mới cho ${u.username} (ít nhất 10 ký tự):`); if (p) patch(u, { password: p }, "Đã đặt mật khẩu mới"); } }, "Đặt mật khẩu"),
+          h("button", { class: "danger", onclick: () => confirm(`Xoá tài khoản ${u.username}?`) && run(async () => reload(await api("DELETE", `/api/users/${encodeURIComponent(u.username)}`)), "Đã xoá") }, "Xoá"))),
+      ))),
+    )),
+    h("div", { class: "card section" },
+      h("h2", {}, "Thêm tài khoản"),
+      h("p", { class: "muted" }, "Nhân viên bán hàng chỉ vào được Hộp thư; chọn kênh để giới hạn (không chọn = mọi kênh). Quản trị làm được mọi việc. Khi đổi vai trò, kênh hoặc mật khẩu, người đó phải đăng nhập lại."),
+      h("div", { class: "two" },
+        h("label", {}, "Tên đăng nhập", f.username), h("label", {}, "Tên hiển thị", f.name),
+        h("label", {}, "Vai trò", f.role), h("label", {}, "Mật khẩu", f.password)),
+      h("h3", {}, "Kênh được xem (với nhân viên bán hàng)"),
+      h("div", { class: "checks" }, boxes.map((b) => b.el)),
+      h("div", { class: "row section" }, h("button", { class: "primary", onclick: add }, "Tạo tài khoản")),
+    ),
+  );
+};
+
+views.me = async () => {
+  const old = h("input", { type: "password", autocomplete: "current-password" });
+  const pw = h("input", { type: "password", autocomplete: "new-password", placeholder: "ít nhất 10 ký tự" });
+  const pw2 = h("input", { type: "password", autocomplete: "new-password" });
+  const change = () => {
+    if (pw.value !== pw2.value) return toast("Hai lần nhập mật khẩu mới không khớp");
+    run(async () => {
+      await api("POST", "/api/me/password", { old: old.value, new: pw.value });
+      old.value = pw.value = pw2.value = "";
+    }, "Đã đổi mật khẩu");
+  };
+  render(
+    h("h1", {}, "Tài khoản của tôi"),
+    h("div", { class: "card" },
+      h("p", {}, h("b", {}, me.name), h("span", { class: "muted" }, ` · ${me.username} · ${ROLE[me.role] || me.role}`)),
+      me.role !== "admin" && me.channels.length ? h("p", { class: "muted" }, `Kênh được xem: ${me.channels.join(", ")}`) : null,
+      me.username === "admin" ? h("p", { class: "muted" }, "Mật khẩu tài khoản chủ đặt trong file cấu hình (admin_ui).") : h("div", {},
+        h("h2", { class: "section" }, "Đổi mật khẩu"),
+        h("div", { class: "two" }, h("label", {}, "Mật khẩu hiện tại", old), h("span"),
+          h("label", {}, "Mật khẩu mới", pw), h("label", {}, "Nhập lại mật khẩu mới", pw2)),
+        h("button", { class: "primary", onclick: change }, "Đổi mật khẩu")),
+    ),
+  );
+};
+
+// --------------------------------------------------------------------------
+
 async function start() {
+  ({ user: me } = await api("GET", "/api/me"));
   $("#login").hidden = true;
   $("#app").hidden = false;
-  go("overview");
+  for (const b of document.querySelectorAll("#nav button[data-admin]")) b.hidden = me.role !== "admin";
+  $("#me").textContent = `${me.name} · ${ROLE[me.role] || me.role}`;
+  go(me.role === "admin" ? "overview" : "inbox");
 }
 
 (async () => {
   try {
-    await api("GET", "/api/overview");
-    start();
+    await start();
   } catch (_) {
     showLogin();
   }

@@ -88,6 +88,8 @@ class AppConfig:
     actions: dict[str, ActionDef] = field(default_factory=dict)
     admin_ui: AdminUIConfig | None = None
     channels: tuple[ChannelConfig, ...] = ()
+    # After downtime, customer messages up to this old still get an AI answer.
+    catch_up_hours: float = 12.0
 
     def model_profile(self, name: str) -> ModelProfile | None:
         """A declared model by name, or an implicit Claude model for a bare `claude-*` id."""
@@ -217,6 +219,7 @@ def parse_config(raw: dict[str, Any], base_dir: Path) -> AppConfig:
         actions=actions,
         admin_ui=parse_admin_ui(raw.get("admin_ui")),
         channels=tuple(channels),
+        catch_up_hours=float(raw.get("catch_up_hours", 12)),
     )
 
 

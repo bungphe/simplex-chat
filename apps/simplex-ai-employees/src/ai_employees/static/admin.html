@@ -11,8 +11,11 @@
   <section id="login" class="login" hidden>
     <form id="login-form" class="card login-card">
       <h1>Quản trị nhân viên AI</h1>
+      <label>Tên đăng nhập
+        <input id="login-username" autocomplete="username" placeholder="admin" autofocus>
+      </label>
       <label>Mật khẩu
-        <input id="login-password" type="password" autocomplete="current-password" required autofocus>
+        <input id="login-password" type="password" autocomplete="current-password" required>
       </label>
       <button type="submit" class="primary">Đăng nhập</button>
       <p id="login-error" class="error" role="alert"></p>
@@ -23,15 +26,17 @@
     <header class="topbar">
       <div class="brand">Nhân viên AI</div>
       <nav id="nav">
-        <button data-view="overview">Tổng quan</button>
+        <button data-view="overview" data-admin>Tổng quan</button>
         <button data-view="inbox">Hộp thư <span id="inbox-badge" class="badge" hidden></span></button>
-        <button data-view="channels">Kênh chat &amp; SimpleX</button>
-        <button data-view="employees">Nhân viên</button>
-        <button data-view="approvals">Chờ duyệt <span id="badge" class="badge" hidden></span></button>
-        <button data-view="models">Model AI</button>
-        <button data-view="conversations">Hội thoại</button>
-        <button data-view="runlog">Nhật ký</button>
+        <button data-view="channels" data-admin>Kênh &amp; SimpleX</button>
+        <button data-view="employees" data-admin>Nhân viên</button>
+        <button data-view="approvals" data-admin>Chờ duyệt <span id="badge" class="badge" hidden></span></button>
+        <button data-view="models" data-admin>Model AI</button>
+        <button data-view="conversations" data-admin>Hội thoại</button>
+        <button data-view="runlog" data-admin>Nhật ký</button>
+        <button data-view="accounts" data-admin>Tài khoản</button>
       </nav>
+      <button id="me" class="ghost" title="Tài khoản của tôi"></button>
       <button id="logout" class="ghost">Đăng xuất</button>
     </header>
     <main id="view"></main>

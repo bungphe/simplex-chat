@@ -13,6 +13,7 @@ use EXTERNAL_BASE + the inbox conversation id, which never collides with them.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 from dataclasses import dataclass
@@ -22,6 +23,25 @@ from typing import Any
 from .state import now_iso
 
 EXTERNAL_BASE = 1_000_000_000
+ATTACHMENT_KINDS = {
+    "image": "ảnh",
+    "video": "video",
+    "audio": "ghi âm",
+    "file": "tệp",
+    "sticker": "sticker",
+    "link": "link",
+}
+
+
+def describe(text: str, attachments: list[dict[str, Any]] | None) -> str:
+    """Text plus a short label per attachment ("[ảnh]", "[tệp: báo giá.pdf]")."""
+    labels = []
+    for a in attachments or []:
+        label = ATTACHMENT_KINDS.get(a.get("kind", ""), "tệp")
+        labels.append(f"[{label}: {a['name']}]" if a.get("name") else f"[{label}]")
+    return " ".join(x for x in [text.strip(), *labels] if x)
+
+
 SENDERS = ("customer", "ai", "human", "system")
 MODES = ("ai", "human")
 
@@ -93,6 +113,9 @@ class Inbox:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA foreign_keys=ON")
         self.db.executescript(SCHEMA)
+        columns = {r["name"] for r in self.db.execute("PRAGMA table_info(messages)")}
+        if "attachments" not in columns:  # inbox.db from before attachments were kept
+            self.db.execute("ALTER TABLE messages ADD COLUMN attachments TEXT NOT NULL DEFAULT ''")
         self._lock = threading.Lock()
 
     def _conv(self, row: sqlite3.Row | None) -> Conversation | None:
@@ -172,16 +195,21 @@ class Inbox:
         author: str = "",
         external_id: str | None = None,
         ts: str | None = None,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> int | None:
-        """Store a message; returns None when this external message was already stored."""
+        """Store a message; returns None when this external message was already stored.
+
+        Attachments are {"kind": image|video|audio|file|sticker|link, "url"?, "thumb"?, "name"?}."""
         assert sender in SENDERS
         ts = ts or now_iso()
+        stored = json.dumps(attachments, ensure_ascii=False) if attachments else ""
+        preview = describe(text, attachments)
         with self._lock:
             try:
                 cur = self.db.execute(
-                    "INSERT INTO messages (conversation_id, external_id, sender, author, text, ts) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
-                    (conv_id, external_id, sender, author, text, ts),
+                    "INSERT INTO messages (conversation_id, external_id, sender, author, text, ts, attachments) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (conv_id, external_id, sender, author, text, ts, stored),
                 )
             except sqlite3.IntegrityError:
                 return None
@@ -190,7 +218,7 @@ class Inbox:
             self.db.execute(
                 "UPDATE conversations SET last_ts=MAX(COALESCE(last_ts, ''), ?), last_preview=?, "
                 "last_sender=?, unread = unread + ? WHERE id=?",
-                (ts, text[:160], sender, 1 if sender == "customer" else 0, conv_id),
+                (ts, preview[:160], sender, 1 if sender == "customer" else 0, conv_id),
             )
             return cur.lastrowid
 
@@ -202,11 +230,25 @@ class Inbox:
 
     def messages(self, conv_id: int, limit: int = 300) -> list[dict[str, Any]]:
         rows = self.db.execute(
-            "SELECT id, external_id, sender, author, text, ts FROM messages WHERE conversation_id=? "
-            "ORDER BY id DESC LIMIT ?",
+            "SELECT id, external_id, sender, author, text, ts, attachments FROM messages "
+            "WHERE conversation_id=? ORDER BY id DESC LIMIT ?",
             (conv_id, limit),
         ).fetchall()
-        return [dict(r) for r in reversed(rows)]
+        return [self._message(r) for r in reversed(rows)]
+
+    @staticmethod
+    def _message(row: sqlite3.Row) -> dict[str, Any]:
+        m = dict(row)
+        m["attachments"] = json.loads(m["attachments"]) if m.get("attachments") else []
+        return m
+
+    def message(self, conv_id: int, message_id: int) -> dict[str, Any] | None:
+        row = self.db.execute(
+            "SELECT id, external_id, sender, author, text, ts, attachments FROM messages "
+            "WHERE conversation_id=? AND id=?",
+            (conv_id, message_id),
+        ).fetchone()
+        return self._message(row) if row else None
 
     def pending_customer_text(self, conv_id: int) -> list[dict[str, Any]]:
         """Customer messages after the last reply of any kind: what still needs an answer."""
@@ -216,6 +258,23 @@ class Inbox:
                 break
             out.append(m)
         return list(reversed(out))
+
+    def is_pending(self, conv_id: int, message_id: int) -> bool:
+        """True while nothing has been sent in this conversation after that message."""
+        row = self.db.execute(
+            "SELECT 1 FROM messages WHERE conversation_id=? AND id>? AND sender!='customer' LIMIT 1",
+            (conv_id, message_id),
+        ).fetchone()
+        return row is None
+
+    def awaiting_answer(self, since_ts: str) -> list[Conversation]:
+        """Conversations in AI mode whose last message is a customer's, newer than since_ts."""
+        rows = self.db.execute(
+            "SELECT * FROM conversations WHERE mode='ai' AND last_sender='customer' AND last_ts>=? "
+            "ORDER BY last_ts",
+            (since_ts,),
+        ).fetchall()
+        return [c for c in (self._conv(r) for r in rows) if c]
 
     def recent_outbound(self, conv_id: int, since_ts: str) -> list[str]:
         rows = self.db.execute(
@@ -227,14 +286,10 @@ class Inbox:
     # per-channel cursors and settings
 
     def channel_state(self, channel: str) -> dict[str, Any]:
-        import json
-
         row = self.db.execute("SELECT data FROM channel_state WHERE channel=?", (channel,)).fetchone()
         return json.loads(row["data"]) if row else {}
 
     def set_channel_state(self, channel: str, **fields: Any) -> None:
-        import json
-
         with self._lock:
             data = {**self.channel_state(channel), **fields}
             self.db.execute(

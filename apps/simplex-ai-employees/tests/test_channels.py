@@ -16,6 +16,7 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from ai_employees.config import ConfigError, parse_config
+from ai_employees.hub import iso
 from ai_employees.inbox import EXTERNAL_BASE
 from ai_employees.web import CSRF_HEADER, CSRF_VALUE, create_app
 
@@ -144,6 +145,15 @@ class Platforms:
                 return httpx2.Response(200, json={"state": "qr_pending"})
             if url.path == "/zalo-canhan/api/qr":
                 return httpx2.Response(200, json={"state": "qr_pending", "qr": "data:image/png;base64,AAAA"})
+        if url.host == "cdn.example":
+            if url.path == "/p.jpg":
+                return httpx2.Response(200, content=b"\xff\xd8jpeg", headers={"content-type": "image/jpeg"})
+            if url.path == "/page.html":
+                return httpx2.Response(
+                    200, content=b"<script>alert(1)</script>", headers={"content-type": "text/html"}
+                )
+            if url.path == "/hop":
+                return httpx2.Response(302, headers={"location": "http://169.254.169.254/latest/meta-data"})
         if url.host == "bridge.local":
             self.sent.append(("webhook", json.loads(r.content)))
             return httpx2.Response(200, json={"message_id": f"w-{len(self.sent)}"})
@@ -450,8 +460,9 @@ async def test_webhook_channel_and_inbox_api(ui):
         "ts": "",
         "external_id": "w-2",
         "sender": "human",
-        "author": "Thu",
+        "author": "Chủ",  # the logged-in account (the owner), not the typed name
         "text": "Phí ship 30k chị nhé",
+        "attachments": [],
     }
     assert (await client.post(f"/api/inbox/{cid}/reply", json={"text": " "}, headers=H)).status == 400
     assert (await client.post(f"/api/inbox/{cid}/reply", json={"text": "x"})).status == 403  # CSRF header
@@ -578,13 +589,22 @@ async def test_zalo_personal_gateway(ui):
         "/hooks/zalo-canhan", json=event("7001", "Dạ em chào chị Mai Anh ạ.", is_self=True), headers=hook
     )
     assert hub.inbox.conversation(cid).mode == "ai" and len(hub.inbox.messages(cid)) == 2
-    # a sticker gets a placeholder; the owner typing on the phone takes the chat over
+    # a photo arrives as an attachment; the owner typing on the phone takes the chat over
     llm.responses.append(text("Dạ?"))
-    await client.post("/hooks/zalo-canhan", json=event("101", {"type": "sticker"}), headers=hook)
+    photo = event("101", None)
+    photo["data"]["attachment"] = {
+        "type": "chat.photo",
+        "url": "https://f1.zdn.vn/a.jpg",
+        "thumb": "https://f1.zdn.vn/t.jpg",
+    }
+    await client.post("/hooks/zalo-canhan", json=photo, headers=hook)
     await client.post("/hooks/zalo-canhan", json=event("102", "Chị chờ em chút", is_self=True), headers=hook)
     await settle(hub)
     msgs = hub.inbox.messages(cid)
-    assert msgs[2]["text"].startswith("[khách gửi") and msgs[-1]["sender"] == "human"
+    assert msgs[2]["attachments"] == [
+        {"kind": "image", "url": "https://f1.zdn.vn/a.jpg", "thumb": "https://f1.zdn.vn/t.jpg"}
+    ]
+    assert msgs[-1]["sender"] == "human"
     assert hub.inbox.conversation(cid).mode == "human"
 
     await client.post("/api/login", json={"password": PASSWORD}, headers=H)
@@ -592,3 +612,358 @@ async def test_zalo_personal_gateway(ui):
     assert r == {"state": "qr_pending", "qr": "data:image/png;base64,AAAA"}
     assert (await client.post("/api/channels/website/login", json={}, headers=H)).status == 404
     assert (await client.get("/hooks/zalo-canhan/5550001", headers=hook)).status == 404  # webhook-only
+
+
+def restart(office: Any, tmp_path: Any, llm: Any, platforms: Platforms) -> Any:
+    """A new office process on the same state directory, as after a restart."""
+    office.hub.inbox.db.close()
+    again = make_office(
+        tmp_path, llm, http=platforms.client, channels=[ZALO, ZALO_PERSONAL, FACEBOOK, WEBHOOK]
+    )
+    fake_chat(again.employees["sales"])
+    again.hub.resume_delay = 0
+    return again
+
+
+async def test_messages_that_arrive_while_down_are_answered_after_restart(setup, tmp_path):
+    office, llm, platforms, _ = setup
+    platforms.fb("m1", "Chào shop", datetime.now(UTC) - timedelta(minutes=30))
+    await office.hub.poll_once("fanpage")  # first run: history is only imported
+    assert llm.calls == []
+
+    # the office is down; the customer writes; the office comes back
+    platforms.fb(
+        "m2", "Shop ơi còn hàng không?", datetime.now(UTC).replace(microsecond=0) - timedelta(seconds=5)
+    )
+    office2 = restart(office, tmp_path, llm, platforms)
+    llm.responses.append(text("Dạ còn hàng ạ."))
+    await office2.hub.poll_once("fanpage")
+    await settle(office2.hub)
+    assert platforms.sent[-1][1]["message"]["text"] == "Dạ còn hàng ạ."
+    assert "Chào shop\\nShop ơi còn hàng không?" in json.dumps(llm.calls[0]["messages"], ensure_ascii=False)
+
+
+async def test_waiting_customers_are_answered_at_start_up(setup, tmp_path):
+    office, llm, platforms, _ = setup
+    hub = office.hub
+    # a reply timer that never fired (the process stopped), and an old unanswered message
+    hub.schedule_reply = lambda *a, **k: None
+    waiting = hub.push_inbound("website", {"conversation_id": "v-new", "text": "Còn hàng không?"})
+    old = hub.push_inbound("website", {"conversation_id": "v-old", "text": "Hỏi từ hôm trước"})
+    hub.inbox.db.execute(
+        "UPDATE conversations SET last_ts=? WHERE id=?", (iso(datetime.now(UTC) - timedelta(days=2)), old.id)
+    )
+    taken = hub.push_inbound("website", {"conversation_id": "v-human", "text": "Cho gặp người"})
+    hub.inbox.set_mode(taken.id, "human")
+
+    office2 = restart(office, tmp_path, llm, platforms)
+    llm.responses.append(text("Dạ còn ạ."))
+    assert office2.hub.resume_pending() == [waiting.id]  # not the 2-day-old one, not the human one
+    await settle(office2.hub)
+    assert platforms.sent == [("webhook", {"conversation_id": "v-new", "text": "Dạ còn ạ."})]
+    assert office2.hub.resume_pending() == []  # answered: nothing waits any more
+
+
+async def test_simplex_message_answered_by_catch_up_is_not_answered_twice(setup):
+    office, llm, _, chat = setup
+    sales, hub = office.employees["sales"], office.hub
+    replies: list[str] = []
+
+    async def reply(t: str) -> None:
+        replies.append(t)
+
+    contact = {"contactId": 9, "profile": {"displayName": "Dũng"}, "localDisplayName": "dung"}
+    conv, mid = hub.simplex_inbound(sales, 9, "Dũng", "Có ai không?")
+    llm.responses.append(text("Dạ em đây ạ."))
+    assert await hub.reply_ai(conv.id) == "Dạ em đây ạ."  # the start-up catch-up answered it
+    assert chat.sent == [(9, "Dạ em đây ạ.")]
+    # the bot's own handler for that same message then finds it answered
+    await sales._answer(
+        NS(chat_info={"contact": contact}, reply=reply), 9, "Dũng", "Có ai không?", conv.id, mid
+    )
+    assert replies == [] and len(llm.calls) == 1
+
+
+async def test_attachments_from_every_channel(setup):
+    office, llm, platforms, _ = setup
+    hub = office.hub
+    now = datetime.now(UTC).replace(microsecond=0) + timedelta(seconds=1)
+    # Zalo OA: a photo with no caption
+    platforms.zalo_msgs.insert(
+        0,
+        {
+            "src": 1,
+            "message_id": "zp",
+            "type": "photo",
+            "url": "https://photo.zdn.vn/full.jpg",
+            "thumb": "https://photo.zdn.vn/thumb.jpg",
+            "time": ms(now),
+            "from_id": "u-1",
+            "from_display_name": "Hoa",
+        },
+    )
+    # Facebook: a caption with a file
+    platforms.fb("mf", "Báo giá giúp em", now)
+    platforms.fb_msgs[0]["attachments"] = {
+        "data": [
+            {"mime_type": "application/pdf", "name": "yeu-cau.pdf", "file_url": "https://cdn.fbsbx.com/y.pdf"}
+        ]
+    }
+    llm.responses += [text("Dạ ảnh gì ạ?"), text("Dạ em xem ạ.")]
+    await hub.poll_once("zalo-shop")
+    await hub.poll_once("fanpage")
+    await settle(hub)
+
+    zalo = hub.inbox.find("zalo-shop", "u-1")
+    [m] = [m for m in hub.inbox.messages(zalo.id) if m["sender"] == "customer"]
+    assert m["attachments"] == [
+        {"kind": "image", "url": "https://photo.zdn.vn/full.jpg", "thumb": "https://photo.zdn.vn/thumb.jpg"}
+    ]
+    assert zalo.last_preview == "[ảnh]" or hub.inbox.conversation(zalo.id).last_sender == "ai"
+    fb = hub.inbox.find("fanpage", "psid-9")
+    [m] = [m for m in hub.inbox.messages(fb.id) if m["sender"] == "customer"]
+    assert m["text"] == "Báo giá giúp em" and m["attachments"][0]["name"] == "yeu-cau.pdf"
+    # the model is told what was sent, and that it cannot see it
+    prompts = [json.dumps(c["messages"], ensure_ascii=False) for c in llm.calls]
+    assert any("[ảnh]" in p and "không xem được" in p for p in prompts)
+    assert any("Báo giá giúp em [tệp: yeu-cau.pdf]" in p for p in prompts)
+
+    # webhook: attachments only, and a non-http URL is dropped
+    llm.responses.append(text("ok"))
+    conv = hub.push_inbound(
+        "website",
+        {
+            "conversation_id": "a1",
+            "attachments": [{"kind": "image", "url": "file:///etc/passwd", "name": "x.png"}],
+        },
+    )
+    assert hub.inbox.messages(conv.id)[0]["attachments"] == [{"kind": "image", "name": "x.png"}]
+    with pytest.raises(ValueError):
+        hub.push_inbound("website", {"conversation_id": "a2"})
+    await settle(hub)
+
+
+async def test_simplex_images_and_links_reach_the_inbox(setup):
+    office, llm, _, _ = setup
+    sales, hub = office.employees["sales"], office.hub
+    replies: list[str] = []
+
+    async def reply(t: str) -> None:
+        replies.append(t)
+
+    contact = {"contactId": 5, "profile": {"displayName": "Bảo"}, "localDisplayName": "bao"}
+    image = NS(
+        chat_info={"contact": contact},
+        chat_item={"chatItem": {"file": {"fileName": "may-loc.jpg", "fileSize": 120000}}},
+        content={"type": "image", "text": "Máy này còn không?", "image": "data:image/jpg;base64,/9j/4AAQ"},
+        reply=reply,
+    )
+    llm.responses.append(text("Dạ mẫu này còn ạ."))
+    await sales._on_other(image)
+    await asyncio.gather(*list(sales._tasks))
+    conv = hub.inbox.find("simplex:sales", "5")
+    [m, answer] = hub.inbox.messages(conv.id)
+    assert m["text"] == "Máy này còn không?"
+    assert m["attachments"] == [
+        {"kind": "image", "thumb": "data:image/jpg;base64,/9j/4AAQ", "name": "may-loc.jpg"}
+    ]
+    assert replies == ["Dạ mẫu này còn ạ."] and answer["sender"] == "ai"
+
+    link = NS(
+        chat_info={"contact": contact},
+        chat_item={"chatItem": {}},
+        content={
+            "type": "link",
+            "text": "Xem giúp https://shop.vn/ma-100",
+            "preview": {
+                "uri": "https://shop.vn/ma-100",
+                "title": "MA-100",
+                "image": "data:image/png;base64,iVBO",
+            },
+        },
+        reply=reply,
+    )
+    llm.responses.append(text("Dạ đây là MA-100 ạ."))
+    await sales._on_other(link)
+    await asyncio.gather(*list(sales._tasks))
+    assert hub.inbox.messages(conv.id)[2]["attachments"][0] == {
+        "kind": "link",
+        "thumb": "data:image/png;base64,iVBO",
+        "url": "https://shop.vn/ma-100",
+        "name": "MA-100",
+    }
+    assert replies[-1] == "Dạ đây là MA-100 ạ."  # link messages are answered, not refused
+
+
+async def test_attachment_media_is_proxied_safely(ui, monkeypatch):
+    client, office, llm, _ = ui
+    from ai_employees import media
+
+    async def fake_resolve(host: str) -> list[str]:
+        return {"cdn.example": ["93.184.216.34"], "intranet.example": ["10.0.0.5"]}.get(host, [host])
+
+    monkeypatch.setattr(media, "resolve", fake_resolve)
+    llm.responses.append(text("ok"))
+    files = [
+        {"kind": "image", "url": "https://cdn.example/p.jpg"},
+        {"kind": "file", "url": "https://cdn.example/page.html", "name": "báo giá.html"},
+        {"kind": "image", "url": "https://intranet.example/x.jpg"},
+        {"kind": "image", "url": "https://cdn.example/hop"},
+    ]
+    conv = office.hub.push_inbound("website", {"conversation_id": "m1", "attachments": files})
+    await settle(office.hub)
+    mid = office.hub.inbox.messages(conv.id)[0]["id"]
+    base = f"/api/inbox/{conv.id}/media/{mid}"
+    assert (await client.get(f"{base}/0")).status == 401  # needs a login
+    await client.post("/api/login", json={"password": PASSWORD}, headers=H)
+
+    r = await client.get(f"{base}/0")
+    assert r.status == 200 and r.content_type == "image/jpeg" and await r.read() == b"\xff\xd8jpeg"
+    assert r.headers["Cache-Control"] == "private, max-age=3600"
+    assert "default-src 'self'" in r.headers["Content-Security-Policy"]
+    # anything that is not a plain image is a download, never rendered in the admin origin
+    r = await client.get(f"{base}/1")
+    assert r.content_type == "application/octet-stream"
+    assert r.headers["Content-Disposition"] == "attachment; filename*=UTF-8''b%C3%A1o%20gi%C3%A1.html"
+    # private addresses are refused, also when reached through a redirect
+    assert (await client.get(f"{base}/2")).status == 502
+    assert (await client.get(f"{base}/3")).status == 502
+    assert (await client.get(f"{base}/9")).status == 404
+    assert (await client.get(f"/api/inbox/{conv.id}/media/999/0")).status == 404
+
+
+async def test_staff_accounts_roles_and_channel_scope(ui, tmp_path):
+    client, office, llm, _platforms = ui
+    hub = office.hub
+    llm.responses += [text("a"), text("b")]
+    web_conv = hub.push_inbound("website", {"conversation_id": "w1", "customer_name": "Linh", "text": "Hi"})
+    zalo_conv = hub.push_inbound(
+        "zalo-canhan",
+        {
+            "event": "message",
+            "data": {
+                "id": "z1",
+                "type": "user",
+                "threadId": "t1",
+                "content": "Chào",
+                "timestamp": ms(datetime.now(UTC)),
+            },
+        },
+    )
+    await settle(hub)
+
+    # the owner logs in as before (no username = "admin")
+    assert (await client.post("/api/login", json={"password": PASSWORD}, headers=H)).status == 200
+    assert (await (await client.get("/api/me")).json())["user"]["role"] == "admin"
+    bad = [
+        {"username": "admin", "name": "x", "role": "agent", "password": "0123456789"},
+        {"username": "Thu Tran", "name": "x", "role": "agent", "password": "0123456789"},
+        {"username": "thu", "name": "Thu", "role": "agent", "password": "short"},
+        {"username": "thu", "name": "Thu", "role": "boss", "password": "0123456789"},
+        {"username": "thu", "name": "Thu", "role": "agent", "password": "0123456789", "channels": ["nope"]},
+    ]
+    for body in bad:
+        assert (await client.post("/api/users", json=body, headers=H)).status == 400, body
+    r = await client.post(
+        "/api/users",
+        json={
+            "username": "thu",
+            "name": "Thu Trần",
+            "role": "agent",
+            "password": "thu-pass-2026",
+            "channels": ["website"],
+        },
+        headers=H,
+    )
+    users = {u["username"]: u for u in (await r.json())["users"]}
+    assert users["thu"] == {
+        "username": "thu",
+        "name": "Thu Trần",
+        "role": "agent",
+        "channels": ["website"],
+        "disabled": False,
+        "created": users["thu"]["created"],
+    }
+    stored = (tmp_path / "state" / "users.json").read_text()
+    assert (
+        "thu-pass-2026" not in stored
+        and oct(os.stat(tmp_path / "state" / "users.json").st_mode & 0o777) == "0o600"
+    )
+    await client.post("/api/logout", json={}, headers=H)
+
+    # the sales agent: inbox of their channel only
+    assert (
+        await client.post("/api/login", json={"username": "thu", "password": "nope-nope-1"}, headers=H)
+    ).status == 401
+    r = await client.post("/api/login", json={"username": "Thu", "password": "thu-pass-2026"}, headers=H)
+    assert (await r.json())["user"]["name"] == "Thu Trần"
+    inbox = await (await client.get("/api/inbox")).json()
+    assert [c["id"] for c in inbox["conversations"]] == [web_conv.id]
+    assert [c["id"] for c in inbox["channels"]] == ["website"]
+    assert [c["id"] for c in (await (await client.get("/api/channels")).json())["channels"]] == ["website"]
+    assert (await client.get(f"/api/inbox/{zalo_conv.id}")).status == 404
+    assert (
+        await client.post(f"/api/inbox/{zalo_conv.id}/reply", json={"text": "x"}, headers=H)
+    ).status == 404
+    for method, path in [
+        ("GET", "/api/overview"),
+        ("GET", "/api/models"),
+        ("GET", "/api/users"),
+        ("GET", "/api/approvals"),
+        ("GET", "/api/runlog"),
+        ("POST", "/api/channels/fanpage/poll"),
+        ("PATCH", "/api/employees/sales"),
+        ("GET", "/api/simplex"),
+    ]:
+        r = await client.request(method, path, json={}, headers=H)
+        assert r.status == 403, path
+    d = await (
+        await client.post(
+            f"/api/inbox/{web_conv.id}/reply", json={"text": "Dạ em Thu đây", "author": "Giám đốc"}, headers=H
+        )
+    ).json()
+    assert d["messages"][-1]["author"] == "Thu Trần"  # the account, not a typed name
+
+    # own password: needs the current one
+    assert (
+        await client.post("/api/me/password", json={"old": "wrong", "new": "new-pass-2026"}, headers=H)
+    ).status == 400
+    assert (
+        await client.post(
+            "/api/me/password", json={"old": "thu-pass-2026", "new": "new-pass-2026"}, headers=H
+        )
+    ).status == 200
+
+    # the owner disables the account: its session ends at once
+    owner = TestClient(client.server)
+    await owner.start_server()
+    await owner.post("/api/login", json={"username": "admin", "password": PASSWORD}, headers=H)
+    assert (await owner.patch("/api/users/thu", json={"disabled": True}, headers=H)).status == 200
+    assert (await client.get("/api/inbox")).status == 401
+    assert (
+        await client.post("/api/login", json={"username": "thu", "password": "new-pass-2026"}, headers=H)
+    ).status == 401
+    assert (await owner.patch("/api/users/thu", json={"disabled": False}, headers=H)).status == 200
+    assert (
+        await client.post("/api/login", json={"username": "thu", "password": "new-pass-2026"}, headers=H)
+    ).status == 200
+    assert (await owner.delete("/api/users/thu", headers=H)).status == 200
+    assert (await client.get("/api/inbox")).status == 401
+    assert (await owner.delete("/api/users/thu", headers=H)).status == 404
+    await owner.close()
+
+
+async def test_a_sent_reply_is_kept_even_if_the_platform_reuses_its_id(setup, monkeypatch):
+    office, llm, _, _ = setup
+    hub = office.hub
+
+    async def send(conversation: str, text: str) -> str:
+        return "same-id"
+
+    monkeypatch.setattr(hub.channels["website"], "send", send)
+    llm.responses += [text("một"), text("hai")]
+    conv = hub.push_inbound("website", {"conversation_id": "r1", "text": "a"})
+    await settle(hub)
+    hub.push_inbound("website", {"conversation_id": "r1", "text": "b"})
+    await settle(hub)
+    assert [m["text"] for m in hub.inbox.messages(conv.id)] == ["a", "một", "b", "hai"]

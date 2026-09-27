@@ -83,6 +83,11 @@ function listen(id) {
   const acc = account(id);
   acc.api.listener.on("message", (m) => {
     const d = m.data || {};
+    const c = d.content;
+    // photos, files and link cards carry an object: keep its URL, thumbnail and title
+    const attachment = c && typeof c === "object"
+      ? { type: d.msgType || "", url: c.href || c.normalUrl || null, thumb: c.thumb || null, name: c.title || null }
+      : null;
     forward(id, {
       id: String(d.msgId ?? m.msgId ?? ""),
       type: m.type === ThreadType.Group ? "group" : "user",
@@ -92,6 +97,7 @@ function listen(id) {
       // text messages carry a string; stickers, photos and files an object
       content: typeof d.content === "string" ? d.content : null,
       contentType: d.msgType || (typeof d.content === "string" ? "text" : "other"),
+      attachment,
       timestamp: Number(d.ts ?? m.serverTime ?? Date.now()),
       isSelf: Boolean(m.isSelf),
     });

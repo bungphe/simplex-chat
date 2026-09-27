@@ -125,21 +125,53 @@ class Employee:
             if word in ("admin", "ai", "forget"):
                 await msg.reply(await self.command(cid, word, rest.strip(), by=name))
                 return
-        if not text:
-            return
-        conv = self.office.hub.simplex_inbound(self, cid, name, text)
-        if self.settings.paused or conv.mode == "human":
-            return  # paused, or a person has taken this conversation over in the inbox
-        # Answer in the background so one slow reply doesn't block other chats;
-        # the per-contact lock keeps each contact's replies in order.
-        self._spawn(self._answer(msg, cid, name, text))
+        if text:
+            await self._incoming(msg, cid, name, text, [])
 
     async def _on_other(self, msg: Message[Any]) -> None:
-        if not self.settings.paused:
-            await msg.reply("Hiện mình chỉ đọc được tin nhắn văn bản. / I can only read text messages.")
+        """Images, files, voice, video and link previews: mirrored to the inbox with the
+        preview SimpleX sends inline (the full file is not downloaded)."""
+        contact = msg.chat_info["contact"]
+        cid: int = contact["contactId"]
+        name: str = contact["profile"].get("displayName") or contact["localDisplayName"]
+        content: dict[str, Any] = dict(msg.content or {})  # type: ignore[call-overload]
+        text = str(content.get("text") or "").strip()
+        kind = {"image": "image", "video": "video", "voice": "audio", "file": "file", "link": "link"}.get(
+            str(content.get("type")), "file"
+        )
+        att: dict[str, Any] = {"kind": kind}
+        preview = content.get("image") or (content.get("preview") or {}).get("image")
+        if isinstance(preview, str) and preview.startswith("data:image/") and len(preview) < 300_000:
+            att["thumb"] = preview
+        file = (msg.chat_item.get("chatItem") or {}).get("file") or {}
+        if file.get("fileName"):
+            att["name"] = str(file["fileName"])[:200]
+        if kind == "link" and isinstance(link := (content.get("preview") or {}).get("uri"), str):
+            att["url"], att["name"] = (
+                link[:2000],
+                str((content.get("preview") or {}).get("title") or link)[:200],
+            )
+        await self._incoming(msg, cid, name, text, [att])
 
-    async def _answer(self, msg: Message[Any], cid: int, name: str, text: str) -> None:
+    async def _incoming(
+        self, msg: Message[Any], cid: int, name: str, text: str, attachments: list[dict[str, Any]]
+    ) -> None:
+        from .hub import customer_text
+
+        conv, mid = self.office.hub.simplex_inbound(self, cid, name, text, attachments)
+        if self.settings.paused or conv.mode == "human":
+            return  # paused, or a person has taken this conversation over in the inbox
+        prompt = customer_text([{"text": text, "attachments": attachments}])
+        # Answer in the background so one slow reply doesn't block other chats;
+        # the per-contact lock keeps each contact's replies in order.
+        self._spawn(self._answer(msg, cid, name, prompt, conv.id, mid))
+
+    async def _answer(
+        self, msg: Message[Any], cid: int, name: str, text: str, conv_id: int, mid: int | None
+    ) -> None:
         async with self._locks[cid]:
+            if mid is not None and not self.office.hub.inbox.is_pending(conv_id, mid):
+                return  # already answered (the start-up catch-up got to it first)
             try:
                 answer = await self.agent.respond(cid, name, text)
             except Exception:
