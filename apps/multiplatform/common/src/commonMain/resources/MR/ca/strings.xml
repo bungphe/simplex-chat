@@ -2505,4 +2505,10 @@
     <string name="delete_member_messages_confirmation">Suprimir missatges</string>
     <string name="member_messages_will_be_deleted_cannot_be_undone">Els missatges de membre s\'eliminaran; això no es pot desfer!</string>
     <string name="remove_member_delete_messages_confirmation">Eliminar membre i els seus missatges</string>
+    <!-- Shop management (SimpleX AI employees) -->
+    <string name="shop_admin">Gestió de la botiga</string>
+    <string name="shop_admin_address">Adreça de l\'aplicació d\'administració</string>
+    <string name="shop_admin_address_footer">L\'adreça de l\'aplicació web d\'administració de la botiga (safata, punt de venda, estoc, lliuraments, informes), p. ex. https://admin.shop.com. Hi inicies sessió amb el teu compte de personal.</string>
+    <string name="shop_admin_open">Obre la gestió de la botiga</string>
+    <string name="shop_admin_chat_footer">Al xat amb l\'empleat d\'IA de la botiga, escriu / per veure les teves ordres. Primer enllaça el xat amb el teu compte de personal: a l\'aplicació d\'administració obre el teu compte, obtén un codi d\'enllaç i envia /link amb el codi.</string>
 </resources>

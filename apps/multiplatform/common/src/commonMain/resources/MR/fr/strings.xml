@@ -2445,4 +2445,10 @@
     <string name="share_group_profile_via_link_alert_text">Le lien sera court, et le profil de groupe sera partagé via le lien.</string>
     <string name="the_sender_will_not_be_notified">L\'expéditeur n\'en sera PAS informé.</string>
     <string name="this_setting_is_for_your_current_profile">Ce réglage est pour votre profil actuel</string>
+    <!-- Shop management (SimpleX AI employees) -->
+    <string name="shop_admin">Gestion de la boutique</string>
+    <string name="shop_admin_address">Adresse de l\'application d\'administration</string>
+    <string name="shop_admin_address_footer">L\'adresse de l\'application web d\'administration de votre boutique (messagerie, caisse, stock, livraisons, rapports), par ex. https://admin.shop.com. Vous vous y connectez avec votre compte employé.</string>
+    <string name="shop_admin_open">Ouvrir la gestion de la boutique</string>
+    <string name="shop_admin_chat_footer">Dans la discussion avec l\'employé IA de la boutique, tapez / pour voir vos commandes. Liez d\'abord la discussion à votre compte employé : dans l\'application d\'administration, ouvrez votre compte, obtenez un code de liaison et envoyez /link avec le code.</string>
 </resources>

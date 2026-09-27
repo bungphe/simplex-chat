@@ -2905,4 +2905,10 @@
     <string name="relay_status_rejected">Abgelehnt</string>
     <string name="member_info_status">Status</string>
     <string name="member_info_relay_status_rejected_by_operator">Vom Relais-Betreiber abgelehnt</string>
+    <!-- Shop management (SimpleX AI employees) -->
+    <string name="shop_admin">Shop-Verwaltung</string>
+    <string name="shop_admin_address">Adresse der Admin-App</string>
+    <string name="shop_admin_address_footer">Die Adresse der Admin-Web-App deines Shops (Posteingang, Kasse, Lager, Lieferungen, Berichte), z. B. https://admin.shop.com. Dort meldest du dich mit deinem Mitarbeiterkonto an.</string>
+    <string name="shop_admin_open">Shop-Verwaltung öffnen</string>
+    <string name="shop_admin_chat_footer">Tippe im Chat mit dem KI-Mitarbeiter des Shops /, um deine Befehle zu sehen. Verknüpfe den Chat zuerst mit deinem Mitarbeiterkonto: Öffne in der Admin-App dein Konto, hole dir einen Verknüpfungscode und sende /link mit dem Code.</string>
 </resources>

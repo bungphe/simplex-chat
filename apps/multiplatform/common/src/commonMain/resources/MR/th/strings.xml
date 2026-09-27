@@ -1327,4 +1327,10 @@
     <string name="in_reply_to">ในการตอบกลับถึง</string>
     <string name="no_history">ไม่มีประวัติ</string>
     <string name="conn_event_ratchet_sync_ok">encryptionใช้ได้</string>
+    <!-- Shop management (SimpleX AI employees) -->
+    <string name="shop_admin">จัดการร้านค้า</string>
+    <string name="shop_admin_address">ที่อยู่แอปผู้ดูแล</string>
+    <string name="shop_admin_address_footer">ที่อยู่ของเว็บแอปผู้ดูแลร้านของคุณ (กล่องข้อความ, ขายหน้าร้าน, สต็อก, จัดส่ง, รายงาน) เช่น https://admin.shop.com ลงชื่อเข้าใช้ด้วยบัญชีพนักงานของคุณ</string>
+    <string name="shop_admin_open">เปิดการจัดการร้านค้า</string>
+    <string name="shop_admin_chat_footer">ในแชทกับพนักงาน AI ของร้าน พิมพ์ / เพื่อดูคำสั่งของคุณ ก่อนอื่นให้เชื่อมแชทกับบัญชีพนักงานของคุณ: ในแอปผู้ดูแลให้เปิดบัญชีของคุณ รับรหัสเชื่อมต่อ แล้วส่ง /link พร้อมรหัส</string>
 </resources>

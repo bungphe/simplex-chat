@@ -212,6 +212,8 @@ class Employee:
             for chunk in chunks[1:]:
                 await self.bot.api.api_send_text_message(["direct", cid], chunk)
             self.office.hub.simplex_outbound(self, cid, answer, "ai")
+        # the menu in the customer's language, once it is known
+        self._spawn(self.staff.localize_menu(cid))
 
     async def notify_admins(self, text: str) -> int:
         sent = 0

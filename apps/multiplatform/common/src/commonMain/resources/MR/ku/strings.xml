@@ -833,4 +833,10 @@
     <string name="restart_chat_button">Siḧbetê ji nû ve veke</string>
     <string name="migrate_from_device_stopping_chat">Siḧbet tê sekinandin</string>
     <string name="migrate_from_device_start_chat">Siḧbetê bide destpêkirin</string>
+    <!-- Shop management (SimpleX AI employees) -->
+    <string name="shop_admin">Rêveberiya dikanê</string>
+    <string name="shop_admin_address">Navnîşana sepana rêveberiyê</string>
+    <string name="shop_admin_address_footer">Navnîşana sepana webê ya rêveberiya dikana te (qutiya peyaman, firotin, stok, gihandin, rapor), wek https://admin.shop.com. Tu li wir bi hesabê karmendiyê xwe têkevî.</string>
+    <string name="shop_admin_open">Rêveberiya dikanê veke</string>
+    <string name="shop_admin_chat_footer">Di sohbeta bi karmendê AI yê dikanê re, / binivîse da ku fermanên xwe bibînî. Pêşî sohbetê bi hesabê karmendiyê xwe ve girê bide: di sepana rêveberiyê de hesabê xwe veke, kodek girêdanê bistîne û /link bi kodê re bişîne.</string>
 </resources>

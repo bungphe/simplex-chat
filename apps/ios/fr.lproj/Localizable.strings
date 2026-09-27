@@ -5672,3 +5672,17 @@ server test failure */
 /* No comment provided by engineer. */
 "Your SimpleX address" = "Votre adresse SimpleX";
 
+/* Shop management (SimpleX AI employees) */
+"Shop management" = "Gestion de la boutique";
+
+/* Shop management (SimpleX AI employees) */
+"Admin app address" = "Adresse de l'application d'administration";
+
+/* Shop management (SimpleX AI employees) */
+"The address of your shop's admin web app (inbox, point of sale, stock, deliveries, reports), e.g. https://admin.shop.com. You sign in there with your staff account." = "L'adresse de l'application web d'administration de votre boutique (messagerie, caisse, stock, livraisons, rapports), par ex. https://admin.shop.com. Vous vous y connectez avec votre compte employé.";
+
+/* Shop management (SimpleX AI employees) */
+"Open shop management" = "Ouvrir la gestion de la boutique";
+
+/* Shop management (SimpleX AI employees) */
+"In the chat with the shop's AI employee, type / to see your commands. First link your chat to your staff account: in the admin app, open your account, get a link code and send /link with the code." = "Dans la discussion avec l'employé IA de la boutique, tapez / pour voir vos commandes. Liez d'abord la discussion à votre compte employé : dans l'application d'administration, ouvrez votre compte, obtenez un code de liaison et envoyez /link avec le code.";

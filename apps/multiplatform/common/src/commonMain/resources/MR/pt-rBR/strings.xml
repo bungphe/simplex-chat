@@ -2390,4 +2390,10 @@
     <string name="accept_pending_member_alert_title">Aceitar membro</string>
     <string name="member_criteria_all">todos</string>
     <string name="member_support">Conversas com membros</string>
+    <!-- Shop management (SimpleX AI employees) -->
+    <string name="shop_admin">Gestão da loja</string>
+    <string name="shop_admin_address">Endereço do app de administração</string>
+    <string name="shop_admin_address_footer">O endereço do app web de administração da sua loja (caixa de entrada, ponto de venda, estoque, entregas, relatórios), ex.: https://admin.shop.com. Lá você entra com sua conta de funcionário.</string>
+    <string name="shop_admin_open">Abrir gestão da loja</string>
+    <string name="shop_admin_chat_footer">Na conversa com o funcionário de IA da loja, digite / para ver seus comandos. Primeiro vincule a conversa à sua conta de funcionário: no app de administração abra sua conta, pegue um código de vínculo e envie /link com o código.</string>
 </resources>

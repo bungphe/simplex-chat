@@ -2521,4 +2521,10 @@
     <string name="info_row_connection_failed">Η σύνδεση απέτυχε</string>
     <string name="member_info_member_failed">απέτυχε</string>
     <string name="down_migration_warning_chat_relays">Αν έχετε συμμετάσχει ή δημιουργήσει κανάλια, θα σταματήσουν να λειτουργούν μόνιμα.</string>
+    <!-- Shop management (SimpleX AI employees) -->
+    <string name="shop_admin">Διαχείριση καταστήματος</string>
+    <string name="shop_admin_address">Διεύθυνση εφαρμογής διαχείρισης</string>
+    <string name="shop_admin_address_footer">Η διεύθυνση της διαδικτυακής εφαρμογής διαχείρισης του καταστήματός σας (εισερχόμενα, ταμείο, απόθεμα, παραδόσεις, αναφορές), π.χ. https://admin.shop.com. Συνδέεστε εκεί με τον λογαριασμό υπαλλήλου σας.</string>
+    <string name="shop_admin_open">Άνοιγμα διαχείρισης καταστήματος</string>
+    <string name="shop_admin_chat_footer">Στη συνομιλία με τον υπάλληλο AI του καταστήματος, πληκτρολογήστε / για να δείτε τις εντολές σας. Πρώτα συνδέστε τη συνομιλία με τον λογαριασμό υπαλλήλου σας: στην εφαρμογή διαχείρισης ανοίξτε τον λογαριασμό σας, πάρτε έναν κωδικό σύνδεσης και στείλτε /link με τον κωδικό.</string>
 </resources>

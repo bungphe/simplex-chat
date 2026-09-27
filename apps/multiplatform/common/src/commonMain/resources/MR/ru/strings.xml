@@ -2879,4 +2879,10 @@
     <string name="add_relays_title">Добавить релеи</string>
     <string name="button_cancel_and_delete_channel">Отменить и удалить канал</string>
     <string name="close_behavior_dialog_close">Закрыть приложение</string>
+    <!-- Shop management (SimpleX AI employees) -->
+    <string name="shop_admin">Управление магазином</string>
+    <string name="shop_admin_address">Адрес приложения управления</string>
+    <string name="shop_admin_address_footer">Адрес веб-приложения управления вашим магазином (входящие, касса, склад, доставка, отчёты), например https://admin.shop.com. Там вы входите под своей учётной записью сотрудника.</string>
+    <string name="shop_admin_open">Открыть управление магазином</string>
+    <string name="shop_admin_chat_footer">В чате с ИИ-сотрудником магазина введите /, чтобы увидеть свои команды. Сначала привяжите чат к своей учётной записи сотрудника: в приложении управления откройте свой аккаунт, получите код привязки и отправьте /link с кодом.</string>
 </resources>

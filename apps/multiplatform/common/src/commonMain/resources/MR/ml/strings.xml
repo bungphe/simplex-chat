@@ -415,4 +415,10 @@
     <string name="feature_offered_item">%s വാഗ്ദാനം ചെയ്തു</string>
     <string name="search_verb">തിരയുക</string>
     <string name="la_mode_off">ഓഫാണ്</string>
+    <!-- Shop management (SimpleX AI employees) -->
+    <string name="shop_admin">കട മാനേജ്മെന്റ്</string>
+    <string name="shop_admin_address">അഡ്മിൻ ആപ്പ് വിലാസം</string>
+    <string name="shop_admin_address_footer">നിങ്ങളുടെ കടയുടെ അഡ്മിൻ വെബ് ആപ്പിന്റെ വിലാസം (ഇൻബോക്സ്, വിൽപ്പന, സ്റ്റോക്ക്, ഡെലിവറി, റിപ്പോർട്ടുകൾ), ഉദാ. https://admin.shop.com. അവിടെ നിങ്ങളുടെ സ്റ്റാഫ് അക്കൗണ്ട് ഉപയോഗിച്ച് സൈൻ ഇൻ ചെയ്യുക.</string>
+    <string name="shop_admin_open">കട മാനേജ്മെന്റ് തുറക്കുക</string>
+    <string name="shop_admin_chat_footer">കടയുടെ AI ജീവനക്കാരനുമായുള്ള ചാറ്റിൽ നിങ്ങളുടെ കമാൻഡുകൾ കാണാൻ / ടൈപ്പ് ചെയ്യുക. ആദ്യം ചാറ്റ് നിങ്ങളുടെ സ്റ്റാഫ് അക്കൗണ്ടുമായി ബന്ധിപ്പിക്കുക: അഡ്മിൻ ആപ്പിൽ അക്കൗണ്ട് തുറന്ന് ലിങ്ക് കോഡ് എടുത്ത് കോഡിനൊപ്പം /link അയയ്ക്കുക.</string>
 </resources>

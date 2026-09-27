@@ -7040,3 +7040,17 @@ server test failure */
 /* No comment provided by engineer. */
 "Your SimpleX address" = "Mi dirección SimpleX";
 
+/* Shop management (SimpleX AI employees) */
+"Shop management" = "Gestión de la tienda";
+
+/* Shop management (SimpleX AI employees) */
+"Admin app address" = "Dirección de la aplicación de administración";
+
+/* Shop management (SimpleX AI employees) */
+"The address of your shop's admin web app (inbox, point of sale, stock, deliveries, reports), e.g. https://admin.shop.com. You sign in there with your staff account." = "La dirección de la aplicación web de administración de tu tienda (bandeja, punto de venta, stock, entregas, informes), p. ej. https://admin.shop.com. Allí inicias sesión con tu cuenta de empleado.";
+
+/* Shop management (SimpleX AI employees) */
+"Open shop management" = "Abrir gestión de la tienda";
+
+/* Shop management (SimpleX AI employees) */
+"In the chat with the shop's AI employee, type / to see your commands. First link your chat to your staff account: in the admin app, open your account, get a link code and send /link with the code." = "En el chat con el empleado de IA de la tienda, escribe / para ver tus comandos. Primero vincula el chat a tu cuenta de empleado: en la aplicación de administración abre tu cuenta, obtén un código de vinculación y envía /link con el código.";

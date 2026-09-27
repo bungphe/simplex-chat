@@ -2058,4 +2058,10 @@
     <string name="appearance_bars_blur_radius">ぼかし</string>
     <string name="chat_list_contacts">連絡先</string>
     <string name="chat_list_favorites">お気に入り</string>
+    <!-- Shop management (SimpleX AI employees) -->
+    <string name="shop_admin">ショップ管理</string>
+    <string name="shop_admin_address">管理アプリのアドレス</string>
+    <string name="shop_admin_address_footer">ショップの管理ウェブアプリのアドレス（受信箱、POS、在庫、配送、レポート）。例: https://admin.shop.com。スタッフアカウントでサインインします。</string>
+    <string name="shop_admin_open">ショップ管理を開く</string>
+    <string name="shop_admin_chat_footer">ショップのAI従業員とのチャットで / を入力すると、使えるコマンドが表示されます。まずチャットをスタッフアカウントに連携してください：管理アプリで自分のアカウントを開き、連携コードを取得して、/link とコードを送信します。</string>
 </resources>

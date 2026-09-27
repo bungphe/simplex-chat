@@ -2194,4 +2194,10 @@
     <string name="migrate_from_device_you_must_not_start_database_on_two_device"><![CDATA[你<b>不能</b>在兩部裝置上使用同一資料庫。]]></string>
     <string name="migrate_from_device_starting_chat_on_multiple_devices_unsupported">警告：不支援在多個裝置上同時聊天，否則會導致訊息傳送失敗</string>
     <string name="chat_archive">或匯入封存檔案</string>
+    <!-- Shop management (SimpleX AI employees) -->
+    <string name="shop_admin">商店管理</string>
+    <string name="shop_admin_address">管理應用程式網址</string>
+    <string name="shop_admin_address_footer">商店管理網頁應用程式的網址（收件匣、收銀、庫存、配送、報表），例如 https://admin.shop.com。使用員工帳號登入。</string>
+    <string name="shop_admin_open">開啟商店管理</string>
+    <string name="shop_admin_chat_footer">在與商店 AI 員工的聊天中輸入 / 查看你的指令。請先將聊天連結到你的員工帳號：在管理應用程式中開啟你的帳號，取得連結碼，然後傳送 /link 加上連結碼。</string>
 </resources>

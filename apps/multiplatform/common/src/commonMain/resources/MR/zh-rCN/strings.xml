@@ -2819,4 +2819,10 @@
     <string name="relay_status_rejected">被拒绝</string>
     <string name="member_info_relay_status_rejected_by_operator">被中继运营方拒绝</string>
     <string name="member_info_status">状态</string>
+    <!-- Shop management (SimpleX AI employees) -->
+    <string name="shop_admin">店铺管理</string>
+    <string name="shop_admin_address">管理应用地址</string>
+    <string name="shop_admin_address_footer">店铺管理网页应用的地址（收件箱、收银、库存、配送、报表），例如 https://admin.shop.com。使用员工账号登录。</string>
+    <string name="shop_admin_open">打开店铺管理</string>
+    <string name="shop_admin_chat_footer">在与店铺 AI 员工的聊天中输入 / 查看你的命令。请先将聊天关联到你的员工账号：在管理应用中打开你的账号，获取关联码，然后发送 /link 加上关联码。</string>
 </resources>

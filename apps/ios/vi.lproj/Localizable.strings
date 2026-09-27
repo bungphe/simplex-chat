@@ -1,0 +1,14 @@
+/* Shop management (SimpleX AI employees) */
+"Shop management" = "Quản lý cửa hàng";
+
+/* Shop management (SimpleX AI employees) */
+"Admin app address" = "Địa chỉ trang quản trị";
+
+/* Shop management (SimpleX AI employees) */
+"The address of your shop's admin web app (inbox, point of sale, stock, deliveries, reports), e.g. https://admin.shop.com. You sign in there with your staff account." = "Địa chỉ trang quản trị của cửa hàng (hộp thư, bán hàng, kho, giao hàng, báo cáo), vd. https://admin.shop.vn. Bạn đăng nhập bằng tài khoản nhân viên.";
+
+/* Shop management (SimpleX AI employees) */
+"Open shop management" = "Mở quản lý cửa hàng";
+
+/* Shop management (SimpleX AI employees) */
+"In the chat with the shop's AI employee, type / to see your commands. First link your chat to your staff account: in the admin app, open your account, get a link code and send /link with the code." = "Trong chat với nhân viên AI của cửa hàng, gõ / để xem các lệnh của bạn. Trước hết hãy liên kết chat với tài khoản nhân viên: trong trang quản trị, mở tài khoản của bạn, lấy mã liên kết rồi gửi /link kèm mã.";

@@ -2827,4 +2827,10 @@
     <string name="tray_tooltip">SimpleX</string>
     <string name="tray_tooltip_unread">SimpleX — %d no leído</string>
     <string name="last_active_relay_warning">Este es el último servidor activo. Si lo eliminas los mensajes no llegarán a los suscriptores.</string>
+    <!-- Shop management (SimpleX AI employees) -->
+    <string name="shop_admin">Gestión de la tienda</string>
+    <string name="shop_admin_address">Dirección de la aplicación de administración</string>
+    <string name="shop_admin_address_footer">La dirección de la aplicación web de administración de tu tienda (bandeja, punto de venta, stock, entregas, informes), p. ej. https://admin.shop.com. Allí inicias sesión con tu cuenta de empleado.</string>
+    <string name="shop_admin_open">Abrir gestión de la tienda</string>
+    <string name="shop_admin_chat_footer">En el chat con el empleado de IA de la tienda, escribe / para ver tus comandos. Primero vincula el chat a tu cuenta de empleado: en la aplicación de administración abre tu cuenta, obtén un código de vinculación y envía /link con el código.</string>
 </resources>

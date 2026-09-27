@@ -3346,3 +3346,17 @@ server test failure */
 /* No comment provided by engineer. */
 "Your SimpleX address" = "SimpleX-osoitteesi";
 
+/* Shop management (SimpleX AI employees) */
+"Shop management" = "Kaupan hallinta";
+
+/* Shop management (SimpleX AI employees) */
+"Admin app address" = "Hallintasovelluksen osoite";
+
+/* Shop management (SimpleX AI employees) */
+"The address of your shop's admin web app (inbox, point of sale, stock, deliveries, reports), e.g. https://admin.shop.com. You sign in there with your staff account." = "Kauppasi hallinnan verkkosovelluksen osoite (saapuneet, kassa, varasto, toimitukset, raportit), esim. https://admin.shop.com. Kirjaudut sinne henkilökuntatililläsi.";
+
+/* Shop management (SimpleX AI employees) */
+"Open shop management" = "Avaa kaupan hallinta";
+
+/* Shop management (SimpleX AI employees) */
+"In the chat with the shop's AI employee, type / to see your commands. First link your chat to your staff account: in the admin app, open your account, get a link code and send /link with the code." = "Kirjoita kaupan tekoälytyöntekijän kanssa käytävään keskusteluun /, niin näet komentosi. Yhdistä keskustelu ensin henkilökuntatiliisi: avaa tilisi hallintasovelluksessa, hae yhdistämiskoodi ja lähetä /link ja koodi.";

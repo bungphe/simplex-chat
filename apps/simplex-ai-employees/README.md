@@ -653,6 +653,12 @@ nhắn của nhân viên AI (vd. `/'invoice DH00012'`) chạm vào là gửi.
 | `/staff` | Gọi nhân viên: hội thoại chuyển sang người thật, gắn nhãn *cần nhân viên*, quản trị viên được báo |
 | `/help`, `/forget` | Hướng dẫn; xoá lịch sử trò chuyện |
 
+**Nhiều ngôn ngữ.** Khi đã biết ngôn ngữ của khách (tự nhận ra, hoặc nhân viên chọn quốc gia), menu lệnh của khách đó
+đổi sang ngôn ngữ của họ (17 ngôn ngữ: Việt, Anh, Trung, Nhật, Hàn, Thái, Indonesia, Mã Lai, Khmer, Lào, Pháp, Đức, Tây
+Ban Nha, Bồ Đào Nha, Nga, Ả Rập, Hindi; ngôn ngữ khác thấy tiếng Anh), và câu trả lời của các lệnh được dịch sang ngôn
+ngữ đó. Giá, mã đơn, mã sản phẩm, đường dẫn và lệnh chạm được giữ nguyên khi dịch; đường dẫn đăng nhập của `/shop`
+không bao giờ gửi qua model dịch.
+
 **Quản trị viên** (sau `/admin <mã>`) thấy thêm menu *Quản lý cửa hàng* (chỉ riêng họ thấy): doanh thu hôm nay,
 đơn đang mở, tồn kho, hàng sắp hết, yêu cầu chờ duyệt, cấu hình nhân viên AI (xem bảng lệnh ở *Quản trị trong chat*).
 Quản trị viên cũng nhận thông báo đơn web mới, khách lên VIP, khách gọi nhân viên qua SimpleX.
@@ -684,7 +690,9 @@ trực tiếp, không lưu trên máy. Cần HTTPS (reverse proxy) để trình 
 **3. Màn hình "Quản lý cửa hàng" trong ứng dụng SimpleX** (bản ứng dụng build từ repo này: `apps/multiplatform` cho
 Android và máy tính, `apps/ios` cho iPhone). Cài đặt → *Quản lý cửa hàng*: nhập địa chỉ trang quản trị (https, hoặc
 http trong mạng nội bộ), rồi mở ngay trong SimpleX (Android, iPhone: trình duyệt nhúng giữ phiên đăng nhập; máy tính:
-mở trình duyệt). Trong thông tin liên hệ của một bot (nhân viên AI) cũng có nút *Quản lý cửa hàng*. Liên kết tới trang
+mở trình duyệt). Trong thông tin liên hệ của một bot (nhân viên AI) cũng có nút *Quản lý cửa hàng*. Màn hình này có
+chữ theo ngôn ngữ của ứng dụng: mọi ngôn ngữ ứng dụng SimpleX có (39 trên Android và máy tính, 17 trên iPhone, và thêm
+tiếng Việt cho iPhone). Liên kết tới trang
 khác (bản đồ, link khách gửi), hoá đơn in và tệp CSV mở bằng trình duyệt ngoài. Ứng dụng SimpleX gốc từ cửa hàng ứng
 dụng không có màn hình này, nhưng vẫn dùng được cách 1 và 2.
 

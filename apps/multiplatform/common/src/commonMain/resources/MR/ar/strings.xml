@@ -2810,4 +2810,10 @@
     <string name="relay_status_rejected">رُفض</string>
     <string name="member_info_relay_status_rejected_by_operator">رُفض بواسطة مُشغل المُرحل</string>
     <string name="member_info_status">الحالة</string>
+    <!-- Shop management (SimpleX AI employees) -->
+    <string name="shop_admin">إدارة المتجر</string>
+    <string name="shop_admin_address">عنوان تطبيق الإدارة</string>
+    <string name="shop_admin_address_footer">عنوان تطبيق الويب لإدارة متجرك (صندوق الرسائل، نقطة البيع، المخزون، التوصيل، التقارير)، مثل https://admin.shop.com. تسجّل الدخول هناك بحساب الموظف الخاص بك.</string>
+    <string name="shop_admin_open">فتح إدارة المتجر</string>
+    <string name="shop_admin_chat_footer">في المحادثة مع موظف الذكاء الاصطناعي للمتجر، اكتب / لرؤية أوامرك. اربط محادثتك أولاً بحساب الموظف: في تطبيق الإدارة افتح حسابك واحصل على رمز الربط، ثم أرسل /link مع الرمز.</string>
 </resources>

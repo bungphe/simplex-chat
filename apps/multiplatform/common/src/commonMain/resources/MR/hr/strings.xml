@@ -1483,4 +1483,10 @@
     <string name="migrate_from_another_device">Migriraj sa drugog uređaja</string>
     <string name="only_you_can_send_voice">Samo vi možete slati glasovne poruke</string>
     <string name="only_your_contact_can_add_message_reactions">Samo vi možete stavljati reakcije na poruke.</string>
+    <!-- Shop management (SimpleX AI employees) -->
+    <string name="shop_admin">Upravljanje trgovinom</string>
+    <string name="shop_admin_address">Adresa administracijske aplikacije</string>
+    <string name="shop_admin_address_footer">Adresa web aplikacije za upravljanje vašom trgovinom (pristigla pošta, blagajna, zalihe, dostave, izvješća), npr. https://admin.shop.com. Tamo se prijavljujete svojim računom zaposlenika.</string>
+    <string name="shop_admin_open">Otvori upravljanje trgovinom</string>
+    <string name="shop_admin_chat_footer">U razgovoru s AI zaposlenikom trgovine upišite / da biste vidjeli svoje naredbe. Najprije povežite razgovor sa svojim računom zaposlenika: u administracijskoj aplikaciji otvorite svoj račun, uzmite kod za povezivanje i pošaljite /link s kodom.</string>
 </resources>

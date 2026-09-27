@@ -2511,4 +2511,10 @@
     <string name="delete_member_messages_confirmation">Hapus pesan</string>
     <string name="member_messages_will_be_deleted_cannot_be_undone">Pesan anggota akan dihapus - ini tidak dapat dibatalkan!</string>
     <string name="remove_member_delete_messages_confirmation">Hapus pesan</string>
+    <!-- Shop management (SimpleX AI employees) -->
+    <string name="shop_admin">Pengelolaan toko</string>
+    <string name="shop_admin_address">Alamat aplikasi admin</string>
+    <string name="shop_admin_address_footer">Alamat aplikasi web admin toko Anda (kotak masuk, kasir, stok, pengiriman, laporan), mis. https://admin.shop.com. Anda masuk di sana dengan akun staf Anda.</string>
+    <string name="shop_admin_open">Buka pengelolaan toko</string>
+    <string name="shop_admin_chat_footer">Dalam obrolan dengan karyawan AI toko, ketik / untuk melihat perintah Anda. Hubungkan dulu obrolan ke akun staf Anda: di aplikasi admin buka akun Anda, ambil kode tautan, lalu kirim /link beserta kodenya.</string>
 </resources>

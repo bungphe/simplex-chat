@@ -285,4 +285,10 @@
     <string name="group_member_role_member">सदस्य</string>
     <string name="search_verb">खोजें</string>
     <string name="la_mode_off">बंद है</string>
+    <!-- Shop management (SimpleX AI employees) -->
+    <string name="shop_admin">दुकान प्रबंधन</string>
+    <string name="shop_admin_address">एडमिन ऐप का पता</string>
+    <string name="shop_admin_address_footer">आपकी दुकान के एडमिन वेब ऐप का पता (इनबॉक्स, बिक्री, स्टॉक, डिलीवरी, रिपोर्ट), जैसे https://admin.shop.com। वहाँ आप अपने स्टाफ़ खाते से साइन इन करते हैं।</string>
+    <string name="shop_admin_open">दुकान प्रबंधन खोलें</string>
+    <string name="shop_admin_chat_footer">दुकान के AI कर्मचारी के साथ चैट में अपने कमांड देखने के लिए / लिखें। पहले चैट को अपने स्टाफ़ खाते से जोड़ें: एडमिन ऐप में अपना खाता खोलें, लिंक कोड लें और कोड के साथ /link भेजें।</string>
 </resources>

@@ -215,6 +215,9 @@ _PRICE = re.compile(
     re.IGNORECASE,
 )
 _CODE = re.compile(r"\b[A-Z]{1,5}-\d+[A-Za-z0-9]*(?:\s(?:Pro|Plus|Max|Mini|Lite))?\b")
+# links, order/document numbers (DH00012, VIP000042) and commands the SimpleX apps make
+# tappable (/orders, /'invoice DH00012') must reach the customer unchanged too
+_KEEP = re.compile(r"https?://\S+|/'[^'\n]+'|(?<![\w/:.])/[a-z][a-z_]*\b|\b[A-Z]{2,4}\d{4,}\b")
 _SLOT = re.compile(r"⟦\s*P\s*(\d+)\s*⟧")
 
 
@@ -234,6 +237,7 @@ def protect(text: str, target: str) -> tuple[str, list[str]]:
         values.append(value)
         return f"⟦P{len(values) - 1}⟧"
 
+    text = _KEEP.sub(lambda m: keep(m.group(0)), text)
     text = _PRICE.sub(lambda m: keep(_vnd(m.group(0), target)), text)
     text = _CODE.sub(lambda m: keep(m.group(0)), text)
     return text, values

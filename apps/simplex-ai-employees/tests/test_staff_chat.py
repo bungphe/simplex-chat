@@ -199,3 +199,39 @@ async def test_linking_from_the_admin_web_ui(office):
         assert (await client.delete(f"/api/me/simplex/{linked['key']}", headers=H)).status == 404
     finally:
         await client.close()
+
+
+async def test_the_customer_menu_and_replies_in_the_customer_language(office):
+    import re
+
+    office, llm, _p, chat, _users = office
+    sales = office.employees["sales"]
+    sales.state.set_language(50, "en")
+
+    def translate(params):
+        content = params["messages"][-1]["content"]
+        content = content if isinstance(content, str) else " ".join(c.get("text", "") for c in content)
+        return text("Your orders: " + " ".join(re.findall(r"⟦P\d+⟧", content)))
+
+    _conv, contact = sales.menu._contact(50, "John")
+    order = office.inventory.create_order([{"sku": "SOFA-01", "qty": 1}], contact_id=contact["id"])
+    llm.responses.append(translate)
+    reply = await sales.menu.handle(50, "orders", "", "John")
+    # prices, order numbers and the tappable command survive the translation unchanged
+    assert (
+        reply.startswith("Your orders:") and order["code"] in reply and f"/'invoice {order['code']}'" in reply
+    )
+    assert "10,000,000 VND" in reply
+
+    # the menu follows the customer's language, set once per language
+    await sales.staff.localize_menu(50)
+    labels = [c["label"] for c in chat.prefs[50]["commands"]]
+    assert labels[0] == "🛋 Products & prices" and labels[-1] == "Delete chat history"
+    chat.prefs.clear()
+    await sales.staff.localize_menu(50)
+    assert 50 not in chat.prefs
+    await sales.staff.localize_menu(51)  # Vietnamese (or unknown): the profile's own menu
+    assert 51 not in chat.prefs
+    sales.state.set_language(50, "ja")
+    await sales.staff.localize_menu(50)
+    assert chat.prefs[50]["commands"][1]["label"] == "🎁 お得なセット"

@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 from .inventory import InventoryError, order_code
 from .loyalty import vip_card
+from .menu_i18n import MENU_TEXT
 
 if TYPE_CHECKING:
     from .employee import Employee
@@ -27,16 +28,41 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 # keyword -> the menu entry; `params` puts "/keyword <params>" in the message field to fill in
-CUSTOMER_MENU: list[dict[str, Any]] = [
-    {"type": "command", "keyword": "products", "label": "🛋 Tìm sản phẩm & giá", "params": "<tên hoặc mã>"},
-    {"type": "command", "keyword": "combos", "label": "🎁 Combo tiết kiệm"},
-    {"type": "command", "keyword": "orders", "label": "📦 Đơn hàng của tôi"},
-    {"type": "command", "keyword": "invoice", "label": "🧾 Nhận hoá đơn", "params": "<mã đơn>"},
-    {"type": "command", "keyword": "points", "label": "⭐ Điểm tích luỹ & thẻ VIP"},
-    {"type": "command", "keyword": "shop", "label": "🌐 Đăng nhập website"},
-    {"type": "command", "keyword": "staff", "label": "🙋 Gặp nhân viên"},
-    {"type": "command", "keyword": "forget", "label": "Xoá lịch sử trò chuyện / Forget me"},
-]
+ICONS = {
+    "products": "🛋",
+    "combos": "🎁",
+    "orders": "📦",
+    "invoice": "🧾",
+    "points": "⭐",
+    "shop": "🌐",
+    "staff": "🙋",
+}
+
+
+def customer_menu(code: str | None = "vi") -> list[dict[str, Any]]:
+    """The customers' menu in their language (English for languages without a translation)."""
+    text = MENU_TEXT.get(code or "vi") or MENU_TEXT["en"]
+    menu: list[dict[str, Any]] = []
+    for keyword in ("products", "combos", "orders", "invoice", "points", "shop", "staff"):
+        entry: dict[str, Any] = {
+            "type": "command",
+            "keyword": keyword,
+            "label": f"{ICONS[keyword]} {text[keyword]}",
+        }
+        if f"{keyword}@" in text:
+            entry["params"] = text[f"{keyword}@"]
+        menu.append(entry)
+    menu.append(
+        {
+            "type": "command",
+            "keyword": "forget",
+            "label": f"{text['forget']} / Forget me" if text is not MENU_TEXT["en"] else text["forget"],
+        }
+    )
+    return menu
+
+
+CUSTOMER_MENU: list[dict[str, Any]] = customer_menu("vi")
 ADMIN_MENU: dict[str, Any] = {
     "type": "menu",
     "label": "🔧 Quản lý cửa hàng",
@@ -89,9 +115,13 @@ class ChatMenu:
     async def handle(self, cid: int, word: str, args: str, name: str) -> str:
         conv, contact = self._contact(cid, name)
         try:
-            return await getattr(self, f"cmd_{word}")(conv, contact, args.strip())
+            reply = await getattr(self, f"cmd_{word}")(conv, contact, args.strip())
         except InventoryError as e:
-            return str(e)
+            reply = str(e)
+        if word == "shop":
+            return reply  # translated there: the login link never goes to a model
+        # in the customer's language (prices, codes, links and tappable commands kept as they are)
+        return await self.employee.agent.for_contact(cid, reply)
 
     async def cmd_help(self, conv: Any, contact: dict[str, Any], args: str) -> str:
         return (
@@ -195,13 +225,18 @@ class ChatMenu:
 
     async def cmd_shop(self, conv: Any, contact: dict[str, Any], args: str) -> str:
         shop = self.office.storefront
+        agent = self.employee.agent
         if shop is None or not shop.public_url:
-            return "Cửa hàng chưa mở website. Quý khách cứ nhắn tại đây để đặt hàng nhé."
+            return await agent.for_contact(
+                conv.contact_id, "Cửa hàng chưa mở website. Quý khách cứ nhắn tại đây để đặt hàng nhé."
+            )
         link = shop.magic_link(int(contact["id"]))
-        return (
-            f"🌐 Đăng nhập website {shop.public_url} bằng đường dẫn riêng này (dùng 1 lần, trong 10 phút):\n{link}\n"
-            "Đừng chuyển đường dẫn này cho người khác."
+        intro = await agent.for_contact(
+            conv.contact_id,
+            f"🌐 Đăng nhập website {shop.public_url} bằng đường dẫn riêng dưới đây (dùng 1 lần, trong 10 phút). "
+            "Đừng chuyển đường dẫn này cho người khác.",
         )
+        return f"{intro}\n{link}"
 
     async def cmd_staff(self, conv: Any, contact: dict[str, Any], args: str) -> str:
         hub = self.office.hub

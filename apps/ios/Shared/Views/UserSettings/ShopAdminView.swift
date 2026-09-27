@@ -71,7 +71,7 @@ struct ShopAdminSettings: View {
                     }
                 }
             } footer: {
-                Text("In the chat with the shop's AI employee, type / for your commands. Link your chat to your staff account first: in the admin app, Account → Link SimpleX, then send /link and the code.")
+                Text("In the chat with the shop's AI employee, type / to see your commands. First link your chat to your staff account: in the admin app, open your account, get a link code and send /link with the code.")
                     .foregroundColor(theme.colors.secondary)
             }
         }

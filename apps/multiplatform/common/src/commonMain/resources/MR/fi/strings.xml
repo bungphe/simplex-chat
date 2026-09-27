@@ -1500,4 +1500,10 @@
     <string name="desktop_incompatible_version">Yhteensopimaton versio</string>
     <string name="new_mobile_device">Uusi mobiililaite</string>
     <string name="this_device">Tämä laite</string>
+    <!-- Shop management (SimpleX AI employees) -->
+    <string name="shop_admin">Kaupan hallinta</string>
+    <string name="shop_admin_address">Hallintasovelluksen osoite</string>
+    <string name="shop_admin_address_footer">Kauppasi hallinnan verkkosovelluksen osoite (saapuneet, kassa, varasto, toimitukset, raportit), esim. https://admin.shop.com. Kirjaudut sinne henkilökuntatililläsi.</string>
+    <string name="shop_admin_open">Avaa kaupan hallinta</string>
+    <string name="shop_admin_chat_footer">Kirjoita kaupan tekoälytyöntekijän kanssa käytävään keskusteluun /, niin näet komentosi. Yhdistä keskustelu ensin henkilökuntatiliisi: avaa tilisi hallintasovelluksessa, hae yhdistämiskoodi ja lähetä /link ja koodi.</string>
 </resources>

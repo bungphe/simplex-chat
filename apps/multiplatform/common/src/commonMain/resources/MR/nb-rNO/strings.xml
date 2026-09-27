@@ -217,4 +217,10 @@
     <string name="both_you_and_your_contact_can_send_files">Både du og kontakten din kan sende filer og medier.</string>
     <string name="both_you_and_your_contact_can_send_voice">Både du og kontakten din kan sende talemeldinger.</string>
     <string name="business_address">Firmaadresse</string>
+    <!-- Shop management (SimpleX AI employees) -->
+    <string name="shop_admin">Butikkstyring</string>
+    <string name="shop_admin_address">Adresse til admin-appen</string>
+    <string name="shop_admin_address_footer">Adressen til butikkens admin-nettapp (innboks, kasse, lager, leveranser, rapporter), f.eks. https://admin.shop.com. Der logger du inn med ansattkontoen din.</string>
+    <string name="shop_admin_open">Åpne butikkstyring</string>
+    <string name="shop_admin_chat_footer">I chatten med butikkens KI-ansatt skriver du / for å se kommandoene dine. Koble først chatten til ansattkontoen din: åpne kontoen din i admin-appen, hent en koblingskode og send /link med koden.</string>
 </resources>

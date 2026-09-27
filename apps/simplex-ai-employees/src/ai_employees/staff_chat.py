@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 KEY = "simplex_staff"
+MENU_LANG_KEY = "simplex_menu_lang"  # "employee:contact" -> the language of that customer's menu
 CODE_MINUTES = 15
 
 # command -> (area it belongs to, menu entry); area "*" : any linked staff member,
@@ -226,17 +227,32 @@ class StaffChat:
             return str(e)
 
     async def sync_menu(self, cid: int) -> None:
-        """This contact's menu: their role's commands (plus the admin menu for AI admins)."""
-        from .chat_menu import ADMIN_MENU, CUSTOMER_MENU
+        """This contact's menu: their role's commands (plus the admin menu for AI admins), or
+        for a customer the customer menu in their language."""
+        from .chat_menu import ADMIN_MENU, customer_menu
 
         user = self.links.user(self.employee.id, cid)
-        commands = staff_menu(user) if user else list(CUSTOMER_MENU)
+        commands = staff_menu(user) if user else customer_menu(self._menu_language(cid))
         if self.employee.state.is_admin(cid):
             commands.append(ADMIN_MENU)
         try:
             await self.employee.bot.api.api_set_contact_prefs(cid, {"commands": commands})
         except Exception:  # noqa: BLE001 - typed commands work without the menu
             log.warning("%s: could not set the menu of contact %s", self.employee.id, cid)
+
+    def _menu_language(self, cid: int) -> str:
+        return self.employee.agent.contact_language(cid) or "vi"
+
+    async def localize_menu(self, cid: int) -> None:
+        """A customer writing in another language gets the menu in that language (the
+        profile's own menu is Vietnamese); set once per language change."""
+        if self.employee.state.is_admin(cid) or self.links.user(self.employee.id, cid):
+            return
+        code, key = self._menu_language(cid), f"{self.employee.id}:{cid}"
+        if (self.office.docs.get(MENU_LANG_KEY) or {}).get(key, "vi") == code:
+            return
+        self.office.docs.update(MENU_LANG_KEY, lambda d: d.__setitem__(key, code), {})
+        await self.sync_menu(cid)
 
     # ------------------------------------------------------------------ #
 

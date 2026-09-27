@@ -3250,3 +3250,17 @@ server test failure */
 /* No comment provided by engineer. */
 "Your SimpleX address" = "ที่อยู่ SimpleX ของคุณ";
 
+/* Shop management (SimpleX AI employees) */
+"Shop management" = "จัดการร้านค้า";
+
+/* Shop management (SimpleX AI employees) */
+"Admin app address" = "ที่อยู่แอปผู้ดูแล";
+
+/* Shop management (SimpleX AI employees) */
+"The address of your shop's admin web app (inbox, point of sale, stock, deliveries, reports), e.g. https://admin.shop.com. You sign in there with your staff account." = "ที่อยู่ของเว็บแอปผู้ดูแลร้านของคุณ (กล่องข้อความ, ขายหน้าร้าน, สต็อก, จัดส่ง, รายงาน) เช่น https://admin.shop.com ลงชื่อเข้าใช้ด้วยบัญชีพนักงานของคุณ";
+
+/* Shop management (SimpleX AI employees) */
+"Open shop management" = "เปิดการจัดการร้านค้า";
+
+/* Shop management (SimpleX AI employees) */
+"In the chat with the shop's AI employee, type / to see your commands. First link your chat to your staff account: in the admin app, open your account, get a link code and send /link with the code." = "ในแชทกับพนักงาน AI ของร้าน พิมพ์ / เพื่อดูคำสั่งของคุณ ก่อนอื่นให้เชื่อมแชทกับบัญชีพนักงานของคุณ: ในแอปผู้ดูแลให้เปิดบัญชีของคุณ รับรหัสเชื่อมต่อ แล้วส่ง /link พร้อมรหัส";

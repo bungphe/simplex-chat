@@ -2149,4 +2149,10 @@
     <string name="both_you_and_your_contact_can_send_files">אתה והאיש קשר שלך יכולים לשלוח קבצים ומדיה</string>
     <string name="chat_banner_business_connection">צ\'אט עסקי</string>
     <string name="context_user_picker_cant_change_profile_alert_title">אי אפשר לשנות תמונת פרופיל</string>
+    <!-- Shop management (SimpleX AI employees) -->
+    <string name="shop_admin">ניהול החנות</string>
+    <string name="shop_admin_address">כתובת אפליקציית הניהול</string>
+    <string name="shop_admin_address_footer">הכתובת של אפליקציית הניהול של החנות שלך (תיבת הודעות, קופה, מלאי, משלוחים, דוחות), למשל https://admin.shop.com. שם מתחברים עם חשבון העובד שלך.</string>
+    <string name="shop_admin_open">פתיחת ניהול החנות</string>
+    <string name="shop_admin_chat_footer">בצ\'אט עם עובד ה-AI של החנות, הקלד / כדי לראות את הפקודות שלך. תחילה קשר את הצ\'אט לחשבון העובד שלך: באפליקציית הניהול פתח את החשבון שלך, קבל קוד קישור ושלח /link עם הקוד.</string>
 </resources>

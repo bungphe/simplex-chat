@@ -2528,4 +2528,10 @@
     <string name="prohibit_sending_files_and_media">Заборонити надсилання файлів і медіа.</string>
     <string name="sanitize_links_toggle">Видалити відстеження посилань</string>
     <string name="rcv_direct_event_group_inv_link_received">запит на підключення до групи %1$s</string>
+    <!-- Shop management (SimpleX AI employees) -->
+    <string name="shop_admin">Керування магазином</string>
+    <string name="shop_admin_address">Адреса застосунку керування</string>
+    <string name="shop_admin_address_footer">Адреса вебзастосунку керування вашим магазином (вхідні, каса, склад, доставка, звіти), наприклад https://admin.shop.com. Там ви входите зі своїм обліковим записом працівника.</string>
+    <string name="shop_admin_open">Відкрити керування магазином</string>
+    <string name="shop_admin_chat_footer">У чаті з ШІ-працівником магазину введіть /, щоб побачити свої команди. Спочатку прив\'яжіть чат до свого облікового запису працівника: у застосунку керування відкрийте свій обліковий запис, отримайте код прив\'язки й надішліть /link з кодом.</string>
 </resources>

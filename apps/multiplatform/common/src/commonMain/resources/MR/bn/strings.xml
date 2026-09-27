@@ -43,4 +43,10 @@
     <string name="accept_contact_incognito_button">গুপ্ত-পরিচয় গ্রহণ করুন</string>
     <string name="search_verb">সার্চ</string>
     <string name="la_mode_off">বন্ধ আছে</string>
+    <!-- Shop management (SimpleX AI employees) -->
+    <string name="shop_admin">দোকান ব্যবস্থাপনা</string>
+    <string name="shop_admin_address">অ্যাডমিন অ্যাপের ঠিকানা</string>
+    <string name="shop_admin_address_footer">আপনার দোকানের অ্যাডমিন ওয়েব অ্যাপের ঠিকানা (ইনবক্স, বিক্রয়, স্টক, ডেলিভারি, রিপোর্ট), যেমন https://admin.shop.com। সেখানে আপনার কর্মী অ্যাকাউন্ট দিয়ে সাইন ইন করুন।</string>
+    <string name="shop_admin_open">দোকান ব্যবস্থাপনা খুলুন</string>
+    <string name="shop_admin_chat_footer">দোকানের AI কর্মীর সাথে চ্যাটে আপনার কমান্ড দেখতে / লিখুন। প্রথমে চ্যাটটি আপনার কর্মী অ্যাকাউন্টের সাথে যুক্ত করুন: অ্যাডমিন অ্যাপে আপনার অ্যাকাউন্ট খুলুন, লিঙ্ক কোড নিন এবং কোডসহ /link পাঠান।</string>
 </resources>
