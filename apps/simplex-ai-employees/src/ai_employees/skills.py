@@ -91,7 +91,10 @@ class Skill:
 REGISTRY: dict[str, Skill] = {}
 
 # Config shortcuts: listing a group enables all its skills.
-GROUPS: dict[str, tuple[str, ...]] = {"notes": ("remember", "recall")}
+GROUPS: dict[str, tuple[str, ...]] = {
+    "notes": ("remember", "recall"),
+    "memory": ("remember", "recall", "search_conversation", "learn"),
+}
 
 
 def skill(
@@ -212,7 +215,10 @@ def knowledge_search(ctx: SkillContext, query: str) -> str:
 def remember(ctx: SkillContext, key: str, value: str) -> str:
     if ctx.contact_id is None:
         raise SkillError("no contact in this conversation")
-    ctx.employee.state.set_note(ctx.contact_id, key, value)
+    try:
+        ctx.employee.state.set_note(ctx.contact_id, key, value)
+    except ValueError as e:
+        raise SkillError(str(e)) from None
     return f"Saved {key}."
 
 
@@ -222,6 +228,79 @@ def recall(ctx: SkillContext) -> str:
         raise SkillError("no contact in this conversation")
     notes = ctx.employee.state.notes(ctx.contact_id)
     return "\n".join(f"{k}: {v}" for k, v in notes.items()) or "Nothing saved yet."
+
+
+@skill(
+    "search_conversation",
+    "Search everything this contact has ever written to you and your replies, beyond your recent "
+    "messages (e.g. an order code, a product, an address they gave earlier).",
+    {"query": {"type": "string", "description": "Words to look for"}},
+)
+def search_conversation(ctx: SkillContext, query: str) -> str:
+    if ctx.contact_id is None:
+        raise SkillError("no contact in this conversation")
+    words = {_norm(w) for w in _WORD.findall(query)}
+    if not words:
+        raise SkillError("give some words to search for")
+    employee = ctx.employee
+    conv = employee.office.hub.inbox.by_contact(employee.id, ctx.contact_id)
+    if conv is not None:
+        found = [
+            (m["ts"], m["sender"], m["text"]) for m in employee.office.hub.inbox.messages(conv.id, limit=5000)
+        ]
+    else:  # no inbox record (older data): the remembered turns
+        found = [
+            (t.get("ts", ""), t["role"], t["content"]) for t in employee.state.timed_history(ctx.contact_id)
+        ]
+    hits = []
+    for ts, sender, text in found:
+        score = sum(1 for w in words if w in _norm(text))
+        if score:
+            hits.append((score, ts, sender, text))
+    if not hits:
+        return "Nothing found in earlier messages."
+    hits.sort(key=lambda h: (h[0], h[1]), reverse=True)  # most matching words, then newest
+    who = {
+        "customer": "Contact",
+        "user": "Contact",
+        "ai": "You",
+        "assistant": "You",
+        "human": "Staff",
+        "system": "System",
+    }
+    limit = int(ctx.options.get("max_results", 8))
+    best = sorted(hits[:limit], key=lambda h: h[1])  # most relevant, shown in time order
+    return "\n".join(f"({ts[:16]}) {who.get(sender, sender)}: {text[:500]}" for _, ts, sender, text in best)
+
+
+MAX_PENDING_MEMORY = 50
+
+
+@skill(
+    "learn",
+    "Save a general lesson for ALL future conversations (not a fact about this contact: use "
+    "remember for that), e.g. a frequent question and its right answer. From your manager it "
+    "applies at once; otherwise your manager must approve it first.",
+    {"lesson": {"type": "string", "description": "One short, self-contained sentence"}},
+)
+def learn(ctx: SkillContext, lesson: str) -> str:
+    if ctx.consulting:
+        raise SkillError("cannot save lessons while answering a colleague")
+    state = ctx.employee.state
+    if not lesson.strip():
+        raise SkillError("the lesson is empty")
+    manager = ctx.contact_id is not None and state.is_admin(ctx.contact_id)
+    if manager:
+        state.add_memory(lesson, "active", f"quản lý {ctx.contact_name}")
+        return "Saved. It applies to all conversations from now on."
+    if sum(1 for m in state.shared_memory if m["status"] == "pending") >= MAX_PENDING_MEMORY:
+        raise SkillError("too many lessons are waiting for approval")
+    source = f"AI, hội thoại với {ctx.contact_name}" if ctx.contact_id is not None else "AI, lịch làm việc"
+    state.add_memory(lesson, "pending", source)
+    return (
+        "Proposed to your manager; it is used only after approval. Do not tell the contact "
+        "that it has become a rule."
+    )
 
 
 @skill(

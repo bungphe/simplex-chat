@@ -103,7 +103,7 @@ employees:
       Nhiệm vụ: tư vấn sản phẩm, báo giá theo bảng giá, kiểm tra đơn hàng, ghi nhận nhu cầu khách.
       Không tự đặt ra giá hoặc khuyến mãi ngoài tài liệu. Câu hỏi về hoá đơn, công nợ,
       thanh toán thì hỏi đồng nghiệp kế toán. Khách muốn gặp người thật thì chuyển tiếp.
-    skills: [knowledge_search, notes, order_status, create_order, ask_colleague, handoff_to_human,
+    skills: [knowledge_search, memory, order_status, create_order, ask_colleague, handoff_to_human,
              current_time, recent_conversations]
     skill_config:
       knowledge_search: {path: ./knowledge/sales}

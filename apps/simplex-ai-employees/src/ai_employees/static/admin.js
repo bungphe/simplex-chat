@@ -60,7 +60,7 @@ const STATUS = {
   error: ["bad", "lỗi"], queued: ["neutral", "chờ duyệt"], rejected: ["neutral", "bị từ chối"], skipped: ["neutral", "bỏ qua"],
   pending: ["warn", "chờ duyệt"], executing: ["neutral", "đang chạy"], done: ["ok", "đã làm"], failed: ["bad", "thất bại"],
 };
-const KIND = { reply: "trả lời", consult: "hỏi đồng nghiệp", routine: "lịch làm việc", action: "hành động", suggest: "gợi ý trả lời" };
+const KIND = { reply: "trả lời", consult: "hỏi đồng nghiệp", routine: "lịch làm việc", action: "hành động", suggest: "gợi ý trả lời", memory: "tóm tắt trí nhớ" };
 function pill(status) {
   const [cls, label] = STATUS[status] || ["neutral", status || "—"];
   return h("span", { class: `pill ${cls}` }, label);
@@ -160,6 +160,7 @@ views.overview = async () => {
         h("p", {}, "Model: ", h("b", {}, e.model), h("span", { class: "muted" }, " · " + e.model_desc)),
         h("p", {}, `24 giờ: ${e.stats.total || 0} việc · ${e.contacts} khách · ${e.admins} quản trị viên`),
         e.pending ? h("p", {}, h("span", { class: "pill warn" }, `${e.pending} chờ duyệt`)) : null,
+        e.memory_pending ? h("p", {}, h("span", { class: "pill warn" }, `${e.memory_pending} ghi nhớ chờ duyệt`)) : null,
         next && h("p", { class: "muted" }, `Lịch tới: ${next.id} lúc ${next.next_local}`),
         e.address && h("details", {}, h("summary", { class: "muted" }, "Địa chỉ liên hệ SimpleX"), h("p", { class: "mono" }, e.address),
           h("button", { onclick: () => navigator.clipboard.writeText(e.address).then(() => toast("Đã chép địa chỉ")) }, "Chép")),
@@ -240,6 +241,8 @@ function employeeForm(d) {
       h("div", { class: "row" }, correction, h("button", { onclick: () => correction.value.trim() && run(async () => { await api("POST", `${base}/corrections`, { text: correction.value }); go("employees", d.id); }, "Đã thêm quy tắc") }, "Thêm")),
     ),
 
+    sharedMemoryCard(d),
+
     h("div", { class: "card section" },
       h("h2", {}, "Skill"),
       h("div", { class: "checks" }, skillBoxes.map((s) => s.el)),
@@ -268,6 +271,26 @@ function employeeForm(d) {
       h("span", { class: "muted" }, d.overrides.length ? `Đã thay đổi so với file cấu hình: ${d.overrides.join(", ")}` : "Đang dùng đúng file cấu hình."),
       d.overrides.length ? h("button", { class: "danger", onclick: () => confirm("Bỏ mọi thay đổi và quay về file cấu hình?") && run(async () => { await api("POST", `${base}/reset`, {}); go("employees", d.id); }, "Đã khôi phục") }, "Khôi phục cấu hình gốc") : null,
     ),
+  );
+}
+
+function sharedMemoryCard(d) {
+  const base = `/api/employees/${encodeURIComponent(d.id)}/memory`;
+  const redo = (p) => run(async () => { await p(); go("employees", d.id); });
+  const input = h("input", { placeholder: "vd. Khách hỏi lắp đặt ngoại thành: phí 200.000đ, hẹn trong 2 ngày" });
+  const pending = d.shared_memory.filter((m) => m.status === "pending");
+  const active = d.shared_memory.filter((m) => m.status === "active");
+  const item = (m) => h("li", {}, m.text, " ", h("span", { class: "muted" }, `(${m.source}, ${fmtTime(m.created)})`), " ",
+    m.status === "pending" ? h("button", { class: "primary small", onclick: () => redo(() => api("POST", `${base}/${m.id}/approve`, {})) }, "Duyệt") : null,
+    m.status === "pending" ? h("button", { class: "small", onclick: () => { const t = prompt("Sửa rồi duyệt:", m.text); if (t) redo(() => api("POST", `${base}/${m.id}/approve`, { text: t })); } }, "Sửa & duyệt") : null,
+    h("button", { class: "danger small", onclick: () => confirm("Xoá ghi nhớ này?") && redo(() => api("DELETE", `${base}/${m.id}`)) }, m.status === "pending" ? "Bỏ" : "Xoá"));
+  return h("div", { class: "card section" },
+    h("h2", {}, "Ghi nhớ chung ", pending.length ? h("span", { class: "pill warn" }, `${pending.length} chờ duyệt`) : null),
+    h("p", { class: "muted" }, "Điều nhân viên AI đã học, dùng cho mọi khách. AI tự đề xuất (skill learn) và chỉ dùng sau khi bạn duyệt, để khách không thể 'dạy' AI điều sai. Quy tắc sửa sai vẫn được ưu tiên hơn."),
+    pending.length ? h("div", {}, h("h3", {}, "Chờ duyệt"), h("ul", {}, pending.map(item))) : null,
+    h("h3", {}, "Đang dùng"),
+    active.length ? h("ul", {}, active.map(item)) : h("p", { class: "muted" }, "Chưa có."),
+    h("div", { class: "row" }, input, h("button", { onclick: () => input.value.trim() && redo(() => api("POST", base, { text: input.value.trim() })) }, "Thêm")),
   );
 }
 
@@ -423,6 +446,7 @@ views.conversations = async (arg) => {
     put(panel,
       h("div", { class: "row spread" }, h("h2", {}, conv.name),
         h("button", { class: "danger", onclick: () => confirm(`Xoá lịch sử và ghi chú về ${conv.name}?`) && run(async () => { await api("DELETE", `${base}/${c.id}`); go("conversations", { emp: empId }); }, "Đã xoá") }, "Xoá trí nhớ")),
+      conv.summary ? h("div", { class: "section" }, h("h3", {}, "Tóm tắt dài hạn"), h("p", { class: "pre" }, conv.summary)) : null,
       Object.keys(conv.notes).length ? h("div", { class: "section" }, h("h3", {}, "Ghi chú về khách"),
         h("ul", {}, Object.entries(conv.notes).map(([k, v]) => h("li", {}, h("b", {}, k + ": "), v)))) : null,
       h("div", { class: "transcript section" }, conv.turns.length ? conv.turns.map((t) =>
@@ -542,9 +566,33 @@ views.inbox = async (arg) => {
             ? h("button", { onclick: () => setMode("human") }, "Tiếp quản (dừng AI)")
             : h("button", { class: "primary", onclick: () => setMode("ai") }, "Giao lại cho AI")),
       ),
-      Object.keys(d.notes || {}).length ? h("details", { class: "notes" }, h("summary", { class: "muted" }, "Ghi chú AI về khách"),
-        h("ul", {}, Object.entries(d.notes).map(([k, v]) => h("li", {}, h("b", {}, k + ": "), v)))) : null,
     );
+  };
+
+  // What the AI remembers about this customer; staff can correct it. Built when the
+  // conversation opens or after a save, never by the 5-second refresh (it would wipe edits).
+  const renderMemory = (d) => {
+    const c = d.conversation;
+    const noteCount = Object.keys(d.notes || {}).length;
+    const summary = h("textarea", { rows: 4, placeholder: "AI chưa tóm tắt gì (tóm tắt được tạo khi hội thoại dài ra)" }, d.summary || "");
+    const key = h("input", { placeholder: "vd. số điện thoại" });
+    const value = h("input", { placeholder: "giá trị" });
+    const save = (body, msg) => run(async () => {
+      const fresh = await api("POST", `/api/inbox/${c.id}/memory`, body);
+      renderMemory(fresh);
+      thread.mem.open = true;
+    }, msg);
+    put(thread.mem,
+      h("summary", { class: "muted" }, `Trí nhớ AI về khách${d.summary ? " · có tóm tắt" : ""}${noteCount ? ` · ${noteCount} ghi chú` : ""}`),
+      h("div", { class: "memory" },
+        h("label", {}, "Tóm tắt các cuộc trò chuyện trước", summary),
+        h("div", { class: "row" }, h("button", { onclick: () => save({ summary: summary.value }, "Đã lưu tóm tắt") }, "Lưu tóm tắt")),
+        h("h3", {}, "Ghi chú"),
+        noteCount ? h("ul", {}, Object.entries(d.notes).map(([k, v]) => h("li", {}, h("b", {}, k + ": "), v, " ",
+          h("button", { class: "danger small", title: "Xoá ghi chú", onclick: () => save({ notes: { [k]: null } }, "Đã xoá") }, "✕")))) : h("p", { class: "muted" }, "Chưa có ghi chú."),
+        h("div", { class: "row" }, key, value,
+          h("button", { onclick: () => key.value.trim() && value.value.trim() && save({ notes: { [key.value.trim()]: value.value.trim() } }, "Đã thêm ghi chú") }, "Thêm")),
+      ));
   };
 
   const update = (d) => {
@@ -588,8 +636,9 @@ views.inbox = async (arg) => {
           suggestBtn.textContent = "Gợi ý trả lời (AI)";
         }
       }, "AI đã soạn bản nháp; sửa rồi bấm Gửi"));
-      thread = { id: cid, head: h("div", { class: "thread-head" }), msgs: h("div", { class: "msgs" }), fresh: true };
-      put(pane, thread.head, thread.msgs,
+      thread = { id: cid, head: h("div", { class: "thread-head" }), mem: h("details", { class: "notes" }), msgs: h("div", { class: "msgs" }), fresh: true };
+      renderMemory(d);
+      put(pane, thread.head, thread.mem, thread.msgs,
         h("div", { class: "composer" }, text,
           h("div", { class: "row spread" },
             h("div", { class: "row" }, h("span", { class: "muted" }, `Trả lời với tên: ${me ? me.name : ""}`),

@@ -309,6 +309,7 @@ def _summary(e: Employee, stats: dict[str, Any]) -> dict[str, Any]:
         "admins": len(e.state.admins),
         "contacts": len(e.state.contacts),
         "pending": len(e.actions.pending()),
+        "memory_pending": sum(1 for m in e.state.shared_memory if m["status"] == "pending"),
         "routines": _routines(e),
         "stats": stats.get(e.id, {}),
     }
@@ -345,6 +346,7 @@ def _detail(e: Employee) -> dict[str, Any]:
         "overrides": list(e.state.overrides),
         "admin_contacts": [{"id": c, "name": e.state.contact_name(c)} for c in e.state.admins],
         "welcome": s.welcome,
+        "shared_memory": e.state.shared_memory,
     }
 
 
@@ -388,6 +390,37 @@ async def employee_patch(request: web.Request) -> web.Response:
 async def employee_reset(request: web.Request) -> web.Response:
     e = _employee(request)
     e.state.clear_overrides()
+    return _json(_detail(e))
+
+
+async def memory_add(request: web.Request) -> web.Response:
+    e = _employee(request)
+    text = str((await _body(request)).get("text", "")).strip()
+    if not text:
+        raise ApiError(400, "Nội dung trống")
+    e.state.add_memory(text, "active", f"quản trị {_user(request).name}")
+    return _json(_detail(e))
+
+
+async def memory_approve(request: web.Request) -> web.Response:
+    e = _employee(request)
+    data = await _body(request)
+    fields: dict[str, Any] = {"status": "active", "approved_by": _user(request).name}
+    if isinstance(data.get("text"), str) and data["text"].strip():
+        fields["text"] = " ".join(data["text"].split())[:500]  # approve an edited version
+    try:
+        e.state.update_memory(int(request.match_info["mid"]), **fields)
+    except (KeyError, ValueError):
+        raise ApiError(404, "Không có ghi nhớ này") from None
+    return _json(_detail(e))
+
+
+async def memory_delete(request: web.Request) -> web.Response:
+    e = _employee(request)
+    try:
+        e.state.remove_memory(int(request.match_info["mid"]))
+    except (KeyError, ValueError):
+        raise ApiError(404, "Không có ghi nhớ này") from None
     return _json(_detail(e))
 
 
@@ -582,6 +615,7 @@ async def conversation_get(request: web.Request) -> web.Response:
             "name": e.state.contact_name(cid),
             "turns": e.state.timed_history(cid),
             "notes": e.state.notes(cid),
+            "summary": e.state.summary(cid),
         }
     )
 
@@ -667,12 +701,12 @@ async def inbox_get(request: web.Request) -> web.Response:
     office = request.app[OFFICE]
     conv = _inbox_conv(request)
     e = office.employees.get(conv.employee)
-    notes = e.state.notes(conv.contact_id) if e else {}
     return _json(
         {
             "conversation": _conv_json(office, conv),
             "messages": office.hub.inbox.messages(conv.id),
-            "notes": notes,
+            "notes": e.state.notes(conv.contact_id) if e else {},
+            "summary": e.state.summary(conv.contact_id) if e else "",
             "employees": [{"id": x.id, "name": x.settings.display_name} for x in office.employees.values()],
         }
     )
@@ -747,6 +781,28 @@ async def inbox_media(request: web.Request) -> web.Response:
         content_type="application/octet-stream",
         headers={**cache, "Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}"},
     )
+
+
+async def inbox_memory(request: web.Request) -> web.Response:
+    """Staff correct what the AI remembers about this customer: the summary and saved facts."""
+    conv = _inbox_conv(request)
+    e = request.app[OFFICE].employees.get(conv.employee)
+    if e is None:
+        raise ApiError(404, "no employee for this conversation")
+    data = await _body(request)
+    if isinstance(data.get("summary"), str):
+        e.state.set_summary(conv.contact_id, data["summary"])
+    notes = data.get("notes")
+    if isinstance(notes, dict):
+        for key, value in notes.items():
+            if value is None:
+                e.state.delete_note(conv.contact_id, str(key))
+            elif isinstance(value, str) and str(key).strip() and value.strip():
+                try:
+                    e.state.set_note(conv.contact_id, str(key), value.strip())
+                except ValueError as err:
+                    raise ApiError(400, str(err)) from None
+    return await inbox_get(request)
 
 
 async def inbox_suggest(request: web.Request) -> web.Response:
@@ -917,6 +973,9 @@ def create_app(office: Office, password: str) -> web.Application:
     r.add_patch("/api/employees/{emp}", employee_patch)
     r.add_post("/api/employees/{emp}/reset", employee_reset)
     r.add_post("/api/employees/{emp}/corrections", correction_add)
+    r.add_post("/api/employees/{emp}/memory", memory_add)
+    r.add_post("/api/employees/{emp}/memory/{mid}/approve", memory_approve)
+    r.add_delete("/api/employees/{emp}/memory/{mid}", memory_delete)
     r.add_delete("/api/employees/{emp}/corrections/{n}", correction_delete)
     r.add_delete("/api/employees/{emp}/admins/{cid}", admin_remove)
     r.add_post("/api/employees/{emp}/routines/{rid}/run", routine_run)
@@ -938,6 +997,7 @@ def create_app(office: Office, password: str) -> web.Application:
     r.add_post("/api/inbox/{cid}/assign", inbox_assign)
     r.add_post("/api/inbox/{cid}/read", inbox_read)
     r.add_post("/api/inbox/{cid}/suggest", inbox_suggest)
+    r.add_post("/api/inbox/{cid}/memory", inbox_memory)
     r.add_get(r"/api/inbox/{cid:\d+}/media/{mid:\d+}/{n:\d+}", inbox_media)
     r.add_get("/api/channels", channels_get)
     r.add_post("/api/channels/{channel}/poll", channel_poll)

@@ -12,7 +12,7 @@ Người quản lý cấu hình nhân viên **ngay trong chat** bằng lệnh `/
 ```
 Khách ──SimpleX (mã hoá đầu-cuối)──► Lan - Bán hàng ──ask_colleague──► Minh - Kế toán
                                      [model: claude]                   [model: gemini]
-                                        │ knowledge_search, order_status, notes…
+                                        │ knowledge_search, order_status, memory…
                                         └─handoff_to_human──► Quản lý (người thật)
                                      Hà - Viết nội dung [model: local / Ollama]
 ```
@@ -137,7 +137,7 @@ toán, viết nội dung), mỗi người một model. Mỗi nhân viên gồm:
 | Skill | Chức năng |
 |---|---|
 | `knowledge_search` | Tìm trong tài liệu nội bộ (`.md`/`.txt` trong `skill_config.knowledge_search.path`) |
-| `notes` (`remember` + `recall`) | Ghi nhớ thông tin về từng khách (số điện thoại, nhu cầu…) |
+| `memory` (`remember`, `recall`, `search_conversation`, `learn`) | Trí nhớ dài hạn, xem mục *Trí nhớ* bên dưới. `notes` là nhóm cũ chỉ gồm `remember` + `recall` |
 | `ask_colleague` | Hỏi nhân viên AI khác; giới hạn bằng `skill_config.ask_colleague.colleagues` |
 | `handoff_to_human` | Chuyển yêu cầu cho quản trị viên (người thật) qua SimpleX |
 | `current_time` | Ngày giờ hiện tại theo múi giờ |
@@ -148,6 +148,24 @@ toán, viết nội dung), mỗi người một model. Mỗi nhân viên gồm:
 
 Skill *nội bộ* chỉ được dùng khi chạy lịch làm việc hoặc khi người chat là quản trị viên. Khách bình
 thường không bao giờ khiến nhân viên đọc được hội thoại của người khác.
+
+## Trí nhớ của nhân viên AI
+
+Nhân viên AI nhớ theo ba tầng:
+
+| Tầng | Nội dung | Ai ghi |
+|---|---|---|
+| Gần đây | `history_messages` tin gần nhất với từng khách (mặc định 40), gửi nguyên văn cho model | tự động |
+| Dài hạn, từng khách | **Tóm tắt** mọi trao đổi cũ hơn (nhu cầu, sản phẩm, giá đã báo, đơn hàng, lời hứa, sở thích) và **ghi chú** (`remember`: số điện thoại, địa chỉ…). Cả hai được đưa vào mỗi câu trả lời, AI không cần tự gọi `recall` | AI tự tóm tắt khi tin cũ rời khỏi phần "gần đây" (gộp mỗi 6 tin để đỡ tốn lượt gọi model); nhân viên sửa được trong Hộp thư |
+| Chung, mọi khách | **Ghi nhớ chung**: bài học dùng cho mọi cuộc trò chuyện (vd. "lắp ngoại thành phí 200.000đ") | AI đề xuất bằng skill `learn`; chỉ dùng sau khi quản trị **duyệt** (trang Nhân viên). Quản trị nói trong chat hoặc thêm trên web thì có hiệu lực ngay |
+
+- `search_conversation` tìm trong **toàn bộ** lịch sử với khách đang chat (mọi tin trong Hộp thư, kể cả những tin
+  đã rời khỏi phần "gần đây"), vd. mã đơn khách đưa từ tuần trước.
+- Trí nhớ của khách nào chỉ dùng khi nói chuyện với khách đó. Khách không thể "dạy" AI điều sai cho người khác:
+  mọi bài học AI rút ra từ khách đều phải được duyệt.
+- Nếu model lỗi khi tóm tắt, tin cũ được giữ lại (tối đa 200) và tóm tắt lại ở lần sau, không bị mất.
+- `/forget` trong chat hoặc nút *Xoá trí nhớ* xoá cả tin gần đây, tóm tắt và ghi chú của khách đó.
+- Thứ tự ưu tiên khi có mâu thuẫn: quy tắc sửa sai > ghi nhớ chung > vai trò (system prompt).
 
 ### Tự viết skill
 

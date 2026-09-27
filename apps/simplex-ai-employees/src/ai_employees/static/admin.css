@@ -127,6 +127,11 @@ pre.output { white-space: pre-wrap; background: var(--surface-2); border-radius:
 .thread { display: flex; flex-direction: column; gap: 10px; min-height: 60vh; }
 .thread-head h2 { margin: 0 0 4px; }
 .notes ul { margin: 6px 0 0; }
+.notes .memory { padding: 8px 0; }
+.notes .memory textarea { min-height: 80px; font-family: inherit; font-size: 14px; }
+.notes .memory .row input { width: auto; flex: 1; min-width: 120px; }
+button.small { padding: 2px 8px; font-size: 12px; }
+.pre { white-space: pre-wrap; }
 .msgs { flex: 1; overflow-y: auto; max-height: calc(100vh - 360px); min-height: 240px; display: flex; flex-direction: column; gap: 6px; padding: 4px 2px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
 .msg { display: flex; flex-direction: column; max-width: 78%; }
 .msg .who { font-size: 11.5px; color: var(--muted); margin: 0 4px 2px; }

@@ -1,5 +1,5 @@
 """Per-employee persistent state: admin overrides, admins, conversation memory, notes,
-routine runs and the approval queue."""
+long-term memory (per-contact summaries, shared memory), routine runs and the approval queue."""
 
 from __future__ import annotations
 
@@ -9,6 +9,10 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+MAX_UNSUMMARIZED = 200  # trimmed turns kept while a summary cannot be made (model down)
+MAX_SUMMARY = 2000
+MAX_NOTES = 40
 
 
 def now_iso() -> str:
@@ -26,6 +30,10 @@ class EmployeeState:
             "contacts": {},
             "history": {},
             "notes": {},
+            "summaries": {},  # contact -> {"text", "updated"}: turns older than the history window
+            "unsummarized": {},  # contact -> turns trimmed from history, not yet in the summary
+            "shared_memory": [],  # lessons for every conversation: {"id", "text", "status", ...}
+            "next_memory_id": 1,
             "routines": {},
             "actions": [],
             "next_action_id": 1,
@@ -105,17 +113,75 @@ class EmployeeState:
             {"role": "assistant", "content": assistant, "ts": ts},
         ]
         if keep > 0 and len(turns) > keep:
-            # keep an even number so history always starts with a user turn
-            del turns[: len(turns) - (keep - keep % 2)]
+            # keep an even number so history always starts with a user turn; what falls out
+            # of the window waits to be folded into the contact's long-term summary
+            cut = len(turns) - (keep - keep % 2)
+            waiting = self.data["unsummarized"].setdefault(str(contact_id), [])
+            waiting += turns[:cut]
+            del waiting[: max(0, len(waiting) - MAX_UNSUMMARIZED)]
+            del turns[:cut]
+        self.save()
+
+    # long-term memory of a contact: a summary of everything older than the history window
+
+    def summary(self, contact_id: int) -> str:
+        return self.data["summaries"].get(str(contact_id), {}).get("text", "")
+
+    def unsummarized(self, contact_id: int) -> list[dict[str, str]]:
+        return list(self.data["unsummarized"].get(str(contact_id), []))
+
+    def set_summary(self, contact_id: int, text: str, consumed: int = 0) -> None:
+        """Store a new summary; `consumed` trimmed turns are now part of it."""
+        key = str(contact_id)
+        if text.strip():
+            self.data["summaries"][key] = {"text": text.strip()[:MAX_SUMMARY], "updated": now_iso()}
+        else:
+            self.data["summaries"].pop(key, None)
+        del self.data["unsummarized"].setdefault(key, [])[:consumed]
+        self.save()
+
+    # shared memory: lessons for every conversation. Written by a manager, or proposed by
+    # the AI and kept "pending" until a manager approves (so no contact can plant them).
+
+    @property
+    def shared_memory(self) -> list[dict[str, Any]]:
+        return list(self.data["shared_memory"])
+
+    def add_memory(self, text: str, status: str, source: str) -> dict[str, Any]:
+        entry = {
+            "id": self.data["next_memory_id"],
+            "text": " ".join(text.split())[:500],
+            "status": status,  # "active" | "pending"
+            "source": source,
+            "created": now_iso(),
+        }
+        self.data["next_memory_id"] += 1
+        self.data["shared_memory"].append(entry)
+        self.save()
+        return entry
+
+    def update_memory(self, memory_id: int, **fields: Any) -> dict[str, Any]:
+        entry = next((m for m in self.data["shared_memory"] if m["id"] == memory_id), None)
+        if entry is None:
+            raise KeyError(memory_id)
+        entry.update(fields)
+        self.save()
+        return entry
+
+    def remove_memory(self, memory_id: int) -> None:
+        before = len(self.data["shared_memory"])
+        self.data["shared_memory"] = [m for m in self.data["shared_memory"] if m["id"] != memory_id]
+        if len(self.data["shared_memory"]) == before:
+            raise KeyError(memory_id)
         self.save()
 
     def forget(self, contact_id: int | None = None) -> None:
-        if contact_id is None:
-            self.data["history"] = {}
-            self.data["notes"] = {}
-        else:
-            self.data["history"].pop(str(contact_id), None)
-            self.data["notes"].pop(str(contact_id), None)
+        per_contact = ("history", "notes", "summaries", "unsummarized")
+        for part in per_contact:
+            if contact_id is None:
+                self.data[part] = {}
+            else:
+                self.data[part].pop(str(contact_id), None)
         self.save()
 
     # notes the agent keeps about a contact (remember / recall skills)
@@ -124,7 +190,15 @@ class EmployeeState:
         return dict(self.data["notes"].get(str(contact_id), {}))
 
     def set_note(self, contact_id: int, key: str, value: str) -> None:
-        self.data["notes"].setdefault(str(contact_id), {})[key] = value
+        notes = self.data["notes"].setdefault(str(contact_id), {})
+        key = " ".join(key.split())[:60]
+        if key not in notes and len(notes) >= MAX_NOTES:
+            raise ValueError(f"at most {MAX_NOTES} notes per contact; update or delete one")
+        notes[key] = value[:500]
+        self.save()
+
+    def delete_note(self, contact_id: int, key: str) -> None:
+        self.data["notes"].get(str(contact_id), {}).pop(key, None)
         self.save()
 
     # routines: the last period each one ran for, and its last result
