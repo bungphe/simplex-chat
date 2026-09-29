@@ -129,9 +129,30 @@ def project_csv(request: web.Request, _d: dict[str, Any]) -> Any:
     )
 
 
-def project_import(request: web.Request, data: dict[str, Any]) -> Any:
-    _only_managers(request)
-    return _pm(request).import_project(data, _actor(request))
+MAX_IMPORT = 64 * 1024 * 1024  # an export with long notes on thousands of tasks
+
+
+async def project_import(request: web.Request) -> web.StreamResponse:
+    """The export file is the request body (read here: it is far bigger than a form)."""
+    w = _w()
+    try:
+        _only_managers(request)
+    except PermissionError as e:
+        raise w.ApiError(403, str(e)) from None
+    chunks, size = [], 0
+    while chunk := await request.content.read(65536):
+        size += len(chunk)
+        if size > MAX_IMPORT:
+            raise w.ApiError(413, tr("Tệp quá lớn (tối đa {0} MB)", MAX_IMPORT // 1024 // 1024))
+        chunks.append(chunk)
+    try:
+        data = json.loads(b"".join(chunks))
+    except ValueError:
+        raise w.ApiError(400, tr("Không phải tệp dự án")) from None
+    try:
+        return w._json(_pm(request).import_project(data, _actor(request)))
+    except (ProjectError, ValueError, TypeError) as e:
+        raise w.ApiError(400, str(e)) from None
 
 
 # ---------------------------------------------------------------------- #
@@ -249,7 +270,7 @@ def file_delete(request: web.Request, _d: dict[str, Any]) -> Any:
 def add_routes(r: web.UrlDispatcher) -> None:
     r.add_get("/api/pm/projects", handler(projects_list))
     r.add_post("/api/pm/projects", handler(project_create))
-    r.add_post("/api/pm/import", handler(project_import))
+    r.add_post("/api/pm/import", project_import)
     r.add_get("/api/pm/my", handler(my_tasks))
     r.add_get(r"/api/pm/projects/{id:\d+}", handler(project_board))
     r.add_patch(r"/api/pm/projects/{id:\d+}", handler(project_patch))

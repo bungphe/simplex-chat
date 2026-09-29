@@ -281,3 +281,49 @@ def test_no_dependency_loops_ids_never_reused_counts_everywhere(office):
     last = pm.save_project(None, {"name": "Cuối"}, "admin")["id"]
     pm.delete_project(last, "admin")
     assert pm.save_project(None, {"name": "Mới"}, "admin")["id"] > last
+
+
+async def test_deep_branches_refused_and_deletion_covers_the_branch(office):
+    pm = office.projects
+    from ai_employees.projects import MAX_DEPTH
+    from ai_employees.users import Users
+
+    pid = pm.save_project(None, {"name": "Sâu"}, "admin")["id"]
+    parent = None
+    for i in range(MAX_DEPTH):
+        parent = pm.create_task(pid, {"title": f"c{i}"}, "admin", parent_id=parent)["id"]
+    with pytest.raises(ProjectError, match="quá sâu"):
+        pm.create_task(pid, {"title": "quá"}, "admin", parent_id=parent)
+    top = pm.create_task(pid, {"title": "top"}, "admin")
+    with pytest.raises(ProjectError, match="quá sâu"):  # a tall branch cannot be hung deep down
+        pm.move(pm.board(pid)["tasks"][0]["id"], "admin", parent_id=top["id"])
+    assert pm.board(pid)["tasks"][0]["leaf_total"] == 1  # the deep chain still computes (no recursion)
+
+    users = Users(office.docs, "")
+    thu = users.get("thu")
+    mine = pm.create_task(pid, {"title": "của Thu"}, "thu")
+    boss = pm.create_task(pid, {"title": "của sếp"}, "quan")
+    pm.move(boss["id"], "thu", parent_id=mine["id"])  # hung under their own task
+    assert not pm.may_delete_task(thu, mine["id"])  # the branch holds someone else's task
+    assert pm.may_delete_task(users.get("quan"), mine["id"])
+
+    # CSV cells never run as formulas; a big export can be imported again
+    t = pm.create_task(pid, {"title": '=HYPERLINK("x")'}, "admin")
+    assert "'=HYPERLINK" in pm.csv(pid)
+    pm.update_task(t["id"], {"notes": "<p>" + "x" * 40_000 + "</p>"}, "admin")
+    for i in range(8):
+        pm.create_task(pid, {"title": f"n{i}", "notes": "<p>" + "y" * 40_000 + "</p>"}, "admin")
+    client = TestClient(TestServer(create_app(office, PASSWORD)))
+    await client.start_server()
+    try:
+        await client.post("/api/login", json={"password": PASSWORD}, headers=H)
+        r = await client.get(f"/api/pm/projects/{pid}/export.json")
+        body = await r.read()
+        assert len(body) > 300_000
+        r = await client.post("/api/pm/import", data=body, headers={**H, "Content-Type": "application/json"})
+        assert r.status == 200, await r.text()
+        assert (await r.json())["task_count"] >= 10
+        r = await client.post("/api/pm/import", data=b"not json", headers=H)
+        assert r.status == 400
+    finally:
+        await client.close()

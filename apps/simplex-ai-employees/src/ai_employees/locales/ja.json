@@ -886,6 +886,7 @@
  "Nhiệm vụ và kết quả gần nhất": "タスクと最新の結果",
  "Nhà cung cấp": "仕入先",
  "Nhánh cha không thuộc dự án này": "親ブランチはこのプロジェクトに属していません",
+ "Nhánh quá sâu (tối đa {0} cấp)": "ブランチが深すぎます（最大 {0} 階層）",
  "Nhân viên": "スタッフ",
  "Nhân viên AI": "AI従業員",
  "Nhân viên AI trả lời hội thoại này": "この会話にはAI従業員が返信します",

@@ -886,6 +886,7 @@
  "Nhiệm vụ và kết quả gần nhất": "Tasks and latest results",
  "Nhà cung cấp": "Supplier",
  "Nhánh cha không thuộc dự án này": "The parent branch is not in this project",
+ "Nhánh quá sâu (tối đa {0} cấp)": "Branch too deep (at most {0} levels)",
  "Nhân viên": "Staff",
  "Nhân viên AI": "AI employee",
  "Nhân viên AI trả lời hội thoại này": "AI employee replying to this conversation",

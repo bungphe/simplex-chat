@@ -21,7 +21,7 @@ import logging
 import re
 import secrets
 from collections.abc import Callable
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from html.parser import HTMLParser
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -71,7 +71,9 @@ MAX_FILE = 10 * 1024 * 1024
 MAX_AVATAR = 200_000  # a small round picture, resized in the browser
 MAX_NOTES = 50_000
 MAX_TASKS = 5_000  # per project
+MAX_DEPTH = 20  # levels below the project
 DIGEST_HOUR = 8  # the morning reminder (the office's local time)
+DIGEST_KEY = "pm_digest"  # the day the last reminder went out (survives restarts)
 _CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
@@ -195,6 +197,13 @@ def clean_html(text: str) -> str:
     return "".join(cleaner.out)
 
 
+def _cell(value: Any) -> Any:
+    """A CSV cell a spreadsheet will not run as a formula."""
+    if isinstance(value, str) and value[:1] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + value
+    return value
+
+
 def plain(html_text: str) -> str:
     """The notes as plain text (for chat and CSV)."""
     text = re.sub(r"<(br|/p|/li|/div|/h\d)>", "\n", html_text or "")
@@ -204,8 +213,10 @@ def plain(html_text: str) -> str:
     ).strip()
 
 
-def _today() -> date:
-    return datetime.now().astimezone().date()
+def _local_now(office: Any) -> datetime:
+    """The office's own clock (its time zone), not the server's."""
+    first = next(iter(getattr(office, "employees", {}).values()), None)
+    return first.local_now() if first is not None else datetime.now().astimezone()
 
 
 class Projects:
@@ -369,7 +380,7 @@ class Projects:
     def _computed(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Children, progress of branches, done/total leaves, late and due soon, what
         each task still waits for."""
-        today = _today()
+        today = _local_now(self.office).date()
         soon = (today + timedelta(days=DUE_SOON_DAYS)).isoformat()
         tasks = [self._decode(r) for r in rows]
         by_id = {int(t["id"]): t for t in tasks}
@@ -383,13 +394,20 @@ class Projects:
             elif t["parent_id"] is not None:  # a lost parent: shown at the top
                 t["parent_id"] = None
 
-        def walk(t: dict[str, Any], depth: int) -> tuple[float, int, int]:
+        # depth first without recursion (a branch may be deep); children before parents
+        order: list[dict[str, Any]] = []
+        stack = [(t, 0) for t in reversed(tasks) if t["parent_id"] is None]
+        while stack:
+            t, depth = stack.pop()
             t["depth"] = depth
+            order.append(t)
+            stack += [(by_id[c], depth + 1) for c in reversed(t["children"])]
+        for t in reversed(order):
             if t["children"]:
-                results = [walk(by_id[c], depth + 1) for c in t["children"]]
-                pct = sum(r[0] for r in results) / len(results)
-                leaves = sum(r[1] for r in results)
-                done = sum(r[2] for r in results)
+                kids = [by_id[c] for c in t["children"]]
+                pct = sum(k["_pct"] for k in kids) / len(kids)
+                leaves = sum(k["leaf_total"] for k in kids)
+                done = sum(k["leaf_done"] for k in kids)
             else:
                 items = t["checklist"]
                 if t["status"] == "done":
@@ -399,16 +417,15 @@ class Projects:
                 else:
                     pct = float(t["progress"])
                 leaves, done = 1, int(t["status"] == "done")
+            t["_pct"] = pct
             t["done_pct"] = round(pct)
             t["leaf_total"], t["leaf_done"] = leaves, done
-            return pct, leaves, done
-
         for t in tasks:
-            if t["parent_id"] is None:
-                walk(t, 0)
-        for t in tasks:
+            t.pop("_pct", None)
             t.setdefault("depth", 0)
             t.setdefault("done_pct", t["progress"])
+            t.setdefault("leaf_total", 1)
+            t.setdefault("leaf_done", int(t["status"] == "done"))
             open_ = t["status"] != "done"
             t["late"] = bool(open_ and t["due_date"] and t["due_date"] < today.isoformat())
             t["due_soon"] = bool(open_ and not t["late"] and t["due_date"] and t["due_date"] <= soon)
@@ -548,6 +565,37 @@ class Projects:
                 seen.add(c)
                 todo += graph.get(c, [])
 
+    def _depth(self, tid: int | None) -> int:
+        """How many levels below the project a task sits (0 for a top-level task)."""
+        depth = 0
+        while tid is not None:
+            row = self.db.row("SELECT parent_id FROM pm_tasks WHERE id=?", (tid,))
+            if row is None:
+                break
+            tid = row["parent_id"]
+            depth += 1
+            if depth > MAX_DEPTH + 1:  # a corrupt chain: stop counting
+                break
+        return depth
+
+    def _check_depth(self, parent_id: int | None, height: int = 0) -> None:
+        if self._depth(parent_id) + height >= MAX_DEPTH:
+            raise ProjectError(tr("Nhánh quá sâu (tối đa {0} cấp)", MAX_DEPTH))
+
+    def _height(self, tid: int) -> int:
+        """How many levels the branch under a task has (0 for a leaf)."""
+        height, level = 0, [tid]
+        while level and height <= MAX_DEPTH:
+            level = [
+                int(r["id"])
+                for r in self.db.rows(
+                    f"SELECT id FROM pm_tasks WHERE parent_id IN ({', '.join('?' * len(level))})", level
+                )
+            ]
+            if level:
+                height += 1
+        return height
+
     def create_task(
         self,
         pid: int,
@@ -555,7 +603,10 @@ class Projects:
         actor: str,
         parent_id: int | None = None,
         after_id: int | None = None,
+        quiet: bool = False,
     ) -> dict[str, Any]:
+        """A task in the project (under `parent_id`, after sibling `after_id`); `quiet`
+        (imports): no notice to the assignee, and a bare row instead of the computed task."""
         self.project(pid)
         if (
             int(self.db.row("SELECT COUNT(*) AS n FROM pm_tasks WHERE project_id=?", (pid,))["n"])
@@ -564,6 +615,7 @@ class Projects:
             raise ProjectError(tr("Dự án đã có quá nhiều công việc"))
         if parent_id is not None and int(self._row(parent_id)["project_id"]) != pid:
             raise ProjectError(tr("Nhánh cha không thuộc dự án này"))
+        self._check_depth(parent_id)
         fields = self._clean(pid, {"title": tr("Công việc mới"), **data})
         now = now_iso()
         with self.db.transaction():
@@ -585,6 +637,8 @@ class Projects:
             )
             assert tid is not None
             self._touch(pid)
+        if quiet:
+            return self._decode(self._row(int(tid)))
         task = self.task(int(tid))
         self._log(pid, int(tid), actor, "created", f"{task['code']} {task['title']}")
         if task["assignee"] and task["assignee"] != actor:
@@ -643,6 +697,7 @@ class Projects:
                         raise ProjectError(tr("Nhánh cha không thuộc dự án này"))
                     if new_parent == tid or new_parent in self._descendants(tid):
                         raise ProjectError(tr("Không chuyển được một nhánh vào trong chính nó"))
+                    self._check_depth(new_parent, self._height(tid))
                 if new_parent != row["parent_id"]:
                     old = self._siblings(pid, row["parent_id"])
                     old.remove(tid)
@@ -830,7 +885,7 @@ class Projects:
                         continue
                     fields = {k: t[k] for k in TASK_FIELDS if k in t and k != "depends"}
                     created = self.create_task(
-                        pid, fields, actor, parent_id=new_ids.get(parent) if parent else None
+                        pid, fields, actor, parent_id=new_ids.get(parent) if parent else None, quiet=True
                     )
                     new_ids[str(t.get("code") or created["code"])] = int(created["id"])
                     for c in t.get("comments") or []:
@@ -871,7 +926,8 @@ class Projects:
         writer.writerow([*CSV_COLUMNS, "done_pct", "late", "notes"])
         for t in board["tasks"]:
             writer.writerow(
-                [
+                _cell(v)
+                for v in [
                     t["code"],
                     codes.get(int(t["parent_id"])) if t["parent_id"] is not None else "",
                     "  " * t["depth"] + t["title"],
@@ -974,11 +1030,13 @@ class Projects:
 
     async def morning_digest(self, force: bool = False) -> int:
         """Once a day: each person's late tasks and those due soon, in their chat."""
-        now = datetime.now().astimezone()
+        now = _local_now(self.office)
         day = now.date().isoformat()
-        if not force and (now.hour < DIGEST_HOUR or self._digest_day == day):
+        sent_day = self._digest_day or (self.office.docs.get(DIGEST_KEY) or {}).get("day", "")
+        if not force and (now.hour < DIGEST_HOUR or sent_day == day):
             return 0
         self._digest_day = day
+        self.office.docs.update(DIGEST_KEY, lambda d: d.update(day=day), {})
         links = getattr(self.office, "staff_links", None)
         if links is None:
             return 0
@@ -1020,4 +1078,16 @@ class Projects:
         return user.role in ("admin", "manager")
 
     def may_delete_task(self, user: User, tid: int) -> bool:
-        return self.manages(user) or self._row(tid)["created_by"] == user.username
+        """Managers delete anything; others only branches they created entirely."""
+        if self.manages(user):
+            return True
+        ids = [tid, *self._descendants(tid)]
+        for i in range(0, len(ids), 500):
+            chunk = ids[i : i + 500]
+            n = self.db.row(
+                f"SELECT COUNT(*) AS n FROM pm_tasks WHERE id IN ({', '.join('?' * len(chunk))}) AND created_by<>?",
+                [*chunk, user.username],
+            )
+            if int(n["n"]):
+                return False
+        return True

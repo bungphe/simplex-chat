@@ -158,7 +158,8 @@
 
   function poll() {
     if (current !== "projects" || !S.els || S.view === "projects" || pending || document.hidden) return;
-    if (S.els.panel.contains(document.activeElement) || S.els.root.querySelector(".dragging")) return;
+    const active = document.activeElement;
+    if (S.els.panel.contains(active) || S.els.main.contains(active) || S.els.root.querySelector(".dragging")) return;
     loadBoard().catch(() => {});
   }
 
