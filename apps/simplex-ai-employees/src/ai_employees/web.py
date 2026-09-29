@@ -1986,11 +1986,13 @@ def create_app(office: Office, password: str) -> web.Application:
     r.add_post("/api/inbox/{cid}/assignee", inbox_assignee)
     r.add_post("/api/inbox/{cid}/labels", inbox_labels)
     r.add_post("/api/inbox/{cid}/summary", inbox_summary)
+    from .privacy import add_routes as add_privacy_routes
     from .web_business import add_routes
     from .web_projects import add_routes as add_project_routes
 
     add_routes(r)
     add_project_routes(r)
+    add_privacy_routes(r)
     r.add_get("/api/inbox/{cid}/products", inbox_products)
     r.add_get("/api/inventory", inv_overview)
     r.add_put("/api/inventory/settings", inv_settings)

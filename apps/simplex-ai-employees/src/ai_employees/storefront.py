@@ -806,7 +806,8 @@ def _page(request: web.Request, title: str, body: str, status: int = 200) -> web
         f'<title>{e(title)} – {name}</title><link rel="stylesheet" href="/static/shop.css"></head><body>'
         f'<header><a class="brand" href="/">{name}</a><nav><a href="/">{e(tr("Sản phẩm"))}</a>'
         f'<a href="/combos">{e(tr("Combo"))}</a><a href="/cart">{e(tr("Giỏ hàng ({0})", count))}</a>{account}</nav></header>'
-        f'<main>{body}</main><footer>{contact}<div class="langs">{langs}</div></footer></body></html>'
+        f'<main>{body}</main><footer>{contact} · <a href="/privacy">{e(tr("Chính sách bảo mật"))}</a>'
+        f'<div class="langs">{langs}</div></footer></body></html>'
     )
     return web.Response(text=doc, content_type="text/html", status=status)
 
@@ -1614,6 +1615,9 @@ def create_shop_app(office: Office, public_url: str = "") -> web.Application:
         r.add_route(method, path, _with_customer(fn))
     r.add_get("/pay/ipn/{gateway}", pay_ipn)  # the gateways' notifications: no session, no CSRF
     r.add_post("/pay/ipn/{gateway}", pay_ipn)
+    from . import privacy
+
+    privacy.shop_routes(r)  # /privacy: the shop's policy page
     r.add_get("/static/shop.css", stylesheet)
     r.add_get("/favicon.ico", no_icon)
     return app

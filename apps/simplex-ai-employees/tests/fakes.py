@@ -60,8 +60,12 @@ def make_office(
     channels: list[dict[str, Any]] | None = None,
     cluster: dict[str, Any] | None = None,
     storefront: dict[str, Any] | None = None,
+    privacy: dict[str, Any] | None = None,
     **sales_overrides: Any,
 ) -> Office:
+    """`privacy`: the "privacy_settings" document to start with. By default the AI
+    disclosure (on for real shops) is turned off, so tests see the bare answers; pass {}
+    for the real defaults, or the settings to test."""
     accountant = {"model": accountant_model} if accountant_model else {}
     raw = {
         "state_dir": str(tmp_path / "state"),
@@ -99,7 +103,11 @@ def make_office(
     }
     if base := os.environ.get("AIE_TEST_DATABASE_URL"):
         raw["database_url"] = postgres_schema(base, tmp_path)
-    return Office(parse_config(raw, base_dir=tmp_path), llm, http)
+    office = Office(parse_config(raw, base_dir=tmp_path), llm, http)
+    seed = {"ai_disclosure": False} if privacy is None else privacy
+    if seed:
+        office.docs.update("privacy_settings", lambda d: d.update(seed), {})
+    return office
 
 
 _SCHEMAS: set[str] = set()

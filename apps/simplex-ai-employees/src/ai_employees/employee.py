@@ -235,6 +235,9 @@ class Employee:
             conv = self.office.hub.inbox.find(f"simplex:{self.id}", str(cid))
             if conv is not None and conv.mode == "human":
                 return  # taken over while the AI was answering
+            answer = await self.office.hub.with_disclosure(
+                conv_id, answer
+            )  # "you are talking to an AI", once
             chunks = split_message(answer)
             await msg.reply(chunks[0])
             for chunk in chunks[1:]:
@@ -765,6 +768,13 @@ class Office:
                     log.info("inventory: daily price run changed %d product(s)", len(changes))
             except Exception:
                 log.exception("inventory: daily price run failed")
+            try:
+                from . import privacy
+
+                if (removed := privacy.apply_retention(self))["messages"]:  # once per 6 h inside
+                    log.info("privacy: retention removed %d message(s)", removed["messages"])
+            except Exception:
+                log.exception("privacy: retention failed")
             try:
                 await asyncio.wait_for(self._stopping.wait(), timeout=self.tick_seconds)
             except TimeoutError:

@@ -16,6 +16,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from . import privacy
 from .channels import Channel, ChannelError, InboundMessage, make_channel
 from .crm import CRM
 from .desk import Desk
@@ -57,6 +58,7 @@ class ChannelHub:
         self.inbox = Inbox(office.db or state_dir / "inbox.db")
         self.desk = Desk(office.docs)
         self.crm = CRM(self.inbox.db)
+        privacy.ensure_schema(self.inbox.db)  # the audit log and the per-conversation AI disclosure flag
         old = state_dir / "channel_secrets.json"
         if old.exists():  # tokens kept before they moved into the database
             saved = json.loads(old.read_text(encoding="utf-8"))
@@ -443,8 +445,42 @@ class ChannelHub:
                     conv_id,
                 )
                 return None
-            await self.deliver(now, answer, "ai", employee.settings.display_name)
+            notice = await self.disclosure(now)
+            try:
+                await self.deliver(
+                    now, f"{notice}\n\n{answer}" if notice else answer, "ai", employee.settings.display_name
+                )
+            except ChannelError:
+                if notice:
+                    privacy.undisclose(self.office, conv_id)  # not delivered: the next answer carries it
+                raise
             return answer
+
+    async def disclosure(self, conv: Conversation) -> str | None:
+        """The AI disclosure for the first AI answer of a conversation (in the customer's
+        language), None once it was sent or when the shop turned it off. Marks the
+        conversation, so the caller must send what it gets."""
+        try:
+            notice = privacy.disclosure_for(self.office, conv, self.channel_type(conv))
+        except Exception:  # the notice must never stop an answer
+            log.exception("privacy: no AI disclosure for conversation %s", conv.id)
+            return None
+        if not notice:
+            return None
+        employee = self.employee_for(conv)
+        if employee is not None:
+            try:
+                notice = await employee.agent.for_contact(conv.contact_id, notice)
+            except Exception:  # noqa: BLE001 - sent in the shop's language instead
+                log.warning("privacy: AI disclosure for conversation %s not translated", conv.id)
+        return notice
+
+    async def with_disclosure(self, conv_id: int, answer: str) -> str:
+        """For replies sent outside `reply_ai` (the SimpleX bots): the answer with the AI
+        disclosure in front of it the first time the AI answers in this conversation."""
+        conv = self.inbox.conversation(conv_id)
+        notice = await self.disclosure(conv) if conv is not None else None
+        return f"{notice}\n\n{answer}" if notice else answer
 
     async def deliver(
         self, conv: Conversation, text: str, sender: str, author: str, original: str = ""

@@ -961,6 +961,45 @@ function contactPanel(c, companies, act) {
   ];
 }
 
+// The customer's data as one JSON file (their right of access), saved through the browser.
+async function downloadCustomerData(id) {
+  const r = await fetch(`/api/privacy/contacts/${id}/export`, { credentials: "same-origin" });
+  if (!r.ok) {
+    let data = {};
+    try { data = await r.json(); } catch (_) { /* no body */ }
+    throw new Error(data.error || `HTTP ${r.status}`);
+  }
+  const url = URL.createObjectURL(await r.blob());
+  const a = h("a", { href: url, download: `khach-hang-${id}.json` });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+// Erase a customer (their right to be forgotten): the admin retypes the phone number or
+// name; `done(summary)` runs afterwards with what was removed.
+function eraseCustomer(c, done) {
+  const key = c.phone || c.name || `#${c.id}`;
+  const typed = prompt(tr(
+    "Xoá toàn bộ dữ liệu của khách này? Hội thoại, trí nhớ AI, điểm tích luỹ và đăng nhập web bị xoá; đơn hàng được giữ nhưng ẩn danh. Không hoàn tác được.\nGõ lại để xác nhận: {0}",
+    key
+  ));
+  if (typed === null) return;
+  run(async () => {
+    const { erased } = await api("POST", `/api/privacy/contacts/${c.id}/erase`, { confirm: typed });
+    done(erased);
+  }, tr("Đã xoá dữ liệu khách"));
+}
+
+function erasedSummary(e) {
+  const memory = Object.entries(e.memory || {}).map(([emp, n]) => `${emp}: ${n}`).join(", ") || "—";
+  return tr(
+    "Đã xoá: {0} hội thoại, {1} tin nhắn, {2} phiên đăng nhập web, {3} dòng điểm ({4} điểm). Đơn hàng ẩn danh: {5}. Trí nhớ AI đã xoá (số lượt): {6}. Ghi vào nhật ký quyền riêng tư #{7}.",
+    e.conversations, e.messages, e.sessions, e.points_rows, e.points, e.orders, memory, e.log_id
+  );
+}
+
 views.customers = async (arg) => {
   const search = h("input", { type: "search", placeholder: tr("Tìm tên, số điện thoại, email") });
   const companySel = h("select", {}, h("option", { value: "" }, tr("Mọi công ty")));
@@ -983,11 +1022,20 @@ views.customers = async (arg) => {
       ), pts.vip ? tr(" · ⭐ VIP (thẻ {0}) từ {1}", pts.card, fmtTime(pts.vip_since)) : ""),
       h("div", { class: "row" }, h("button", { class: "small", onclick: () => { const d = prompt(tr("Cộng (hoặc trừ, số âm) bao nhiêu điểm?")); if (d) run(async () => { await api("POST", `/api/crm/contacts/${selected}/points`, { delta: Number(d), reason: prompt(tr("Lý do:")) || "" }); await loadDetail(); }, tr("Đã điều chỉnh điểm")); } }, tr("Điều chỉnh điểm"))),
       pts.orders_list.length ? h("table", {}, h("tbody", {}, pts.orders_list.map((o) => h("tr", {}, h("td", { class: "mono" }, o.code), h("td", {}, fmtTime(o.created)), h("td", {}, Number(o.total).toLocaleString(LOCALE)), h("td", {}, o.status))))) : null);
+    const privacyBox = h("div", { class: "memory" }, h("h3", {}, tr("Quyền riêng tư")),
+      h("p", { class: "muted" }, tr("Quyền của khách theo Nghị định 13/2023/NĐ-CP: nhận bản sao dữ liệu của mình, hoặc yêu cầu xoá (trả lời trong 72 giờ).")),
+      h("div", { class: "row" },
+        h("button", { class: "small", onclick: () => run(() => downloadCustomerData(selected), tr("Đã tải tệp dữ liệu khách")) }, tr("Xuất dữ liệu")),
+        h("button", { class: "small danger", onclick: () => eraseCustomer(r.contact, (erased) => {
+          selected = null;
+          put(detail, h("summary", { class: "muted" }, tr("Đã xoá dữ liệu khách")), h("div", { class: "memory" }, h("p", {}, erasedSummary(erased))));
+          run(loadAll);
+        }) }, tr("Xoá dữ liệu khách"))));
     put(detail, ...contactPanel(r.contact, companies, {
       save: (body) => run(async () => { await api("PATCH", `/api/crm/contacts/${selected}`, body); await loadAll(); }, tr("Đã lưu")),
       merge: (other) => run(async () => { await api("POST", `/api/crm/contacts/${selected}/merge`, { other }); await loadAll(); }, tr("Đã gộp khách")),
       open: (id) => go("inbox", id),
-    }), loyalty);
+    }), loyalty, privacyBox);
     detail.open = true;
   };
   const loadList = async () => {
@@ -1041,9 +1089,44 @@ views.customers = async (arg) => {
 // --------------------------------------------------------------------------
 // Inbox settings (admins): labels, saved replies, teams, triage rules, SLA target
 
+// Privacy settings (admins): the AI disclosure, retention, the contact for data requests
+// and the policy text shown on the web shop's /privacy page.
+function privacyCard(p) {
+  const s = p.settings;
+  const f = {
+    on: h("input", { type: "checkbox", checked: !!s.ai_disclosure }),
+    text: h("textarea", { rows: 3 }, s.disclosure_text),
+    days: h("input", { type: "number", min: 0, max: 3650, value: s.retention_days, class: "narrow" }),
+    email: h("input", { type: "email", value: s.contact_email, maxlength: 200, placeholder: "privacy@cuahang.vn" }),
+    policy: h("textarea", { rows: 18, class: "policy-text" }, s.policy_text),
+  };
+  const save = () => run(async () => {
+    await api("PUT", "/api/privacy/settings", {
+      ai_disclosure: f.on.checked, disclosure_text: f.text.value, retention_days: parseInt(f.days.value, 10) || 0,
+      contact_email: f.email.value.trim(), policy_text: f.policy.value,
+    });
+    go("desk");
+  }, tr("Đã lưu"));
+  return h("div", { class: "card section" }, h("h2", {}, tr("Quyền riêng tư")),
+    h("p", { class: "muted" }, tr("Theo Nghị định 13/2023/NĐ-CP: báo cho khách biết họ đang nói chuyện với AI, công bố chính sách bảo mật, và xử lý yêu cầu xem hoặc xoá dữ liệu (nút trong trang Khách hàng).")),
+    h("label", { class: "check" }, f.on, h("span", {}, tr("Thông báo trợ lý AI ở câu trả lời đầu tiên của mỗi hội thoại"))),
+    h("label", {}, tr("Nội dung thông báo ({shop} và {url} được thay tự động; dịch sang ngôn ngữ của khách)"), f.text),
+    p.preview ? h("p", { class: "muted pre" }, tr("Khách sẽ thấy: {0}", p.preview)) : null,
+    h("div", { class: "two" },
+      h("label", {}, tr("Tự xoá tin nhắn của hội thoại đã đóng sau (ngày; 0 = giữ mãi)"), f.days),
+      h("label", {}, tr("Email nhận yêu cầu về dữ liệu cá nhân"), f.email)),
+    h("label", {}, tr("Chính sách bảo mật ({shop}, {address}, {phone}, {email}, {url}, {retention} được thay tự động; dòng \"- \" thành gạch đầu dòng, \"## \" thành tiêu đề)"), f.policy),
+    h("div", { class: "row" },
+      h("button", { class: "primary", onclick: save }, tr("Lưu")),
+      h("button", { class: "ghost", onclick: () => { if (confirm(tr("Thay nội dung đang soạn bằng mẫu chính sách mặc định?"))) f.policy.value = p.defaults.policy_text; } }, tr("Dùng mẫu mặc định")),
+      p.policy_url ? h("a", { href: p.policy_url, target: "_blank", rel: "noopener" }, tr("Xem trang chính sách →"))
+        : h("span", { class: "muted" }, tr("Chưa cấu hình web bán hàng (storefront.public_url) nên chưa có trang chính sách công khai."))));
+}
+
 views.desk = async () => {
   const [meta, acc] = await Promise.all([run(() => api("GET", "/api/inbox/meta")), run(() => api("GET", "/api/users"))]);
   if (!meta || !acc) return;
+  const priv = await api("GET", "/api/privacy/settings").catch(() => null);
   const save = (section, value, msg) => run(async () => { await api("PUT", `/api/desk/${section}`, { value }); go("desk"); }, msg);
   const del = (section, i) => confirm(tr("Xoá mục này?")) && save(section, meta[section].filter((_, j) => j !== i), tr("Đã xoá"));
   const chName = Object.fromEntries(acc.channels.map((c) => [c.id, c.name]));
@@ -1130,7 +1213,7 @@ views.desk = async () => {
       h("div", { class: "row" }, tr("Khách chờ quá"), sla, tr("phút là trễ"),
         h("button", { onclick: () => save("sla_minutes", parseInt(sla.value, 10), tr("Đã lưu")) }, tr("Lưu")),
         h("button", { class: "ghost", onclick: () => go("sla") }, tr("Xem báo cáo SLA →")))),
-    labels, canned, teams, rules);
+    labels, canned, teams, rules, priv ? privacyCard(priv) : null);
 };
 const labelChipOf = (l) => colored(h("span", { class: "label" }, l.name), l.color);
 
