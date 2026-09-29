@@ -183,11 +183,41 @@ views.overview = async () => {
         h("div", { class: "row" }, h("button", { onclick: () => go("employees", e.id) }, tr("Quản lý"))),
       );
     });
-    render(h("h1", {}, tr("Tổng quan")), tiles, h("div", { class: "grid" }, cards));
+    render(h("h1", {}, tr("Tổng quan")), tiles, await opsCard(), h("div", { class: "grid" }, cards));
   };
   await run(load);
   refreshTimer = setInterval(() => current === "overview" && run(load), 15000);
 };
+
+const fmtBytes = (n) => (n == null ? "—" : n >= 1e9 ? (n / 1e9).toFixed(1) + " GB" : n >= 1e6 ? Math.round(n / 1e6) + " MB" : Math.round(n / 1e3) + " KB");
+
+// Health of the installation (/api/ops, admins only): database, backups, disk, alerts.
+async function opsCard() {
+  let s;
+  try { s = await api("GET", "/api/ops"); } catch { return null; }
+  const state = (ok, warn, bad) => h("span", { class: `pill ${ok ? "ok" : bad ? "bad" : "warn"}` }, ok ? tr("ổn") : bad || warn);
+  const backup = s.backup || {};
+  const backupState = !s.backup_enabled ? h("span", { class: "pill neutral" }, tr("đã tắt"))
+    : backup.last_error ? state(false, null, tr("lỗi"))
+    : backup.last_ok ? state(s.backup_age_s < 36 * 3600, tr("quá cũ"))
+    : h("span", { class: "pill warn" }, tr("chưa có"));
+  const diskPct = s.disk_total ? Math.round((1 - s.disk_free / s.disk_total) * 100) : null;
+  const alerts = Object.values(s.alerts || {});
+  const channelErrors = Object.entries(s.channel_errors || {});
+  const item = (label, value, extra) => h("div", { class: "kv" }, h("span", { class: "muted" }, label), " ", value, extra ? h("span", { class: "muted" }, " · " + extra) : null);
+  return h("div", { class: "card ops" },
+    h("div", { class: "row spread" }, h("h2", {}, tr("Vận hành")), h("span", { class: "muted" }, tr("phiên bản {0} · chạy được {1}", s.version || "?", fmtDur(s.uptime_s || 0)))),
+    h("div", { class: "row wrap" },
+      item(tr("Cơ sở dữ liệu"), state(s.db_ok, null, s.db_ok ? null : tr("mất kết nối")), s.db_error ? String(s.db_error).slice(0, 80) : fmtBytes(s.db_size)),
+      item(tr("Sao lưu"), backupState, backup.last_ok ? tr("gần nhất {0}", fmtTime(backup.last_ok)) + (backup.size ? ", " + fmtBytes(backup.size) : "") : (backup.last_error ? String(backup.last_error).slice(0, 80) : tr("hằng đêm lúc {0}:00", s.backup_hour ?? 3))),
+      item(tr("Đĩa"), state(diskPct == null || diskPct < 90, tr("gần đầy")), diskPct == null ? null : tr("còn trống {0} ({1}% đã dùng)", fmtBytes(s.disk_free), diskPct)),
+      item(tr("Model (15 phút)"), state(!s.model_errors_15m, tr("{0} lỗi", s.model_errors_15m)), tr("{0} lượt", Object.values(s.runs_15m || {}).reduce((a, b) => a + b, 0))),
+      item(tr("Kênh chat"), state(!channelErrors.length, tr("{0} kênh lỗi", channelErrors.length)), channelErrors.length ? channelErrors.map(([id, e]) => `${id}: ${e}`).join("; ").slice(0, 120) : null),
+    ),
+    alerts.length ? h("p", {}, h("b", {}, tr("Cảnh báo đang mở: ")), alerts.map((a) => a.label || "").filter(Boolean).join(" · ")) : null,
+    h("p", { class: "muted" }, tr("Chi tiết trong docs/OPERATIONS.md: sao lưu, khôi phục, /healthz, /metrics, cảnh báo qua SimpleX.")),
+  );
+}
 
 function tile(num, label) {
   return h("div", { class: "card tile" }, h("div", { class: "num" }, num), h("div", { class: "lbl" }, label));

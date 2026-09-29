@@ -849,8 +849,8 @@ Chi tiết trong [`docs/OPERATIONS.md`](docs/OPERATIONS.md) (kèm checklist trư
   `GET /metrics` (trang quản trị, `Authorization: Bearer $AI_METRICS_TOKEN`; ẩn khi chưa đặt biến) xuất số liệu
   Prometheus: tiến trình, lượt chạy và lỗi model, hộp thư, đơn hàng, kênh, tuổi bản sao lưu, đĩa, CSDL.
 - **Watchdog** (5 phút một lần): đĩa gần đầy, quá lâu chưa sao lưu, kênh đang lỗi, nhiều lỗi model, mất kết nối
-  PostgreSQL → quản trị viên nhận **một** tin SimpleX cho mỗi tình trạng mỗi 6 giờ và một tin khi hết lỗi. Trang
-  quản trị → Hệ thống cho thấy cùng trạng thái (`GET /api/ops`).
+  PostgreSQL → quản trị viên nhận **một** tin SimpleX cho mỗi tình trạng mỗi 6 giờ và một tin khi hết lỗi. Thẻ
+  **Vận hành** ở trang Tổng quan (chỉ quản trị viên) cho thấy cùng trạng thái (`GET /api/ops`).
 - `python -m ai_employees check employees.yaml` kiểm tra cấu hình, biến môi trường, quyền thư mục, kết nối CSDL và
   model trước khi khởi động.
 

@@ -120,6 +120,11 @@ async def test_policy_page_renders_the_text_with_the_shop_details(setup):
         assert "Nội thất ABC – 12 Lê Lợi, Q1<br>Điện thoại: 0901 234 567 · Email: privacy@abc.vn" in page
         assert "Nội dung chat được lưu 90 ngày." in page and f"{SITE}/privacy." in page
 
+        # the built-in policy follows the customer's language; a policy the shop wrote does not
+        page = await (await shop.get("/privacy?lang=en")).text()
+        assert "<h1>Chính sách" not in page and "Nội thất ABC" in page and "privacy@abc.vn" in page
+        assert page.count("<h2>") == 8
+
         privacy.save_settings(
             office, {"policy_text": "Xin chào {shop} <b>\n\n- Một <script>alert(1)</script>\n- Hai"}
         )
@@ -128,6 +133,8 @@ async def test_policy_page_renders_the_text_with_the_shop_details(setup):
             "<p>Xin chào Nội thất ABC &lt;b&gt;</p><ul><li>Một &lt;script&gt;" in page
             and "<script>alert" not in page
         )
+        page = await (await shop.get("/privacy?lang=en")).text()
+        assert "<p>Xin chào Nội thất ABC &lt;b&gt;</p>" in page
     finally:
         await shop.close()
 

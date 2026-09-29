@@ -415,3 +415,8 @@ kbd { border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 
 }
 /* the privacy policy is prose, not code */
 textarea.policy-text { min-height: 320px; font-family: inherit; font-size: 14px; }
+
+/* operations card on the overview */
+.card.ops .row.wrap { flex-wrap: wrap; gap: 0.4rem 1.6rem; }
+.card.ops .kv { white-space: nowrap; }
+.card.ops .kv .muted:last-child { white-space: normal; }

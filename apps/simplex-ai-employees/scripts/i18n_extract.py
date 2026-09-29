@@ -40,6 +40,7 @@ TABLES = {
     "SENT",
     "LANGUAGES",  # lang.py: language names shown to staff
     "COUNTRIES",  # lang.py: country names shown to staff
+    "DEFAULT_POLICY",  # privacy.py: the built-in policy, shown in the customer's language
 }
 
 

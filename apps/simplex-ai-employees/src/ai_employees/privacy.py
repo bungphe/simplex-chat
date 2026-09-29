@@ -265,7 +265,10 @@ async def policy_page(request: web.Request) -> web.Response:
     from .storefront import OFFICE, _page
 
     office = request.app[OFFICE]
-    body = policy_html(fill(settings(office)["policy_text"], values(office)))
+    text = settings(office)["policy_text"]
+    if text.strip() == DEFAULT_POLICY.strip():
+        text = tr(DEFAULT_POLICY)  # the built-in policy exists in every catalog language
+    body = policy_html(fill(text, values(office)))
     return _page(request, tr("Chính sách bảo mật"), f'<section class="policy">{body}</section>')
 
 
