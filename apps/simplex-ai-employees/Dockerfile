@@ -17,8 +17,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
     AI_ADMIN_UI_HOST=0.0.0.0 \
     AI_STOREFRONT_HOST=0.0.0.0
 
+# postgresql-client: pg_dump/pg_restore for backups of an office on PostgreSQL (~35 MB)
 RUN apt-get update \
  && apt-get install -y --no-install-recommends python3 python3-venv ca-certificates tzdata libgmp10 zlib1g libffi8 libssl3t64 \
+      postgresql-client \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --create-home --uid 10001 app
 
@@ -38,11 +40,15 @@ ENV XDG_CACHE_HOME=/app/cache
 RUN --mount=type=secret,id=ca_cert,required=false \
     if [ -f /run/secrets/ca_cert ]; then export SSL_CERT_FILE=/run/secrets/ca_cert; fi \
  && if [ "$DOWNLOAD_LIBSIMPLEX" = "1" ]; then /app/venv/bin/python -m simplex_chat install; fi \
- && mkdir -p /data /app/cache && chown -R app:app /data /app/cache
+ && mkdir -p /data /backups /app/cache && chown -R app:app /data /backups /app/cache
 
 USER app
 VOLUME ["/data"]
 EXPOSE 8080
-ENV PATH=/app/venv/bin:$PATH
+ENV PATH=/app/venv/bin:$PATH \
+    AI_BACKUP_DIR=/backups
+# GET /healthz on the admin UI answers 200 while the database does; AI_HEALTHCHECK_URL=off disables it
+HEALTHCHECK --interval=60s --timeout=10s --start-period=120s --retries=3 \
+    CMD ["python", "-c", "import os,sys,urllib.request as u; url=os.environ.get('AI_HEALTHCHECK_URL') or 'http://127.0.0.1:8080/healthz'; sys.exit(0 if url=='off' else (0 if u.urlopen(url, timeout=5).status==200 else 1))"]
 ENTRYPOINT ["python", "-m", "ai_employees"]
 CMD ["run", "/data/employees.yaml"]

@@ -1923,6 +1923,8 @@ def create_app(office: Office, password: str) -> web.Application:
     app[SESSIONS] = Sessions(office.office_db)
     app[USERS] = Users(office.docs, password, legacy_path=os.path.join(office.config.state_dir, "users.json"))
     r = app.router
+    if (ops := getattr(office, "ops", None)) is not None:
+        ops.add_routes(r)  # /healthz (public), /metrics (bearer token), /api/ops (admins)
     r.add_get("/", page)
     r.add_get("/static/{file}", page)
     r.add_get("/sw.js", page)

@@ -5,7 +5,8 @@
 #   cp .env.example .env                             # then fill in keys and passwords
 #   docker compose up -d --build                     # add "--profile local-ai" for Ollama
 #
-# Chat databases, memory, approvals and the run log live in ./data.
+# Chat databases, memory, approvals and the run log live in ./data; nightly backups in
+# ./backups (docs/OPERATIONS.md: keep a copy off the machine with AI_BACKUP_COMMAND).
 # The admin UI is published on 127.0.0.1:8080 only; reach it remotely through a
 # TLS reverse proxy or an SSH tunnel, never by opening the port to the Internet.
 
@@ -19,14 +20,25 @@ services:
     env_file: .env
     volumes:
       - ./data:/data
+      # backup-YYYYmmdd-HHMMSS.tar.gz, one per night ("sudo chown 10001:10001 backups" once)
+      - ./backups:/backups
       # To use a libsimplex built from this repository, uncomment both lines:
       # - ../../dist-lib/libsimplex-src:/opt/libsimplex:ro
-    # environment:
-    #   SIMPLEX_LIBS_DIR: /opt/libsimplex
+    environment:
+      # SIMPLEX_LIBS_DIR: /opt/libsimplex
+      AI_BACKUP_HOUR: ${AI_BACKUP_HOUR:-3}          # nightly backup hour (office time zone)
+      # AI_BACKUP_COMMAND: "rclone copy {file} remote:aie-backups"   # copy each archive off the machine
+      # AI_METRICS_TOKEN: set it in .env to enable GET /metrics (Prometheus)
     ports:
       - "127.0.0.1:8080:8080"
       # the web shop (storefront: port 8081 in employees.yaml), for your HTTPS reverse proxy
       - "127.0.0.1:8090:8081"
+    healthcheck:   # GET /healthz: 200 while the database answers (docker ps shows healthy/unhealthy)
+      test: ["CMD", "python", "-c", "import urllib.request as u, sys; sys.exit(0 if u.urlopen('http://127.0.0.1:8080/healthz', timeout=5).status == 200 else 1)"]
+      interval: 60s
+      timeout: 10s
+      start_period: 120s
+      retries: 3
 
   # Personal Zalo accounts (zca-js, unofficial): "docker compose --profile zalo up -d",
   # then add a zalo_personal channel (gateway_url: http://zalo-gateway:3000) and log in

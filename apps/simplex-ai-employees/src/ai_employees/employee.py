@@ -661,6 +661,10 @@ class Office:
 
         # the staff's projects and tasks (mind map, list, Kanban; /tasks in their chat)
         self.projects = Projects(self)
+        from .ops import Ops
+
+        # health, metrics, nightly backups and the watchdog (ops.py)
+        self.ops = Ops(self)
 
     @property
     def http_client(self) -> httpx2.AsyncClient:
@@ -793,6 +797,7 @@ class Office:
                 *([self.marketplaces.run(self._stopping)] if primary else []),
                 *([self.storefront.run(self._stopping)] if primary and self.storefront else []),
                 *([self.projects.run(self._stopping)] if primary else []),
+                *([self.ops.run(self._stopping)] if primary else []),
                 *(e.bot.serve_forever() for e in self.employees.values() if primary),
             )
 

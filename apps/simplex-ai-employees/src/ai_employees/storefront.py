@@ -1584,6 +1584,8 @@ def create_shop_app(office: Office, public_url: str = "") -> web.Application:
     app[OFFICE] = office
     app[SHOP] = getattr(office, "storefront", None) or Storefront(office, public_url)
     r = app.router
+    if (ops := getattr(office, "ops", None)) is not None:
+        ops.health_routes(r)  # /healthz for the load balancer
     for method, path, fn in (
         ("GET", "/", catalog),
         ("GET", "/p/{sku}", product_page),
