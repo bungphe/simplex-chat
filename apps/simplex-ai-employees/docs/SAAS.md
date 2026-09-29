@@ -134,7 +134,6 @@ hay nội dung email vào log; `.env` của khách quyền 0600; container khác
 - Một máy chủ: control plane và các container khách cùng host. Nhiều máy chủ cần backend khác (giao thức
   `Backend` trong `provisioner.py`: `create/start/stop/destroy/status/reset_admin_password/usage`).
 - Control plane chạy root (Docker socket). Bảng điều hành chưa có 2FA; hãy giới hạn IP truy cập `/console` ở Caddy.
-- `scripts/i18n_extract.py` mới quét `src/ai_employees/*.py`; đổi sang `rglob` để gom chữ của `saas/` vào catalog.
 
 ## Lộ trình
 

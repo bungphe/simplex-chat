@@ -671,6 +671,29 @@ storefront:
 - **An toàn**: trang dựng sẵn trên máy chủ, không có JavaScript; CSP chặt, cookie `HttpOnly`/`SameSite`/`Secure` (khi
   `public_url` là https), mã chống CSRF trên mọi biểu mẫu, mã đăng nhập chỉ lưu dạng băm.
 
+## Thanh toán online (VNPay, MoMo, ZaloPay)
+
+Khách trả **phần còn nợ của đơn đã xác nhận** ngay trên website, không cần tài khoản: trang `/pay/<mã đơn>` (đường
+dẫn riêng có chữ ký, khách nhận trong email xác nhận, trang theo dõi đơn, hoặc nhân viên bấm **Link thanh toán** ở
+Bán hàng → đơn rồi gửi qua kênh chat bất kỳ). Cấu hình tại Kho hàng → Cửa hàng & tích điểm → *Thanh toán online*:
+
+- **VNPay**: TMN code + tên biến môi trường chứa *Hash secret* (mặc định `VNPAY_SECRET`).
+- **MoMo**: Partner code, Access key + tên biến chứa *Secret key* (`MOMO_SECRET`).
+- **ZaloPay**: App ID + tên biến chứa *Key1*, *Key2* (`ZALOPAY_KEY1`, `ZALOPAY_KEY2`).
+- **Chuyển khoản**: tên ngân hàng, số tài khoản, chủ tài khoản (hiện trên trang thanh toán với nội dung là mã đơn).
+- Ô *Sandbox* để thử với môi trường test của từng cổng trước khi lên thật.
+
+Khoá bí mật **chỉ đặt trong biến môi trường** (`.env` khi chạy Docker); hệ thống lưu tên biến, không lưu và không bao
+giờ trả khoá qua API. Khai với cổng thanh toán: URL thông báo (IPN / callback) `https://<public_url>/pay/ipn/<vnpay|momo|zalopay>`
+và URL quay về `https://<public_url>/pay/return/<cổng>`. Mỗi lần khách bấm thanh toán tạo một *ý định thanh toán*
+(bảng `pay_intents`) với mã tham chiếu duy nhất; cổng báo về được kiểm chữ ký bằng khoá bí mật rồi ghi tiền vào đơn
+**đúng một lần** dù cổng báo lại nhiều lần (khoá chống trùng `<cổng>:<mã tham chiếu>`), đơn đủ tiền tự chuyển sang
+đã thanh toán và quản trị viên được báo qua SimpleX. Trang quay về chỉ hiển thị kết quả (với ZaloPay chỉ callback mới
+ghi tiền). Đơn đã huỷ, đã trả đủ hoặc chưa xác nhận thì không thanh toán được.
+
+> Phần tích hợp được kiểm thử với cổng giả lập (chữ ký, IPN lặp, số tiền sai, hết hạn); trước khi bật thật hãy chạy
+> một giao dịch trên **sandbox** của từng cổng với tài khoản merchant của bạn.
+
 ## Gửi hoá đơn qua email
 
 Kho hàng → Cửa hàng & tích điểm → *Email của cửa hàng*: máy chủ SMTP, cổng, mã hoá, tài khoản, người gửi và **tên**
@@ -810,6 +833,54 @@ Kết quả đo trên máy thử 4 nhân (chung máy với PostgreSQL, bộ tạ
 Giới hạn tiếp theo: mỗi tin cần khoảng 23 lượt truy vấn cơ sở dữ liệu, gọi đồng bộ; chuyển sang truy vấn bất
 đồng bộ sẽ tăng số tin mỗi tiến trình. Chi phí thật khi chạy lớn là tiền gọi model AI, không phải máy chủ.
 
+## Vận hành: sao lưu, giám sát, cảnh báo
+
+Chi tiết trong [`docs/OPERATIONS.md`](docs/OPERATIONS.md) (kèm checklist trước khi lên production). Tóm tắt:
+
+- **Sao lưu tự động** mỗi đêm lúc `AI_BACKUP_HOUR` (giờ của cửa hàng, mặc định 3:00) vào `AI_BACKUP_DIR`
+  (`data/backups/`, Docker: bind mount `./backups`): bản chụp nhất quán của mọi cơ sở dữ liệu SQLite (văn phòng, hộp
+  thư, nhật ký, CSDL SimpleX của từng nhân viên) hoặc `pg_dump` khi dùng PostgreSQL, cùng cấu hình, kiến thức và
+  `office.json`, gói `backup-YYYYmmdd-HHMMSS.tar.gz`; giữ `AI_BACKUP_KEEP_DAYS` ngày / `AI_BACKUP_KEEP_COUNT` tệp;
+  `AI_BACKUP_COMMAND="rclone copy {file} remote:bucket"` để đẩy bản sao ra khỏi máy. Thủ công: `python -m ai_employees
+  backup employees.yaml`; khôi phục (dừng văn phòng trước): `python -m ai_employees restore backup-….tar.gz --config
+  employees.yaml --yes`.
+- **Kiểm tra sức khoẻ**: `GET /healthz` (không cần đăng nhập, trên cả trang quản trị lẫn website) trả 200 khi CSDL
+  trả lời — dùng cho `HEALTHCHECK` của Docker (đã khai trong `Dockerfile`/`docker-compose.yml`) và uptime monitor.
+  `GET /metrics` (trang quản trị, `Authorization: Bearer $AI_METRICS_TOKEN`; ẩn khi chưa đặt biến) xuất số liệu
+  Prometheus: tiến trình, lượt chạy và lỗi model, hộp thư, đơn hàng, kênh, tuổi bản sao lưu, đĩa, CSDL.
+- **Watchdog** (5 phút một lần): đĩa gần đầy, quá lâu chưa sao lưu, kênh đang lỗi, nhiều lỗi model, mất kết nối
+  PostgreSQL → quản trị viên nhận **một** tin SimpleX cho mỗi tình trạng mỗi 6 giờ và một tin khi hết lỗi. Trang
+  quản trị → Hệ thống cho thấy cùng trạng thái (`GET /api/ops`).
+- `python -m ai_employees check employees.yaml` kiểm tra cấu hình, biến môi trường, quyền thư mục, kết nối CSDL và
+  model trước khi khởi động.
+
+## Bán theo gói (SaaS): control plane cho nhiều cửa hàng
+
+Mỗi cửa hàng là một hệ thống riêng (một container, CSDL riêng, SimpleX riêng); **control plane** trong
+`src/ai_employees/saas/` tự tạo và xoá các hệ thống đó, cho khách đăng ký dùng thử và trả tiền gói. Xem
+[`docs/SAAS.md`](docs/SAAS.md) để cài đặt (DNS wildcard, Caddy on-demand TLS, `saas.yaml`, `docker-compose.saas.yml`).
+
+```bash
+cp src/ai_employees/saas/saas.example.yaml saas.yaml   # sửa public_url, base_domain, image, plans, operators, smtp, bank
+python -m ai_employees saas --config saas.yaml          # cổng 8090 (đặt sau Caddy)
+python -m ai_employees saas --config saas.yaml --daily  # chạy công việc hằng ngày ngay (hết hạn, tạm dừng, xoá)
+```
+
+- **Trang đăng ký công khai** với bảng giá từ `plans:`, dùng thử 14 ngày, xác nhận email bằng mã 6 số; sau đó khách
+  thấy mật khẩu quản trị một lần, địa chỉ `https://<slug>.<base_domain>` (quản trị) và `<slug>-shop.…` (website).
+- **Cổng khách hàng** `/portal`: gói, hạn dùng, hoá đơn, hướng dẫn chuyển khoản với nội dung `SAAS-<số hoá đơn>`, nút
+  "Đã chuyển khoản", đổi mật khẩu, cấp lại mật khẩu quản trị, xin ngừng dịch vụ, tải bản sao lưu.
+- **Bảng điều hành** `/console` cho người vận hành: danh sách khách, xác nhận hoá đơn, tạm dừng / mở lại / đổi gói /
+  gia hạn dùng thử / xoá, nhật ký; hết dùng thử hoặc quá hạn 7 ngày ân hạn thì tạm dừng, 30 ngày sau xoá (lưu trữ
+  trước).
+- **Giới hạn gói nằm trong sản phẩm**: provisioner ghi `limits: {users, employees, channels, storage_mb}` vào
+  `employees.yaml` của khách; cấu hình vượt số nhân viên AI / kênh bị từ chối, tài khoản nhân viên thứ N+1 không tạo
+  được.
+- Thử không cần Docker: `backend: dry-run` hoặc `backend: fake` trong `saas.yaml`.
+
+Giới hạn hiện tại (chi tiết trong tài liệu): thanh toán gói còn thủ công (chuyển khoản + xác nhận), chưa giới hạn
+CPU/RAM cho container khách, một máy chủ, control plane cần quyền Docker.
+
 ## Quản trị trong chat
 
 Nhắn cho nhân viên `/admin <AI_ADMIN_TOKEN>` để trở thành quản trị viên. Sau đó dùng các lệnh:
@@ -836,19 +907,33 @@ Quản trị viên nhận các yêu cầu chuyển tiếp, yêu cầu chờ duy�
 chat với nhân viên, họ dùng được cả các skill nội bộ (vd. "tóm tắt hội thoại hôm nay").
 Bất kỳ ai cũng có thể gửi `/forget` để xoá lịch sử trò chuyện của chính mình.
 
-## Quyền riêng tư
+## Quyền riêng tư và tuân thủ
 
 SimpleX mã hoá tin nhắn đầu-cuối giữa khách và tài khoản nhân viên. Tuy nhiên để AI trả lời,
 nội dung tin nhắn, tài liệu tìm được và kết quả skill sẽ được gửi tới nhà cung cấp của model đã gán
-cho nhân viên đó. Muốn dữ liệu không rời khỏi máy chủ của bạn thì dùng model chạy tại chỗ (Ollama, vLLM). Hãy thông báo
-cho khách biết họ đang nói chuyện với trợ lý AI, và đừng đưa dữ liệu nhạy cảm vào tài liệu hay
-skill nếu không cần thiết. Trí nhớ hội thoại, ghi chú, hàng chờ duyệt, nhật ký (`runlog.jsonl`) và
-API key thêm từ giao diện (`office.json`) được lưu dạng không mã hoá trong `state_dir`; hãy bảo vệ thư mục
-này. Dữ liệu gửi tới webhook của hành động đi ra hệ thống của bạn, nên chỉ khai báo địa chỉ bạn tin cậy.
+cho nhân viên đó. Muốn dữ liệu không rời khỏi máy chủ của bạn thì dùng model chạy tại chỗ (Ollama, vLLM). Đừng đưa dữ
+liệu nhạy cảm vào tài liệu hay skill nếu không cần thiết. Trí nhớ hội thoại, ghi chú, hàng chờ duyệt, nhật ký
+(`runlog.jsonl`) và cấu hình thêm từ giao diện (`office.json`) được lưu dạng không mã hoá trong `state_dir`; hãy bảo
+vệ thư mục này. Dữ liệu gửi tới webhook của hành động đi ra hệ thống của bạn, nên chỉ khai báo địa chỉ bạn tin cậy.
 
 Hộp thư chung (`inbox.db`) lưu bản sao mọi tin nhắn của mọi kênh, kể cả SimpleX, để nhân viên xem và trả
 lời trên web: tin SimpleX không còn chỉ nằm trong ứng dụng đã mã hoá. Zalo và Facebook không mã hoá đầu-cuối;
 nội dung đi qua máy chủ của các nền tảng đó.
+
+Công cụ tuân thủ có sẵn (Nhân viên → *Quyền riêng tư*, API `/api/privacy/...`; mẫu chính sách và việc cần làm của
+chủ cửa hàng trong [`docs/PRIVACY-TEMPLATE.md`](docs/PRIVACY-TEMPLATE.md)):
+
+- **Thông báo "đang chat với AI"** (bật sẵn): câu đầu tiên nhân viên AI trả lời một khách trên mỗi kênh được thêm
+  dòng thông báo (sửa được nội dung, có đường dẫn tới chính sách); ghi nhớ theo hội thoại nên không lặp lại. Tắt
+  được nếu bạn thông báo bằng cách khác.
+- **Chính sách bảo mật** của cửa hàng tại `https://<public_url>/privacy` (liên kết ở chân mọi trang website): soạn
+  theo mẫu có sẵn với `{shop}`, `{address}`, `{phone}`, `{email}`, `{url}`, `{retention}` được thay tự động.
+- **Xuất dữ liệu khách** (JSON: hồ sơ, hội thoại, đơn hàng, điểm, ghi nhớ của AI) và **xoá dữ liệu khách** theo yêu
+  cầu (gõ lại tên hoặc số điện thoại để xác nhận; tin nhắn, ghi nhớ, mã đăng nhập và thông tin cá nhân bị xoá hoặc
+  ẩn danh, hoá đơn giữ lại theo luật kế toán); mọi lần xuất/xoá vào **nhật ký quyền riêng tư**.
+- **Thời hạn lưu tin nhắn** (`retention_days`, 0 = giữ mãi): tin nhắn của hội thoại đã đóng quá hạn được xoá tự
+  động.
+- Email liên hệ về dữ liệu cá nhân hiện trong chính sách và thông báo.
 
 ## Kiểm thử
 
