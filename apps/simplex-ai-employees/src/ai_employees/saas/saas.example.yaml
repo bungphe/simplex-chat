@@ -1,0 +1,66 @@
+# Cấu hình control plane SaaS:  python -m ai_employees saas --config saas.yaml
+# Đường dẫn tương đối tính từ tệp này. Xem docs/SAAS.md.
+
+public_url: https://saas.example.vn      # địa chỉ của chính control plane (đăng ký, cổng khách hàng, bảng điều hành)
+base_domain: aie.example.vn              # khách thuê: <slug>.aie.example.vn (quản trị) và <slug>-shop.aie.example.vn (web bán hàng)
+host: 127.0.0.1                          # lắng nghe sau Caddy/nginx có TLS; không mở ra Internet
+port: 8090
+
+database_url: ./data/saas.sqlite         # hoặc postgresql://user:pass@host/saas (database_url_env: SAAS_DATABASE_URL)
+tenants_dir: /srv/aie/tenants            # mỗi khách một thư mục: data/employees.yaml, .env, docker-compose.yml
+backups_dir: /srv/aie/backups            # bản lưu trữ khi xoá khách (tar.gz của thư mục data)
+caddy_dir: /srv/aie/caddy/sites          # mỗi khách một tệp <slug>.caddy, import trong Caddyfile
+caddy_reload: [docker, exec, aie-caddy, caddy, reload, --config, /etc/caddy/Caddyfile]
+
+image: ghcr.io/example/simplex-ai-employees:1.0   # image sản phẩm, ghim phiên bản
+port_base: 20000                         # cổng trên 127.0.0.1 cấp cho khách: 20000+2*id (quản trị), +1 (web bán hàng)
+backend: docker                          # docker | dry-run (ghi tệp, không chạy lệnh) | fake (không làm gì; để thử)
+
+trial_days: 14
+grace_days: 7                            # sau hạn thanh toán bao nhiêu ngày thì tạm dừng
+delete_after_days: 30                    # tạm dừng bao nhiêu ngày thì lưu trữ và xoá
+currency: VND
+default_plan: starter
+
+plans:
+  starter:
+    name: Khởi nghiệp
+    price_month: 490000
+    limits: {users: 3, employees: 1, channels: 2, storage_mb: 2000}
+    features: [Website bán hàng, Kho hàng và điểm bán]
+  pro:
+    name: Chuyên nghiệp
+    price_month: 990000
+    limits: {users: 10, employees: 3, channels: 5, storage_mb: 10000}
+    features: [Website bán hàng, Kho hàng và điểm bán, Giao hàng và marketing]
+  business:
+    name: Doanh nghiệp
+    price_month: 1990000
+    limits: {users: 30, employees: 10, channels: 20, storage_mb: 50000}
+    features: [Mọi tính năng, Hỗ trợ ưu tiên]
+
+# Tài khoản vận hành (bảng điều hành /console); mật khẩu qua biến môi trường.
+operators:
+  - {username: ops, password_env: SAAS_OPS_PASSWORD}
+
+# Email gửi mã xác nhận, hoá đơn, nhắc nhở. Không có smtp: email chỉ ghi log (để thử).
+smtp:
+  host: smtp.example.vn
+  port: 587
+  tls: starttls                          # starttls | ssl | none
+  user: saas@example.vn
+  password_env: SAAS_SMTP_PASSWORD
+  sender: "Nhân viên AI <saas@example.vn>"
+
+# Hướng dẫn chuyển khoản in trên hoá đơn (khách ghi nội dung SAAS-<số hoá đơn>).
+bank:
+  Ngân hàng: Vietcombank
+  Số tài khoản: "0011002233445"
+  Chủ tài khoản: CONG TY EXAMPLE
+
+# Biến môi trường ghi vào .env của mọi khách (${TÊN}: lấy giá trị từ môi trường của control plane).
+tenant_env:
+  ANTHROPIC_API_KEY: ${PLATFORM_ANTHROPIC_API_KEY}
+# Model AI khai báo cho nhân viên của khách (mục models: trong employees.yaml của khách).
+tenant_model: {provider: anthropic, model: claude-opus-5, api_key_env: ANTHROPIC_API_KEY}
+# servers: {smp: ["smp://<fingerprint>@smp.example.vn"]}   # máy chủ SMP riêng cho mọi khách

@@ -78,10 +78,19 @@ def _hash(password: str, salt: bytes) -> str:
 
 class Users:
     def __init__(
-        self, docs: DocStore, owner_password: str, legacy_path: str | os.PathLike[str] | None = None
+        self,
+        docs: DocStore,
+        owner_password: str,
+        legacy_path: str | os.PathLike[str] | None = None,
+        max_users: int | None = None,
     ):
         self.docs = docs
         self._owner_password = owner_password
+        # SaaS plan limit on staff accounts (the owner not counted): the config's `limits.users`,
+        # else a "plan_limits" document written into the office database; None: unlimited
+        if max_users is None:
+            max_users = (docs.get("plan_limits") or {}).get("users")
+        self.max_users: int | None = int(max_users) if max_users is not None else None
         if legacy_path is not None and (old := Path(legacy_path)).exists():  # users.json from before
             accounts = json.loads(old.read_text(encoding="utf-8"))
             self.docs.update("users", lambda d: d.update(accounts), {})
@@ -179,6 +188,10 @@ class Users:
         def change(d: dict[str, Any]) -> None:
             if username in d:
                 raise ValueError(tr("tên đăng nhập đã có"))
+            if self.max_users is not None and len(d) >= self.max_users:
+                raise ValueError(
+                    tr("Gói dịch vụ của bạn cho phép tối đa {0} tài khoản nhân viên", self.max_users)
+                )
             d[username] = account
 
         self.docs.update("users", change, {})

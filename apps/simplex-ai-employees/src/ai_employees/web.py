@@ -1921,7 +1921,13 @@ def create_app(office: Office, password: str) -> web.Application:
     app[PASSWORD] = password
     app[LOGIN_FAILURES] = {}
     app[SESSIONS] = Sessions(office.office_db)
-    app[USERS] = Users(office.docs, password, legacy_path=os.path.join(office.config.state_dir, "users.json"))
+    limits = getattr(office.config, "limits", None)
+    app[USERS] = Users(
+        office.docs,
+        password,
+        legacy_path=os.path.join(office.config.state_dir, "users.json"),
+        max_users=limits.users if limits else None,  # the SaaS plan's limit (saas/)
+    )
     r = app.router
     if (ops := getattr(office, "ops", None)) is not None:
         ops.add_routes(r)  # /healthz (public), /metrics (bearer token), /api/ops (admins)

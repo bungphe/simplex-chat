@@ -108,6 +108,18 @@ class StorefrontConfig:
 
 
 @dataclass(frozen=True)
+class PlanLimits:
+    """What a SaaS plan allows this office (`limits:` in the config, written by the control
+    plane); None: unlimited. Employees and channels are checked when the config loads,
+    staff accounts when one is added (users.py)."""
+
+    users: int | None = None
+    employees: int | None = None
+    channels: int | None = None
+    storage_mb: int | None = None
+
+
+@dataclass(frozen=True)
 class AppConfig:
     employees: tuple[EmployeeConfig, ...]
     state_dir: str
@@ -127,6 +139,8 @@ class AppConfig:
     database_url: str | None = None
     # Office processes sharing the database (cluster.shards); see cluster.py.
     shards: int = 1
+    # Plan limits set by the SaaS control plane; None: no limits.
+    limits: PlanLimits | None = None
 
     def model_profile(self, name: str) -> ModelProfile | None:
         """A declared model by name, or an implicit Claude model for a bare `claude-*` id."""
@@ -251,6 +265,16 @@ def parse_config(raw: dict[str, Any], base_dir: Path) -> AppConfig:
             raise ConfigError(str(e)) from None
     if len({c.id for c in channels}) != len(channels):
         raise ConfigError("duplicate channel id")
+    limits = parse_limits(raw.get("limits"))
+    if limits:
+        if limits.employees is not None and len(employees) > limits.employees:
+            raise ConfigError(
+                f"your plan allows at most {limits.employees} AI employees ({len(employees)} configured)"
+            )
+        if limits.channels is not None and len(channels) > limits.channels:
+            raise ConfigError(
+                f"your plan allows at most {limits.channels} chat channels ({len(channels)} configured)"
+            )
 
     staff_language = normalize(str(raw.get("staff_language") or "vi"))
     if staff_language is None:
@@ -275,7 +299,22 @@ def parse_config(raw: dict[str, Any], base_dir: Path) -> AppConfig:
         or (os.environ.get(str(raw["database_url_env"])) if raw.get("database_url_env") else None)
         or None,
         shards=number(raw.get("cluster") or {}, "shards", 1, "cluster."),
+        limits=limits,
     )
+
+
+def parse_limits(raw: dict[str, Any] | None) -> PlanLimits | None:
+    """`limits: {users: 3, employees: 1, channels: 2, storage_mb: 2000}` (each optional)."""
+    if not raw:
+        return None
+    if not isinstance(raw, dict):
+        raise ConfigError("limits must be a mapping")
+    if unknown := set(raw) - {"users", "employees", "channels", "storage_mb"}:
+        raise ConfigError(f"limits: unknown fields {', '.join(sorted(unknown))}")
+    values = {k: (number(raw, k, None, "limits.") if raw.get(k) is not None else None) for k in raw}
+    if any(v is not None and v < 0 for v in values.values()):
+        raise ConfigError("limits must not be negative")
+    return PlanLimits(**values)
 
 
 def parse_storefront(raw: dict[str, Any] | None) -> StorefrontConfig | None:

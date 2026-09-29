@@ -39,6 +39,11 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "saas":  # the SaaS control plane has its own options (saas/)
+        from .saas import main as saas_main
+
+        saas_main(sys.argv[2:])
+        return
     args = _parser().parse_args()
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,

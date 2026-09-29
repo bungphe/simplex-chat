@@ -97,7 +97,7 @@ def _strings(node: ast.AST) -> list[str]:
 
 def server_texts() -> set[str]:
     out: set[str] = set()
-    for f in sorted(ROOT.glob("*.py")):
+    for f in sorted([*ROOT.glob("*.py"), *(ROOT / "saas").glob("*.py")]):
         tree = ast.parse(f.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if (

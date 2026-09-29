@@ -1,0 +1,20 @@
+# syntax=docker/dockerfile:1.7
+# The SaaS control plane: the product image plus the Docker CLI (it runs `docker compose`
+# for every tenant through the host's Docker socket). Build after the product image:
+#
+#   docker build -f apps/simplex-ai-employees/Dockerfile -t simplex-ai-employees .
+#   docker build -f apps/simplex-ai-employees/Dockerfile.saas -t simplex-ai-employees-saas apps/simplex-ai-employees
+#
+# Runs as root: it needs the Docker socket and writes the tenants' files (see docker-compose.saas.yml).
+
+ARG BASE=simplex-ai-employees
+FROM ${BASE}
+
+USER root
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends docker.io docker-compose-v2 \
+ && rm -rf /var/lib/apt/lists/*
+
+EXPOSE 8090
+ENTRYPOINT ["python", "-m", "ai_employees", "saas"]
+CMD ["--config", "/data/saas.yaml"]
