@@ -17,6 +17,7 @@
   <script src="/static/admin.js" defer></script>
   <script src="/static/inventory.js" defer></script>
   <script src="/static/business.js" defer></script>
+  <script src="/static/projects.js" defer></script>
 </head>
 <body>
   <section id="login" class="login" hidden>
@@ -41,6 +42,7 @@
         <button data-view="overview" data-admin>Tổng quan</button>
         <button data-view="inbox" data-roles="manager,agent">Hộp thư <span id="inbox-badge" class="badge" hidden></span></button>
         <button data-view="pos" data-roles="manager,agent,cashier">Bán hàng</button>
+        <button data-view="projects" data-roles="manager,agent,cashier,warehouse,delivery,marketing">Công việc</button>
         <button data-view="customers" data-admin>Khách hàng</button>
         <button data-view="inventory" data-roles="manager,warehouse">Kho hàng</button>
         <button data-view="delivery" data-roles="manager,delivery">Giao hàng</button>

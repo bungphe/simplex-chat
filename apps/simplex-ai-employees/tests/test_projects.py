@@ -264,3 +264,20 @@ async def test_chat_commands_assignment_and_morning_reminder(office):
     assert await pm.morning_digest(force=True) == 1
     assert other["code"] in chat.sent[-1][1] and t["code"] not in chat.sent[-1][1]
     assert await pm.morning_digest() == 0  # once a day
+
+
+def test_no_dependency_loops_ids_never_reused_counts_everywhere(office):
+    pm = office.projects
+    pid = pm.save_project(None, {"name": "P"}, "admin")["id"]
+    a = pm.create_task(pid, {"title": "A"}, "admin")
+    b = pm.create_task(pid, {"title": "B", "depends": a["code"]}, "admin")
+    c = pm.create_task(pid, {"title": "C", "depends": b["code"]}, "admin")
+    with pytest.raises(ProjectError, match="vòng tròn"):
+        pm.update_task(a["id"], {"depends": c["code"]}, "admin")
+    pm.add_comment(a["id"], "x", "admin")
+    assert pm.task(a["id"])["comment_count"] == 1 and pm.task(a["id"])["file_count"] == 0
+    renamed = pm.save_project(pid, {"name": "Q"}, "admin")
+    assert renamed["name"] == "Q" and renamed["task_count"] == 3
+    last = pm.save_project(None, {"name": "Cuối"}, "admin")["id"]
+    pm.delete_project(last, "admin")
+    assert pm.save_project(None, {"name": "Mới"}, "admin")["id"] > last

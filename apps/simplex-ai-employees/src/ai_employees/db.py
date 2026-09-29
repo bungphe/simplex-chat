@@ -53,10 +53,14 @@ class Database:
     # PostgreSQL spells some things differently; schemas use these tokens.
     def ddl(self, sql: str) -> str:
         if self.postgres:
+            sql = sql.replace("{autoid}", "BIGSERIAL PRIMARY KEY")  # never reused either way
             sql = sql.replace("{id}", "BIGSERIAL PRIMARY KEY").replace("{int}", "BIGINT")
             sql = sql.replace("{real}", "DOUBLE PRECISION")  # PostgreSQL's REAL is only 4 bytes
             sql = sql.replace("{blob}", "BYTEA")
         else:
+            sql = sql.replace(
+                "{autoid}", "INTEGER PRIMARY KEY AUTOINCREMENT"
+            )  # ids of deleted rows stay unused
             sql = sql.replace("{id}", "INTEGER PRIMARY KEY").replace("{int}", "INTEGER")
             sql = sql.replace("{real}", "REAL").replace("{blob}", "BLOB")
         return sql

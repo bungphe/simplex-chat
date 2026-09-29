@@ -37,10 +37,10 @@ log = logging.getLogger(__name__)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS pm_projects (
-  id {id}, name TEXT NOT NULL, color TEXT NOT NULL DEFAULT '', owner TEXT NOT NULL DEFAULT '',
+  id {autoid}, name TEXT NOT NULL, color TEXT NOT NULL DEFAULT '', owner TEXT NOT NULL DEFAULT '',
   archived {int} NOT NULL DEFAULT 0, created TEXT NOT NULL, updated TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS pm_tasks (
-  id {id}, project_id {int} NOT NULL, parent_id {int}, pos {int} NOT NULL DEFAULT 0,
+  id {autoid}, project_id {int} NOT NULL, parent_id {int}, pos {int} NOT NULL DEFAULT 0,
   code TEXT NOT NULL UNIQUE, title TEXT NOT NULL, icon TEXT NOT NULL DEFAULT '', color TEXT NOT NULL DEFAULT '',
   assignee TEXT NOT NULL DEFAULT '', priority TEXT NOT NULL DEFAULT 'medium', status TEXT NOT NULL DEFAULT 'todo',
   progress {int} NOT NULL DEFAULT 0, labels TEXT NOT NULL DEFAULT '', avatar TEXT NOT NULL DEFAULT '',
@@ -277,8 +277,8 @@ class Projects:
             )
             assert pid is not None
             self._log(int(pid), None, actor, "project_created", name)
-            return self.project(int(pid))
-        project = self.project(pid)
+            return self._project_summary(self.project(int(pid)))
+        self.project(pid)  # exists
         fields: dict[str, Any] = {}
         if "name" in data:
             if not name:
@@ -294,7 +294,7 @@ class Projects:
                 f"UPDATE pm_projects SET {sets}, updated=? WHERE id=?", [*fields.values(), now, pid]
             )
             self._log(pid, None, actor, "project_updated", ", ".join(f"{k}: {v}" for k, v in fields.items()))
-        return {**project, **fields}
+        return self._project_summary(self.project(pid))
 
     def delete_project(self, pid: int, actor: str) -> None:
         self.project(pid)
@@ -357,7 +357,14 @@ class Projects:
     def task(self, tid: int) -> dict[str, Any]:
         row = self._row(tid)
         tasks = self._computed(self._rows(int(row["project_id"])))
-        return next(t for t in tasks if t["id"] == row["id"])
+        task = next(t for t in tasks if t["id"] == row["id"])
+        task["comment_count"] = int(
+            self.db.row("SELECT COUNT(*) AS n FROM pm_comments WHERE task_id=?", (tid,))["n"]
+        )
+        task["file_count"] = int(
+            self.db.row("SELECT COUNT(*) AS n FROM pm_files WHERE task_id=?", (tid,))["n"]
+        )
+        return task
 
     def _computed(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Children, progress of branches, done/total leaves, late and due soon, what
@@ -480,6 +487,8 @@ class Projects:
                         raise ProjectError(tr("Không có công việc mã {0} trong dự án", code))
                     if own and own["code"] == code:
                         raise ProjectError(tr("Một việc không phụ thuộc vào chính nó"))
+                if own and codes:
+                    self._no_loop(pid, own["code"], codes)
                 value = ", ".join(dict.fromkeys(codes))
             elif key in ("start_date", "due_date"):
                 value = str(value or "")[:10]
@@ -522,6 +531,22 @@ class Projects:
         if start and due and due < start:
             raise ProjectError(tr("Ngày kết thúc trước ngày bắt đầu"))
         return out
+
+    def _no_loop(self, pid: int, code: str, depends: list[str]) -> None:
+        """Refuse dependencies that lead back to the task itself (A waits for B, B for A)."""
+        graph = {
+            r["code"]: [x.strip().upper() for x in re.split(r"[,\s]+", r["depends"]) if x.strip()]
+            for r in self.db.rows("SELECT code, depends FROM pm_tasks WHERE project_id=?", (pid,))
+        }
+        seen: set[str] = set()
+        todo = list(depends)
+        while todo:
+            c = todo.pop()
+            if c == code:
+                raise ProjectError(tr("Phụ thuộc vòng tròn: {0} lại phải chờ chính nó", code))
+            if c not in seen:
+                seen.add(c)
+                todo += graph.get(c, [])
 
     def create_task(
         self,
