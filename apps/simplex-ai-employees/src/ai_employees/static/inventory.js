@@ -563,8 +563,48 @@ INV_VIEWS.shop = async (box) => {
       invMeta.settings = await api("PUT", "/api/inventory/settings", { ...Object.fromEntries(Object.entries(f).map(([k, el]) => [k, el.value])),
         ...Object.fromEntries(Object.entries(n).map(([k, el]) => [k, Number(el.value || 0)])) });
     }, tr("Đã lưu")) }, tr("Lưu")) : null),
-    await mailCard());
+    await mailCard(), invAdmin() ? await paymentsCard() : null);
 };
+
+// Online payments: merchant ids and the NAMES of the environment variables with the
+// secrets (never the secrets themselves), a sandbox switch, bank transfer details.
+async function paymentsCard() {
+  const r = await api("GET", "/api/pos/payments/settings");
+  const GW = [["vnpay", "VNPay", [["tmn_code", "TMN code"]], [["secret_env", tr("Biến môi trường chứa Hash secret")]]],
+    ["momo", "MoMo", [["partner_code", "Partner code"], ["access_key", "Access key"]], [["secret_env", tr("Biến môi trường chứa Secret key")]]],
+    ["zalopay", "ZaloPay", [["app_id", "App ID"]], [["key1_env", tr("Biến môi trường chứa Key1")], ["key2_env", tr("Biến môi trường chứa Key2")]]]];
+  const sandbox = h("input", { type: "checkbox", checked: !!r.sandbox });
+  const f = {};
+  const blocks = GW.map(([g, name, ids, envs]) => {
+    const c = r[g] || {};
+    f[g] = { enabled: h("input", { type: "checkbox", checked: !!c.enabled }) };
+    ids.forEach(([k]) => { f[g][k] = h("input", { value: c[k] || "", autocomplete: "off" }); });
+    envs.forEach(([k]) => { f[g][k] = h("input", { value: c[k] || "" }); });
+    const state = c.configured ? h("span", { class: "pill ok" }, "✓ " + tr("sẵn sàng"))
+      : c.enabled ? h("span", { class: "pill bad" }, tr("thiếu biến môi trường")) : h("span", { class: "pill neutral" }, tr("tắt"));
+    return h("div", { class: "section" },
+      h("div", { class: "row" }, h("label", { class: "check" }, f[g].enabled, h("span", {}, h("b", {}, name))), state,
+        ...envs.map(([k]) => h("span", { class: `pill ${(c.env_set || {})[k] ? "ok" : "bad"}` }, `${c[k]} ${(c.env_set || {})[k] ? "✓" : tr("chưa đặt")}`))),
+      h("div", { class: "two" }, ...ids.map(([k, label]) => field(label, f[g][k])), ...envs.map(([k, label]) => field(label, f[g][k]))));
+  });
+  const bank = { enabled: h("input", { type: "checkbox", checked: !!(r.bank || {}).enabled }), info: h("input", { value: (r.bank || {}).info || "", placeholder: tr("Ngân hàng, số tài khoản, tên chủ tài khoản") }) };
+  const save = () => run(async () => {
+    const body = { sandbox: sandbox.checked, bank: { enabled: bank.enabled.checked, info: bank.info.value } };
+    for (const [g] of GW) body[g] = Object.fromEntries(Object.entries(f[g]).map(([k, el]) => [k, el.type === "checkbox" ? el.checked : el.value]));
+    await api("PUT", "/api/pos/payments/settings", body);
+    go("inventory", "shop");
+  }, tr("Đã lưu"));
+  return h("div", { class: "card section" }, h("h2", {}, tr("Thanh toán online (VNPay, MoMo, ZaloPay)")),
+    h("p", { class: "muted" }, tr(
+      "Khách trả phần còn nợ của đơn đã xác nhận qua trang /pay của website; cổng báo về là tiền được ghi vào đơn (một lần, dù báo lại nhiều lần). Khoá bí mật chỉ đặt trong biến môi trường; ở đây chỉ lưu tên biến. URL thông báo (IPN/callback) khai với cổng: {0}/pay/ipn/<cổng>.",
+      r.public_url || "<public_url>"
+    )),
+    h("label", { class: "check" }, sandbox, h("span", {}, tr("Môi trường thử nghiệm (sandbox) – tắt khi chạy thật"))),
+    ...blocks,
+    h("div", { class: "section" }, h("label", { class: "check" }, bank.enabled, h("span", {}, h("b", {}, tr("Chuyển khoản ngân hàng")), " ", tr("(hiện thông tin trên trang thanh toán)"))),
+      field(tr("Thông tin tài khoản"), bank.info)),
+    h("button", { class: "primary", onclick: save }, tr("Lưu")));
+}
 
 async function mailCard() {
   const r = await api("GET", "/api/inventory/mail");

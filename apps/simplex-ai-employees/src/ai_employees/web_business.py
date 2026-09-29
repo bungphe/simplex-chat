@@ -301,6 +301,34 @@ async def pos_email_invoice(request: web.Request, d: dict[str, Any]) -> Any:
     return {"sent_to": sent_to}
 
 
+def pay_settings(request: web.Request, d: dict[str, Any]) -> Any:
+    """Online payment gateways (admins only): merchant ids and the names of the environment
+    variables with the secrets; never a secret."""
+    from .payments import payments_of
+
+    if not _user(request).is_admin:
+        raise _w().ApiError(403, tr("Chỉ quản trị viên cài đặt thanh toán online"))
+    payments = payments_of(_office(request))
+    if request.method == "PUT":
+        return payments.save(d)
+    return payments.public()
+
+
+def pos_paylink(request: web.Request, _d: dict[str, Any]) -> Any:
+    """The customer's private link to pay an order online (to send them by any channel)."""
+    from .payments import payments_of
+
+    oid = _id(request)
+    order = _own_order(request, oid)
+    payments = payments_of(_office(request))
+    return {
+        "url": payments.pay_link(order),
+        "payable": payments.payable(order),
+        "gateways": payments.enabled_gateways(),
+        "bank": bool(payments.bank_info()),
+    }
+
+
 def mail_settings(request: web.Request, d: dict[str, Any]) -> Any:
     mailer = _office(request).mailer
     if request.method == "PUT":
@@ -765,6 +793,9 @@ def add_routes(r: web.UrlDispatcher) -> None:
     p(r"/api/pos/orders/{id:\d+}/payments", handler(pos_pay))
     p(r"/api/pos/orders/{id:\d+}/send-receipt", handler(pos_send_receipt))
     p(r"/api/pos/orders/{id:\d+}/email-invoice", handler(pos_email_invoice))
+    p(r"/api/pos/orders/{id:\d+}/paylink", handler(pos_paylink))
+    g("/api/pos/payments/settings", handler(pay_settings))
+    r.add_put("/api/pos/payments/settings", handler(pay_settings))
     p(r"/api/pos/orders/{id:\d+}/{step}", handler(pos_step))
     g("/api/pos/customers", handler(pos_customers))
     p("/api/pos/customers", handler(pos_customer_create))

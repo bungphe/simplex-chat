@@ -81,3 +81,7 @@ th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border);
 footer .langs { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 10px; margin-top: 10px; font-size: 13px; }
 footer .langs a { color: var(--muted); text-decoration: none; }
 footer .langs a.on { color: var(--accent); font-weight: 600; }
+a.button { display: inline-block; padding: 8px 14px; border-radius: 8px; background: var(--accent); color: var(--accent-text); text-decoration: none; font-weight: 600; }
+.gateways { display: flex; flex-wrap: wrap; gap: 10px; margin: 8px 0 16px; }
+.gateways form { margin: 0; }
+.gateways button { min-width: 200px; }

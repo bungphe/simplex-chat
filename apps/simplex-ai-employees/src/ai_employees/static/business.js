@@ -252,6 +252,13 @@ views.pos = async () => {
         o.contact_id || o.conversation_id ? h("button", { onclick: () => step("send-receipt", tr("Đã gửi hoá đơn cho khách")) }, tr("Gửi hoá đơn qua chat")) : null,
         h("button", { onclick: () => { const to = prompt(tr("Gửi hoá đơn tới email (để trống: email của khách):"), o.email || ""); if (to !== null) run(async () => {
           const r = await api("POST", `/api/pos/orders/${o.id}/email-invoice`, { to }); toast(tr("Đã gửi hoá đơn tới {0}", r.sent_to)); drawPayment(t); }); } }, tr("Gửi hoá đơn qua email")),
+        // the customer's private link to pay online (copied to send by any channel)
+        o.due && o.status === "confirmed" ? h("button", { onclick: () => run(async () => {
+          const r = await api("POST", `/api/pos/orders/${o.id}/paylink`, {});
+          if (!r.payable) toast(tr("Chưa bật cổng thanh toán online (Kho hàng → Cửa hàng & tích điểm)"));
+          let copied = false;
+          try { await navigator.clipboard.writeText(r.url); copied = true; } catch (_) { /* no clipboard: the prompt below */ }
+          if (copied) toast(tr("Đã sao chép link thanh toán")); prompt(tr("Link thanh toán của khách:"), r.url); }) }, tr("Link thanh toán")) : null,
         isManager() && o.status === "confirmed" ? h("button", { class: "danger", onclick: once(() => confirm(tr("Huỷ {0}?", o.code)) && step("cancel", tr("Đã huỷ"))) }, tr("Huỷ đơn")) : null,
         isManager() && o.status === "completed" ? h("button", { class: "danger", onclick: once(() => { const why = prompt(tr("Lý do trả hàng:")); return why !== null && step("return", tr("Đã nhận trả hàng"), { reason: why }); }) }, tr("Trả hàng / hoàn tác")) : null,
         h("button", { onclick: closeTab }, tr("Xong, đóng đơn"))));

@@ -99,11 +99,26 @@ async def email_invoice(office: Office, oid: int, to: str | None = None) -> str:
     with use_language(None):  # for the customer: the shop's language
         shop = office.inventory.settings()["shop_name"] or tr("Cửa hàng")
         subject, text = tr("{0} – Hoá đơn {1}", shop, order["code"]), office.inventory.receipt_text(oid)
+        text += _pay_note(office, order)
         page = receipt_html(office, oid, printable=False)
     await office.mailer.send(address, subject, text, page)
     if not order.get("email"):
         office.inventory.db.execute("UPDATE inv_orders SET email=? WHERE id=?", (address, oid))
     return address
+
+
+def _pay_note(office: Office, order: dict[str, Any]) -> str:
+    """For an invoice sent by email while money is due: the link to pay online, if the
+    shop takes online payments and has a website."""
+    from .payments import payments_of
+
+    payments = payments_of(office)
+    if not payments.payable(order) or getattr(office, "storefront", None) is None:
+        return ""
+    try:
+        return tr("\n\nThanh toán online: {0}", payments.pay_link(order))
+    except InventoryError:  # no public URL
+        return ""
 
 
 def install_auto_invoice(office: Office) -> None:

@@ -211,19 +211,27 @@ class ChatMenu:
         )
 
     async def cmd_orders(self, conv: Any, contact: dict[str, Any], args: str) -> str:
+        from .payments import payments_of
+
         orders = self.office.inventory.orders(contact_id=int(contact["id"]), limit=5)
         if not orders:
             return tr("Quý khách chưa có đơn hàng nào.")
+        shop = self.office.storefront
+        payments = payments_of(self.office)
+        online = bool(shop and shop.public_url and payments.available())
         lines = []
         for o in orders:
             due = self.office.inventory.major(
                 max(0, self.office.inventory.minor(o["total"]) - self.office.inventory.minor(o["paid"]))
             )
+            open_due = bool(due and o["status"] == "confirmed")
             lines.append(
                 f"*{o['code']}* · {o['created'][:10]} · {tr(STATUS.get(o['status'], o['status']))}"
                 f"{tr(' · đặt trước') if o['kind'] == 'preorder' else ''} · {self._money(o['total'])}"
-                + (tr(" · còn {0}", self._money(due)) if due and o["status"] == "confirmed" else "")
+                + (tr(" · còn {0}", self._money(due)) if open_due else "")
                 + tr("\n  hoá đơn: {0}", tap("invoice " + o["code"]))
+                # the customer's private pay link (signed; no secret in it)
+                + (tr("\n  💳 thanh toán online: {0}", payments.pay_link(o)) if open_due and online else "")
             )
         return "\n".join(lines)
 

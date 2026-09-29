@@ -39,6 +39,7 @@ from .inventory import InventoryError, order_code
 from .invoices import RECEIPT_CSP, receipt_html
 from .loyalty import vip_card
 from .mailer import valid_email
+from .payments import GATEWAYS, NAMES, payments_of
 
 if TYPE_CHECKING:
     from .config import StorefrontConfig
@@ -498,6 +499,14 @@ class Storefront:
         code = order_code(int(order["id"]))
         return f"{self.public_url}/order/{code}?t={self.sign('order', code)}"
 
+    def pay_link(self, order: dict[str, Any]) -> str:
+        """The private link to pay online (the tracking link's token opens it too)."""
+        return self.order_link(order).replace("/order/", "/pay/", 1)
+
+    def payable(self, order: dict[str, Any]) -> bool:
+        """Whether the order can be paid online now: confirmed, money due, a gateway on."""
+        return payments_of(self.office).payable(order)
+
     async def after_checkout(self, orders: list[dict[str, Any]]) -> None:
         """Confirm to the customer by email, and tell the shop."""
         shop = self.inv.settings()["shop_name"] or tr("Cửa hàng")
@@ -524,6 +533,11 @@ class Storefront:
                         summary,
                     )
                     + "".join(tr("Theo dõi {0}: {1}\n", o["code"], self.order_link(o)) for o in orders)
+                    + "".join(
+                        tr("Thanh toán online {0}: {1}\n", o["code"], self.pay_link(o))
+                        for o in orders
+                        if self.payable(o)
+                    )
                     + tr("\nNhân viên sẽ liên hệ để hẹn giao hàng.")
                     + self._claim_note(first),
                 )
@@ -1053,7 +1067,13 @@ async def checkout(request: web.Request) -> web.Response:
     request.app[OFFICE].hub.spawn(shop.after_checkout(orders))
     links = "".join(
         f'<li><a href="{html.escape(shop.order_link(o).removeprefix(shop.public_url))}">{o["code"]}</a> – '
-        f"{tr('đặt trước, giao khi hàng về') if o['kind'] == 'preorder' else tr('hàng có sẵn')}</li>"
+        f"{tr('đặt trước, giao khi hàng về') if o['kind'] == 'preorder' else tr('hàng có sẵn')}"
+        + (
+            tr(' · <a class="button" href="{0}">Thanh toán online</a>', _pay_href(request, o))
+            if shop.payable(o)
+            else ""
+        )
+        + "</li>"
         for o in orders
     )
     resp = _page(
@@ -1104,8 +1124,9 @@ def _order_body(request: web.Request, oid: int) -> str:
     )
 
 
-async def order_page(request: web.Request) -> web.Response:
-    shop = request.app[SHOP]
+def _visible_order(request: web.Request, token: str = "") -> dict[str, Any] | None:
+    """The order of the URL's code when the visitor may see it: their own (logged in) or
+    with its private token (`?t=`, or `token` from a form)."""
     oid = _order_id(request.match_info["code"])
     who = request[CUSTOMER]
     try:
@@ -1113,12 +1134,192 @@ async def order_page(request: web.Request) -> web.Response:
             raise InventoryError("")
         order = request.app[OFFICE].inventory.order(oid)
     except InventoryError:
-        return _page(request, tr("Không tìm thấy"), tr("<p>Không tìm thấy đơn hàng.</p>"), 404)
+        return None
     mine = who is not None and order["contact_id"] == who["id"]
-    if not (mine or shop.check("order", order["code"], request.query.get("t", ""))):
+    token = token or request.query.get("t", "")
+    if not (mine or request.app[SHOP].check("order", order["code"], token)):
+        return None
+    return {**order, "mine": mine, "token": token if not mine else ""}
+
+
+def _pay_href(request: web.Request, order: dict[str, Any], token: str | None = None) -> str:
+    """The pay page of an order, with the token the visitor came with (none when logged in)."""
+    if token is None:
+        token = request.app[SHOP].sign("order", order["code"])
+    return f"/pay/{order['code']}" + (f"?t={html.escape(token)}" if token else "")
+
+
+async def order_page(request: web.Request) -> web.Response:
+    shop = request.app[SHOP]
+    order = _visible_order(request)
+    if order is None:
         return _page(request, tr("Không tìm thấy"), tr("<p>Không tìm thấy đơn hàng.</p>"), 404)
-    extra = tr('<p><a href="/account/invoice/{0}">Xem hoá đơn</a></p>', order["code"]) if mine else ""
-    return _page(request, order["code"], _order_body(request, oid) + extra)
+    extra = (
+        tr('<p><a href="/account/invoice/{0}">Xem hoá đơn</a></p>', order["code"]) if order["mine"] else ""
+    )
+    if shop.payable(order):
+        extra = (
+            tr(
+                '<p><a class="button" href="{0}">Thanh toán online {1}</a></p>',
+                _pay_href(request, order, order["token"]),
+                html.escape(_money(request.app[OFFICE])(order["due"])),
+            )
+            + extra
+        )
+    return _page(request, order["code"], _order_body(request, int(order["id"])) + extra)
+
+
+# ---------------------------------------------------------------------- #
+# online payments (payments.py)
+
+PAY_STATUS = {
+    "paid": "Đã thanh toán",
+    "pending": "Đang xác nhận",
+    "failed": "Không thành công",
+    "expired": "Đã hết hạn",
+}
+
+
+def _pay_body(request: web.Request, order: dict[str, Any], error: str = "") -> str:
+    office, e = request.app[OFFICE], html.escape
+    pay = payments_of(office)
+    m = _money(office)
+    head = tr(
+        "<h1>Thanh toán đơn {0}</h1><p>Tổng: {1} · Đã trả: {2} · <b>Còn phải trả: {3}</b></p>",
+        e(order["code"]),
+        e(m(order["total"])),
+        e(m(order["paid"])),
+        e(m(order["due"])),
+    )
+    back = tr(
+        '<p><a href="{0}">Xem đơn hàng</a></p>',
+        f"/order/{order['code']}" + (f"?t={e(order['token'])}" if order["token"] else ""),
+    )
+    if not order["due"] or order["status"] != "confirmed":
+        note = (
+            tr("<p class='ok'>Đơn đã thanh toán đủ.</p>")
+            if not order["due"]
+            else tr("<p>Đơn này không còn thanh toán online được.</p>")
+        )
+        return head + note + back
+    buttons = "".join(
+        tr(
+            '<form method="post" action="{0}" class="paygw">{1}<input type="hidden" name="gateway" value="{2}"><button>Thanh toán qua {3}</button></form>',
+            _pay_href(request, order, order["token"]),
+            _hidden(request),
+            g,
+            NAMES[g],
+        )
+        for g in pay.enabled_gateways()
+    )
+    body = head + (f'<p class="error">{e(error)}</p>' if error else "")
+    if buttons:
+        body += tr("<h2>Chọn cách thanh toán</h2><div class='gateways'>{0}</div>", buttons)
+    if pay.bank_info():
+        body += tr(
+            "<h2>Chuyển khoản ngân hàng</h2><p class='note'>{0}<br>Nội dung chuyển khoản: <b>{1}</b></p><p class='muted'>Cửa hàng sẽ xác nhận sau khi nhận được tiền.</p>",
+            e(pay.bank_info()),
+            e(order["code"]),
+        )
+    if not buttons and not pay.bank_info():
+        body += tr("<p>Cửa hàng chưa nhận thanh toán online. Nhân viên sẽ liên hệ với quý khách.</p>")
+    return body + back
+
+
+async def pay_page(request: web.Request) -> web.Response:
+    order = _visible_order(request)
+    if order is None:
+        return _page(request, tr("Không tìm thấy"), tr("<p>Không tìm thấy đơn hàng.</p>"), 404)
+    return _page(request, tr("Thanh toán"), _pay_body(request, order))
+
+
+async def pay_start(request: web.Request) -> web.Response:
+    """Send the customer to the gateway (a server-side redirect: no script on this site)."""
+    form = await _form(request)
+    order = _visible_order(request, form.get("t", ""))
+    if order is None:
+        return _page(request, tr("Không tìm thấy"), tr("<p>Không tìm thấy đơn hàng.</p>"), 404)
+    shop = request.app[SHOP]
+    if not shop.allow_ip(_client_ip(request), "pay", 30, 3600):
+        return _page(
+            request, tr("Thanh toán"), tr("<p>Quá nhiều yêu cầu, vui lòng thử lại sau ít phút.</p>"), 429
+        )
+    gateway = form.get("gateway", "")
+    if gateway not in GATEWAYS:
+        return _page(
+            request, tr("Thanh toán"), _pay_body(request, order, tr("Cổng thanh toán không hợp lệ")), 400
+        )
+    try:
+        intent = await payments_of(request.app[OFFICE]).create_intent(
+            int(order["id"]), gateway, ip=_client_ip(request)
+        )
+    except InventoryError as e:
+        return _page(request, tr("Thanh toán"), _pay_body(request, order, str(e)), 400)
+    raise web.HTTPSeeOther(intent["url"])
+
+
+async def pay_return(request: web.Request) -> web.Response:
+    """Where the gateway sends the customer back: the result (the gateway's server-side
+    notification is what records the payment; VNPay's and MoMo's signed return does too)."""
+    gateway = request.match_info["gateway"]
+    office, e = request.app[OFFICE], html.escape
+    intent = (
+        payments_of(office).verify_return(gateway, {k: v for k, v in request.query.items()})
+        if gateway in GATEWAYS
+        else None
+    )
+    if intent is None:
+        return _page(request, tr("Thanh toán"), tr("<p>Không xác minh được kết quả thanh toán.</p>"), 404)
+    m = _money(office)
+    code = intent["code"]
+    shop = request.app[SHOP]
+    link = f"/order/{code}?t={shop.sign('order', code)}"
+    if intent["status"] == "paid":
+        body = tr(
+            "<h1>Đã thanh toán</h1><p class='ok'>Cảm ơn quý khách! {0} đã nhận {1} cho đơn {2} qua {3}.</p>",
+            e(office.inventory.settings()["shop_name"] or tr("Cửa hàng")),
+            e(m(intent["amount"])),
+            e(code),
+            NAMES[gateway],
+        )
+    elif intent["status"] == "pending":
+        body = tr(
+            "<h1>Đang xác nhận</h1><p class='warn'>{0} đang xác nhận giao dịch cho đơn {1}. Vui lòng chờ giây lát rồi <a href=\"{2}\">tải lại trang</a>.</p>",
+            NAMES[gateway],
+            e(code),
+            e(request.path_qs),
+        )
+    else:
+        body = tr(
+            '<h1>Thanh toán không thành công</h1><p class=\'bad\'>Giao dịch {0} cho đơn {1} {2}.</p><p><a class="button" href="{3}">Thử lại</a></p>',
+            NAMES[gateway],
+            e(code),
+            e(tr(PAY_STATUS.get(intent["status"], intent["status"])).lower()),
+            f"/pay/{code}?t={shop.sign('order', code)}",
+        )
+    return _page(request, tr("Thanh toán"), body + tr('<p><a href="{0}">Xem đơn hàng</a></p>', link))
+
+
+async def pay_ipn(request: web.Request) -> web.Response:
+    """The gateway's server-to-server notification (no session, no CSRF: it is not our form)."""
+    gateway = request.match_info["gateway"]
+    if gateway not in GATEWAYS:
+        raise web.HTTPNotFound()
+    data: dict[str, Any] = {k: v for k, v in request.query.items()}
+    if request.method == "POST" and request.can_read_body:
+        if request.content_type == "application/json":
+            try:
+                body = await request.json()
+            except ValueError:
+                body = None
+            if isinstance(body, dict):
+                data.update(body)
+        else:
+            data.update({k: str(v) for k, v in (await request.post()).items()})
+    status, body = await payments_of(request.app[OFFICE]).handle_ipn(gateway, data)
+    if body is None:
+        return web.Response(status=status)
+    return web.json_response(body, status=status)
 
 
 async def login_page(request: web.Request) -> web.Response:
@@ -1282,13 +1483,14 @@ async def account(request: web.Request) -> web.Response:
         status = ""
     orders = "".join(
         tr(
-            '<tr><td><a href="/order/{0}">{1}</a></td><td>{2}</td><td>{3}</td><td>{4}</td><td><a href="/account/invoice/{5}">Hoá đơn</a></td></tr>',
+            '<tr><td><a href="/order/{0}">{1}</a></td><td>{2}</td><td>{3}</td><td>{4}</td><td><a href="/account/invoice/{5}">Hoá đơn</a>{6}</td></tr>',
             o["code"],
             o["code"],
             e(o["created"][:10]),
             e(tr(STATUS.get(o["status"], o["status"]))),
             e(m(o["total"])),
             o["code"],
+            tr(' · <a href="/pay/{0}">Thanh toán online</a>', o["code"]) if _payable(office, o) else "",
         )
         for o in office.inventory.orders(contact_id=cid, limit=50)
     )
@@ -1317,6 +1519,12 @@ async def account(request: web.Request) -> web.Response:
         )
     )
     return _page(request, tr("Tài khoản"), body)
+
+
+def _payable(office: Office, o: dict[str, Any]) -> bool:
+    """For an order list row (no `due` field): confirmed, not fully paid, a gateway on."""
+    due = office.inventory.minor(o["total"]) - office.inventory.minor(o["paid"])
+    return o["status"] == "confirmed" and due > 0 and payments_of(office).available()
 
 
 async def account_save(request: web.Request) -> web.Response:
@@ -1385,6 +1593,9 @@ def create_shop_app(office: Office, public_url: str = "") -> web.Application:
         ("POST", "/cart/update", cart_update),
         ("POST", "/checkout", checkout),
         ("GET", "/order/{code}", order_page),
+        ("GET", "/pay/return/{gateway}", pay_return),
+        ("GET", "/pay/{code}", pay_page),
+        ("POST", "/pay/{code}", pay_start),
         ("GET", "/login", login_page),
         ("POST", "/login", login),
         ("GET", "/verify", verify_page),
@@ -1399,6 +1610,8 @@ def create_shop_app(office: Office, public_url: str = "") -> web.Application:
         ("GET", "/account/invoice/{code}", invoice),
     ):
         r.add_route(method, path, _with_customer(fn))
+    r.add_get("/pay/ipn/{gateway}", pay_ipn)  # the gateways' notifications: no session, no CSRF
+    r.add_post("/pay/ipn/{gateway}", pay_ipn)
     r.add_get("/static/shop.css", stylesheet)
     r.add_get("/favicon.ico", no_icon)
     return app
