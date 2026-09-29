@@ -75,10 +75,13 @@ async def test_linking_a_chat_gives_the_role_its_menu(office):
         u: [m["label"] for m in staff_menu(users.get(u)) if m["type"] == "menu"]
         for u in ("thu", "kho", "hung", "quan")
     }
+    tasks = "📋 Công việc"  # everybody's
     assert (
-        roles["thu"] == ["🧾 Bán hàng"] and roles["kho"] == ["🏬 Kho"] and roles["hung"] == ["🚚 Giao hàng"]
+        roles["thu"] == ["🧾 Bán hàng", tasks]
+        and roles["kho"] == ["🏬 Kho", tasks]
+        and roles["hung"] == ["🚚 Giao hàng", tasks]
     )
-    assert roles["quan"] == ["💬 Hộp thư", "🧾 Bán hàng", "🏬 Kho", "🚚 Giao hàng", "📊 Quản lý"]
+    assert roles["quan"] == ["💬 Hộp thư", "🧾 Bán hàng", "🏬 Kho", "🚚 Giao hàng", "📊 Quản lý", tasks]
 
     # a disabled account loses its chats; unlinking restores the customer menu
     users.update("lan", disabled=True)

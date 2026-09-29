@@ -35,12 +35,12 @@ OWNER = "admin"
 ROLES = ("admin", "manager", "agent", "cashier", "warehouse", "delivery", "marketing")
 # what each role works on (admins: everything); "-read": may look, not change
 ROLE_AREAS: dict[str, tuple[str, ...]] = {
-    "manager": ("inbox", "pos", "inventory", "delivery", "marketing", "reports", "crm"),
-    "agent": ("inbox", "pos"),
-    "cashier": ("pos",),
-    "warehouse": ("inventory",),
-    "delivery": ("delivery",),
-    "marketing": ("marketing", "reports-read", "crm-read", "inventory-read"),
+    "manager": ("inbox", "pos", "inventory", "delivery", "marketing", "reports", "crm", "projects"),
+    "agent": ("inbox", "pos", "projects"),
+    "cashier": ("pos", "projects"),
+    "warehouse": ("inventory", "projects"),
+    "delivery": ("delivery", "projects"),
+    "marketing": ("marketing", "reports-read", "crm-read", "inventory-read", "projects"),
 }
 MIN_PASSWORD = 10
 _USERNAME = re.compile(r"^[a-z0-9][a-z0-9._-]{1,31}$")

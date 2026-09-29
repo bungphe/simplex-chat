@@ -55,9 +55,10 @@ class Database:
         if self.postgres:
             sql = sql.replace("{id}", "BIGSERIAL PRIMARY KEY").replace("{int}", "BIGINT")
             sql = sql.replace("{real}", "DOUBLE PRECISION")  # PostgreSQL's REAL is only 4 bytes
+            sql = sql.replace("{blob}", "BYTEA")
         else:
             sql = sql.replace("{id}", "INTEGER PRIMARY KEY").replace("{int}", "INTEGER")
-            sql = sql.replace("{real}", "REAL")
+            sql = sql.replace("{real}", "REAL").replace("{blob}", "BLOB")
         return sql
 
     def _call(self, run: Callable[[], T]) -> T:

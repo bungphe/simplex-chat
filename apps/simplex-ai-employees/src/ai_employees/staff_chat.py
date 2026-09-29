@@ -67,6 +67,10 @@ COMMANDS: dict[str, tuple[str, dict[str, Any]]] = {
     "approvals": ("approve", {"label": "✅ Yêu cầu chờ duyệt"}),
     "approve": ("approve", {"label": "👍 Duyệt", "params": "<số>"}),
     "reject": ("approve", {"label": "👎 Từ chối", "params": "<số> [lý do]"}),
+    "tasks": ("projects", {"label": "📋 Việc của tôi"}),
+    "task": ("projects", {"label": "🔎 Xem công việc", "params": "<mã việc>"}),
+    "progress": ("projects", {"label": "📈 Cập nhật tiến độ", "params": "<mã việc> <%>"}),
+    "taskdone": ("projects", {"label": "✅ Xong việc", "params": "<mã việc>"}),
     "me": ("*", {"label": "👤 Tài khoản của tôi"}),
     "unlink": ("*", {"label": "🔌 Huỷ liên kết"}),
 }
@@ -76,6 +80,7 @@ GROUPS = [
     ("🏬 Kho", ("stock", "lowstock", "incoming", "receive")),
     ("🚚 Giao hàng", ("trips", "go", "delivered", "failed")),
     ("📊 Quản lý", ("report", "openorders", "approvals", "approve", "reject")),
+    ("📋 Công việc", ("tasks", "task", "progress", "taskdone")),
 ]
 STAFF_WORDS = {*COMMANDS, "link"}
 
@@ -714,3 +719,57 @@ class StaffChat:
 
     async def cmd_reject(self, user: User, args: str, cid: int) -> str:
         return await self.employee._admin(f"reject {args}", by=user.name, prefix="/")
+
+    # tasks (projects.py)
+
+    def cmd_tasks(self, user: User, args: str, cid: int) -> str:
+        pm = self.office.projects
+        tasks = pm.my_tasks(user.username)
+        if not tasks:
+            return tr("Bạn không có việc nào đang mở. 🎉")
+        lines = [tr("📋 Việc của bạn ({0}):", len(tasks))]
+        for t in tasks[:30]:
+            mark = (
+                f" ⏰ {tr('trễ hạn')}" if t["late"] else (f" ⌛ {tr('sắp đến hạn')}" if t["due_soon"] else "")
+            )
+            due = f" · {t['due_date']}" if t["due_date"] else ""
+            lines.append(f"• /'task {t['code']}' {t['title']} · {t['done_pct']}%{due}{mark}")
+        return "\n".join(lines)
+
+    def _task(self, code: str) -> dict[str, Any]:
+        t = self.office.projects.by_code(code) if code else None
+        if t is None:
+            raise InventoryError(tr("Không tìm thấy công việc {0}", code.upper()))
+        return t
+
+    def cmd_task(self, user: User, args: str, cid: int) -> str:
+        if not args:
+            raise ValueError("code")
+        t = self._task(args.split()[0])
+        project = self.office.projects.project(int(t["project_id"]))
+        return self.office.projects.describe({**t, "project_name": project["name"]})
+
+    def _may_change(self, user: User, t: dict[str, Any]) -> None:
+        if not (user.role in ("admin", "manager") or user.username in (t["assignee"], t["created_by"])):
+            raise InventoryError(tr("Chỉ người phụ trách, người tạo hoặc quản lý cập nhật được việc này."))
+
+    def cmd_progress(self, user: User, args: str, cid: int) -> str:
+        parts = args.replace("%", " ").split()
+        pct = small_int(parts[1], 3) if len(parts) == 2 else None
+        if pct is None or pct > 100:
+            raise ValueError("progress")
+        t = self._task(parts[0])
+        self._may_change(user, t)
+        fields: dict[str, Any] = {"progress": pct}
+        if t["status"] == "todo" and pct > 0:
+            fields["status"] = "doing"
+        t = self.office.projects.update_task(int(t["id"]), fields, user.username)
+        return tr("📈 {0} {1}: {2}%", t["code"], t["title"], t["done_pct"])
+
+    def cmd_taskdone(self, user: User, args: str, cid: int) -> str:
+        if not args:
+            raise ValueError("code")
+        t = self._task(args.split()[0])
+        self._may_change(user, t)
+        t = self.office.projects.update_task(int(t["id"]), {"status": "done", "progress": 100}, user.username)
+        return tr("✅ {0} {1}: Hoàn thành", t["code"], t["title"])

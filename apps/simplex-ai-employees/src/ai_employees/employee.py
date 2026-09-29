@@ -657,6 +657,10 @@ class Office:
 
         # staff accounts linked to their SimpleX chats (commands and menus by role)
         self.staff_links = StaffLinks(self)
+        from .projects import Projects
+
+        # the staff's projects and tasks (mind map, list, Kanban; /tasks in their chat)
+        self.projects = Projects(self)
 
     @property
     def http_client(self) -> httpx2.AsyncClient:
@@ -788,6 +792,7 @@ class Office:
                 self.cluster.run(self._stopping),
                 *([self.marketplaces.run(self._stopping)] if primary else []),
                 *([self.storefront.run(self._stopping)] if primary and self.storefront else []),
+                *([self.projects.run(self._stopping)] if primary else []),
                 *(e.bot.serve_forever() for e in self.employees.values() if primary),
             )
 

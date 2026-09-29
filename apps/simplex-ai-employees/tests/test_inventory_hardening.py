@@ -5,6 +5,7 @@ order paging, returns giving back vouchers, closing a part-received purchase ord
 from __future__ import annotations
 
 import os
+from datetime import UTC, datetime, timedelta
 
 import httpx2
 import pytest
@@ -309,10 +310,12 @@ def amazon_order(n, when, status="Unshipped"):
 async def test_amazon_orders_follow_pages_and_retry_failed_ones(tmp_path, monkeypatch):
     for k in ("AMZ_ID", "AMZ_SECRET", "AMZ_REFRESH"):
         monkeypatch.setenv(k, "x")
+    # yesterday: within the first window read (the last two days)
+    day = (datetime.now(UTC) - timedelta(days=1)).date().isoformat()
     amazon = Amazon(
         [
-            [amazon_order("1", "2026-09-27T01:00:00Z"), amazon_order("bad", "2026-09-27T02:00:00Z")],
-            [amazon_order("3", "2026-09-27T03:00:00Z")],
+            [amazon_order("1", f"{day}T01:00:00Z"), amazon_order("bad", f"{day}T02:00:00Z")],
+            [amazon_order("3", f"{day}T03:00:00Z")],
         ]
     )
     office = make_office(tmp_path, ScriptedLLM(), http=amazon.client)
@@ -337,10 +340,10 @@ async def test_amazon_orders_follow_pages_and_retry_failed_ones(tmp_path, monkey
     stats = await mp.pull_amazon_orders(mp.config("amz"))
     assert stats["created"] == 2  # both pages; the order with an unknown SKU failed
     assert amazon.queries[1] == {"MarketplaceIds": "M", "NextToken": "1"}
-    assert office.docs.get("marketplace_cursor:amz")["after"] == "2026-09-27T01:59:59Z"
-    amazon.pages = [[amazon_order("bad", "2026-09-27T02:00:00Z"), amazon_order("3", "2026-09-27T03:00:00Z")]]
+    assert office.docs.get("marketplace_cursor:amz")["after"] == f"{day}T01:59:59Z"
+    amazon.pages = [[amazon_order("bad", f"{day}T02:00:00Z"), amazon_order("3", f"{day}T03:00:00Z")]]
     assert (await mp.pull_amazon_orders(mp.config("amz")))["created"] == 0  # seen again, not twice
-    assert amazon.queries[-1]["LastUpdatedAfter"] == "2026-09-27T01:59:59Z"
+    assert amazon.queries[-1]["LastUpdatedAfter"] == f"{day}T01:59:59Z"
     assert len([o for o in inv.orders() if o["channel"] == "amazon"]) == 2
     # what marketplaces are told comes from the product itself, not a text search
     offer = mp.offer(pid)

@@ -610,6 +610,33 @@ nhập trong khung khách hàng, hoặc bấm *Tìm toạ độ từ địa ch�
 Marketing → Tập khách, chọn *quanh <showroom>* và bán kính (mặc định 30 km): danh sách xếp từ gần đến xa, có cột
 khoảng cách, xuất CSV. Showroom cần toạ độ (Giao hàng → Kho). Trang cũng cho biết bao nhiêu khách chưa có toạ độ.
 
+## Công việc và dự án (sơ đồ tư duy, danh sách, Kanban)
+
+Trang **Công việc** trong trang quản trị: mỗi dự án là một cây công việc (gốc là dự án, mỗi việc có thể có nhánh con),
+xem theo 4 cách trên cùng một dữ liệu:
+
+- **Sơ đồ**: sơ đồ tư duy, dự án ở giữa, các nhánh chia hai bên, đường nối cong theo màu nhánh. Mỗi nốt có biểu tượng,
+  màu nền, ảnh đại diện tròn (tuỳ chọn), % hoàn thành, trạng thái, số việc xong / tổng việc của nhánh; viền theo tình
+  trạng (chưa bắt đầu, đang làm, hoàn thành, tạm dừng, **trễ hạn**, **sắp đến hạn** trong 3 ngày). Kéo để di chuyển,
+  phóng to/thu nhỏ, *Vừa màn hình*, thu gọn / *Mở hết* từng nhánh.
+- **Danh sách**: bảng theo cây, đổi trạng thái ngay trên dòng. **Kanban**: 4 cột theo trạng thái, kéo thả thẻ để đổi.
+- **Dự án**: danh sách dự án (tiến độ, số việc trễ hạn), tạo / đổi tên / lưu trữ / xoá (quản lý và quản trị viên),
+  và *Việc của tôi* trên mọi dự án.
+
+Bấm một việc để mở bảng chi tiết: tên, mã (5 ký tự, dùng cho phụ thuộc và lệnh chat), biểu tượng, màu nền, người phụ
+trách, ưu tiên (thấp, vừa, cao, gấp), trạng thái, % hoàn thành, nhãn, ảnh đại diện, **phụ thuộc** (mã các việc phải
+xong trước; việc còn chờ được ghi rõ), ngày bắt đầu / kết thúc, ghi chú định dạng (đậm, nghiêng, danh sách, trích dẫn,
+liên kết), checklist (bật *Nốt cuối — theo dõi bằng danh sách nhiệm vụ* thì % hoàn thành theo checklist), liên kết,
+chuyển sang nhánh khác, bình luận và tệp đính kèm (tối đa 10 MB, tải về luôn là tệp, không mở trong trang), thêm nhánh
+con / cùng cấp, lên / xuống, xoá. % của một nhánh là trung bình các việc con. Bộ lọc trên mọi cách xem: tìm kiếm, người
+phụ trách, ưu tiên, nhãn, *Ẩn việc xong*, *Tuần này*, *Trễ hạn*. *Nhật ký* ghi mọi thay đổi (ai, lúc nào, đổi gì).
+*Tệp*: xuất / nhập JSON (chuyển hoặc sao lưu một dự án, gồm cả bình luận), xuất CSV (mở bằng Excel), in.
+
+Mọi nhân viên xem các dự án, thêm và sửa công việc; quản lý cửa hàng và quản trị viên tạo, đổi tên, xoá dự án và xoá
+mọi công việc (người khác chỉ xoá việc do mình tạo). Ghi chú được lọc chỉ giữ định dạng an toàn. Người được giao việc
+nhận tin qua chat SimpleX đã liên kết (việc mới, bình luận mới), và mỗi sáng (8 giờ) nhận danh sách việc trễ hạn hoặc
+sắp đến hạn; trong chat họ dùng `/tasks`, `/task`, `/progress`, `/taskdone`.
+
 ## Website bán hàng và tài khoản khách
 
 Một website riêng cho khách (không dùng chung cổng với trang quản trị), bật trong file cấu hình:
@@ -693,6 +720,7 @@ khoá thì chat mất quyền ngay. Họ cũng nhận thông báo công việc: 
 | Kho (warehouse, manager; marketing chỉ xem) | `/stock <mã/tên>` · `/lowstock` · `/incoming` hàng đang về · `/receive <số đơn nhập>` nhận đủ (tự giữ hàng cho đơn đặt trước) |
 | Giao hàng (delivery, manager) | `/trips` chuyến hôm nay · `/go <mã chuyến>` bắt đầu (khách được báo) · `/delivered <số lịch>` · `/failed <số lịch> <lý do>` |
 | Quản lý (manager) | `/report` doanh thu hôm nay · `/openorders` · `/approvals`, `/approve <số>`, `/reject <số> [lý do]` |
+| Công việc (mọi nhân viên) | `/tasks` việc của tôi (trễ hạn trước) · `/task <mã việc>` xem chi tiết · `/progress <mã việc> <%>` cập nhật tiến độ · `/taskdone <mã việc>` xong việc |
 | Mọi nhân viên | `/me`, `/unlink` |
 
 Nhân viên bán hàng và thu ngân chỉ xem, thu tiền đơn của chính mình trong ngày (như trang web); huỷ, trả hàng vẫn do

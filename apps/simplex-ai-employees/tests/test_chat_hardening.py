@@ -324,7 +324,10 @@ async def test_staff_hints_and_menus_after_a_role_change(shop):
     assert "🏬 Kho" in groups and "📊 Quản lý" in groups
     users.update("quan", role="cashier")
     assert await staff.resync("quan") == 1
-    assert [m["label"] for m in chat.prefs[34]["commands"] if m["type"] == "menu"] == ["🧾 Bán hàng"]
+    assert [m["label"] for m in chat.prefs[34]["commands"] if m["type"] == "menu"] == [
+        "🧾 Bán hàng",
+        "📋 Công việc",
+    ]
 
 
 def test_every_menu_label_is_extracted_for_translation():
