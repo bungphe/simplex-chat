@@ -2800,4 +2800,10 @@
     <string name="member_info_relay_status_rejected_by_operator">az átjátszó üzemeltetője elutasította</string>
     <string name="another_instance_title">Az alkalmazás már fut</string>
     <string name="another_instance_not_responding">Lehet, hogy egy másik alkalmazáspéldány fut, vagy nem zárult be megfelelően. Így is elindítja?</string>
+    <!-- Shop management (SimpleX AI employees) -->
+    <string name="shop_admin">Bolt kezelése</string>
+    <string name="shop_admin_address">Adminalkalmazás címe</string>
+    <string name="shop_admin_address_footer">A bolt adminisztrációs webalkalmazásának címe (beérkezett üzenetek, pénztár, készlet, szállítás, jelentések), pl. https://admin.shop.com. Ott a munkatársi fiókoddal jelentkezel be.</string>
+    <string name="shop_admin_open">Bolt kezelésének megnyitása</string>
+    <string name="shop_admin_chat_footer">A bolt MI-munkatársával folytatott csevegésben írd be a / jelet a parancsaid megtekintéséhez. Előbb kapcsold össze a csevegést a munkatársi fiókoddal: az adminalkalmazásban nyisd meg a fiókodat, kérj összekapcsolási kódot, és küldd el a /link parancsot a kóddal.</string>
 </resources>

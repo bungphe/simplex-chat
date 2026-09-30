@@ -2770,4 +2770,10 @@
     <string name="alert_text_msg_reception_error">Aplikace odstranila tuto zprávu po %1$d pokusech o přijetí.</string>
     <string name="connection_reached_limit_of_undelivered_messages">Připojení dosáhlo limitu nedoručených zpráv</string>
     <string name="onboarding_first_network">První síť, kde vy vlastníte\nvaše kontakty a skupiny.</string>
+    <!-- Shop management (SimpleX AI employees) -->
+    <string name="shop_admin">Správa obchodu</string>
+    <string name="shop_admin_address">Adresa administrace</string>
+    <string name="shop_admin_address_footer">Adresa webové administrace vašeho obchodu (schránka, pokladna, sklad, doručování, přehledy), např. https://admin.shop.com. Přihlašujete se tam svým zaměstnaneckým účtem.</string>
+    <string name="shop_admin_open">Otevřít správu obchodu</string>
+    <string name="shop_admin_chat_footer">V chatu s AI zaměstnancem obchodu napište / a uvidíte své příkazy. Nejprve propojte chat se svým zaměstnaneckým účtem: v administraci otevřete svůj účet, získejte propojovací kód a pošlete /link s kódem.</string>
 </resources>

@@ -6335,3 +6335,17 @@ server test failure */
 /* No comment provided by engineer. */
 "Your SimpleX address" = "您的 SimpleX 地址";
 
+/* Shop management (SimpleX AI employees) */
+"Shop management" = "店铺管理";
+
+/* Shop management (SimpleX AI employees) */
+"Admin app address" = "管理应用地址";
+
+/* Shop management (SimpleX AI employees) */
+"The address of your shop's admin web app (inbox, point of sale, stock, deliveries, reports), e.g. https://admin.shop.com. You sign in there with your staff account." = "店铺管理网页应用的地址（收件箱、收银、库存、配送、报表），例如 https://admin.shop.com。使用员工账号登录。";
+
+/* Shop management (SimpleX AI employees) */
+"Open shop management" = "打开店铺管理";
+
+/* Shop management (SimpleX AI employees) */
+"In the chat with the shop's AI employee, type / to see your commands. First link your chat to your staff account: in the admin app, open your account, get a link code and send /link with the code." = "在与店铺 AI 员工的聊天中输入 / 查看你的命令。请先将聊天关联到你的员工账号：在管理应用中打开你的账号，获取关联码，然后发送 /link 加上关联码。";

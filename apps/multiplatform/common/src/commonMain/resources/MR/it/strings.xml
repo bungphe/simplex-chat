@@ -2836,4 +2836,10 @@
     <string name="relay_status_rejected">rifiutato</string>
     <string name="member_info_relay_status_rejected_by_operator">rifiutato dall\'operatore del relay</string>
     <string name="member_info_status">Stato</string>
+    <!-- Shop management (SimpleX AI employees) -->
+    <string name="shop_admin">Gestione negozio</string>
+    <string name="shop_admin_address">Indirizzo dell\'app di amministrazione</string>
+    <string name="shop_admin_address_footer">L\'indirizzo dell\'app web di amministrazione del tuo negozio (posta in arrivo, cassa, magazzino, consegne, report), ad es. https://admin.shop.com. Lì accedi con il tuo account del personale.</string>
+    <string name="shop_admin_open">Apri gestione negozio</string>
+    <string name="shop_admin_chat_footer">Nella chat con il dipendente IA del negozio, digita / per vedere i tuoi comandi. Prima collega la chat al tuo account del personale: nell\'app di amministrazione apri il tuo account, ottieni un codice di collegamento e invia /link con il codice.</string>
 </resources>

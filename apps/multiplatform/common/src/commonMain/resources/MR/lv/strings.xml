@@ -2497,4 +2497,10 @@
     <string name="server_address">Servera adrese</string>
     <string name="open_server_settings_button">Atvērt servera iestatījumus</string>
     <string name="max_group_mentions_per_message_reached">Sasniegts maksimālais grupas pieminējumu skaits ziņā.</string>
+    <!-- Shop management (SimpleX AI employees) -->
+    <string name="shop_admin">Veikala pārvaldība</string>
+    <string name="shop_admin_address">Administrēšanas lietotnes adrese</string>
+    <string name="shop_admin_address_footer">Jūsu veikala administrēšanas tīmekļa lietotnes adrese (iesūtne, kase, krājumi, piegādes, pārskati), piem., https://admin.shop.com. Tur jūs pierakstāties ar sava darbinieka kontu.</string>
+    <string name="shop_admin_open">Atvērt veikala pārvaldību</string>
+    <string name="shop_admin_chat_footer">Tērzēšanā ar veikala MI darbinieku ierakstiet /, lai redzētu savas komandas. Vispirms sasaistiet tērzēšanu ar savu darbinieka kontu: administrēšanas lietotnē atveriet savu kontu, saņemiet sasaistes kodu un nosūtiet /link ar kodu.</string>
 </resources>

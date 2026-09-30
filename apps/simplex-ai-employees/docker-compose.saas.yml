@@ -1,0 +1,42 @@
+# The SaaS control plane and its Caddy (TLS for the control plane and every tenant).
+#
+#   mkdir -p /srv/aie/{saas,tenants,backups,caddy/sites,caddy/data}
+#   cp src/ai_employees/saas/saas.example.yaml /srv/aie/saas/saas.yaml   # then edit it
+#   write /srv/aie/caddy/Caddyfile (the example is in docs/SAAS.md)
+#   export SAAS_OPS_PASSWORD=... SAAS_SMTP_PASSWORD=... PLATFORM_ANTHROPIC_API_KEY=...
+#   docker compose -f docker-compose.saas.yml up -d --build
+#
+# The tenants' directory must have the SAME path on the host and in this container: the
+# control plane writes tenants' docker-compose.yml files and the host's Docker daemon
+# resolves their bind mounts (./data) on the host. The control plane listens on
+# 127.0.0.1:8090 of the host only; Caddy publishes it as public_url.
+
+services:
+  saas:
+    build:
+      context: .
+      dockerfile: Dockerfile.saas
+    image: simplex-ai-employees-saas
+    restart: unless-stopped
+    environment:
+      SAAS_OPS_PASSWORD: ${SAAS_OPS_PASSWORD:-}
+      SAAS_SMTP_PASSWORD: ${SAAS_SMTP_PASSWORD:-}
+      PLATFORM_ANTHROPIC_API_KEY: ${PLATFORM_ANTHROPIC_API_KEY:-}
+    volumes:
+      - /srv/aie/saas:/data                      # saas.yaml and the control plane's database
+      - /srv/aie/tenants:/srv/aie/tenants        # same path on both sides (see above)
+      - /srv/aie/backups:/srv/aie/backups
+      - /srv/aie/caddy/sites:/srv/aie/caddy/sites
+      - /var/run/docker.sock:/var/run/docker.sock
+    network_mode: host                           # tenants are published on the host's 127.0.0.1
+    command: ["--config", "/data/saas.yaml"]
+
+  caddy:
+    image: caddy:2
+    container_name: aie-caddy
+    restart: unless-stopped
+    network_mode: host                           # reverse_proxy 127.0.0.1:<tenant port>
+    volumes:
+      - /srv/aie/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - /srv/aie/caddy/sites:/srv/aie/caddy/sites:ro
+      - /srv/aie/caddy/data:/data

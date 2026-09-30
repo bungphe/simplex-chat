@@ -1,3 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+  <!-- Shop management (SimpleX AI employees) -->
+  <string name="shop_admin">Butikshantering</string>
+  <string name="shop_admin_address">Adress till adminappen</string>
+  <string name="shop_admin_address_footer">Adressen till butikens adminwebbapp (inkorg, kassa, lager, leveranser, rapporter), t.ex. https://admin.shop.com. Där loggar du in med ditt personalkonto.</string>
+  <string name="shop_admin_open">Öppna butikshantering</string>
+  <string name="shop_admin_chat_footer">Skriv / i chatten med butikens AI-medarbetare för att se dina kommandon. Koppla först chatten till ditt personalkonto: öppna ditt konto i adminappen, hämta en kopplingskod och skicka /link med koden.</string>
 </resources>

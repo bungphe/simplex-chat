@@ -3716,3 +3716,17 @@ server test failure */
 /* No comment provided by engineer. */
 "Your SimpleX address" = "Vaše SimpleX adresa";
 
+/* Shop management (SimpleX AI employees) */
+"Shop management" = "Správa obchodu";
+
+/* Shop management (SimpleX AI employees) */
+"Admin app address" = "Adresa administrace";
+
+/* Shop management (SimpleX AI employees) */
+"The address of your shop's admin web app (inbox, point of sale, stock, deliveries, reports), e.g. https://admin.shop.com. You sign in there with your staff account." = "Adresa webové administrace vašeho obchodu (schránka, pokladna, sklad, doručování, přehledy), např. https://admin.shop.com. Přihlašujete se tam svým zaměstnaneckým účtem.";
+
+/* Shop management (SimpleX AI employees) */
+"Open shop management" = "Otevřít správu obchodu";
+
+/* Shop management (SimpleX AI employees) */
+"In the chat with the shop's AI employee, type / to see your commands. First link your chat to your staff account: in the admin app, open your account, get a link code and send /link with the code." = "V chatu s AI zaměstnancem obchodu napište / a uvidíte své příkazy. Nejprve propojte chat se svým zaměstnaneckým účtem: v administraci otevřete svůj účet, získejte propojovací kód a pošlete /link s kódem.";

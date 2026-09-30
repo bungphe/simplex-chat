@@ -2509,4 +2509,10 @@
     <string name="server_no_sub">Abonelik yok</string>
     <string name="not_connected_to_server_to_receive_messages_no_sub">Bu bağlantıdan mesaj almak için kullanılan sunucuya bağlı değilsiniz (abonelik yok).</string>
     <string name="simplex_link_relay">SimpleX Relay Linki</string>
+    <!-- Shop management (SimpleX AI employees) -->
+    <string name="shop_admin">Mağaza yönetimi</string>
+    <string name="shop_admin_address">Yönetim uygulaması adresi</string>
+    <string name="shop_admin_address_footer">Mağazanızın yönetim web uygulamasının adresi (gelen kutusu, satış noktası, stok, teslimatlar, raporlar), ör. https://admin.shop.com. Orada personel hesabınızla oturum açarsınız.</string>
+    <string name="shop_admin_open">Mağaza yönetimini aç</string>
+    <string name="shop_admin_chat_footer">Mağazanın yapay zekâ çalışanıyla sohbette komutlarınızı görmek için / yazın. Önce sohbeti personel hesabınıza bağlayın: yönetim uygulamasında hesabınızı açın, bir bağlantı kodu alın ve kodla birlikte /link gönderin.</string>
 </resources>

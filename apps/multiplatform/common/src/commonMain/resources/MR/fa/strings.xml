@@ -2530,4 +2530,10 @@
     <string name="smp_proxy_error_unknown_ca">اثر انگشت در نشانی سرور انتقال با گواهی مطابقت ندارد: ‎%1$s.</string>
     <string name="network_error_unknown_ca">اثر انگشت در نشانی سرور با گواهی مطابقت ندارد: ‎%1$s.</string>
     <string name="button_delete_member_messages">پاک کردن پیام کاربر</string>
+    <!-- Shop management (SimpleX AI employees) -->
+    <string name="shop_admin">مدیریت فروشگاه</string>
+    <string name="shop_admin_address">نشانی برنامهٔ مدیریت</string>
+    <string name="shop_admin_address_footer">نشانی برنامهٔ وب مدیریت فروشگاه شما (صندوق پیام، فروش، انبار، تحویل، گزارش‌ها)، مثلاً https://admin.shop.com. در آنجا با حساب کارمندی خود وارد می‌شوید.</string>
+    <string name="shop_admin_open">باز کردن مدیریت فروشگاه</string>
+    <string name="shop_admin_chat_footer">در گفتگو با کارمند هوش مصنوعی فروشگاه، / را بنویسید تا فرمان‌های خود را ببینید. ابتدا گفتگو را به حساب کارمندی خود پیوند دهید: در برنامهٔ مدیریت حساب خود را باز کنید، کد پیوند بگیرید و /link را همراه کد بفرستید.</string>
 </resources>

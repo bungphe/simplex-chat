@@ -341,6 +341,12 @@ struct SettingsView: View {
                     }
                     .disabled(chatModel.chatRunning != true)
                 }
+
+                NavigationLink {
+                    ShopAdminSettings()
+                } label: {
+                    settingsRow("bag", color: theme.colors.secondary) { Text("Shop management") }
+                }
             }
 
             Section(header: Text("Chat database").foregroundColor(theme.colors.secondary)) {

@@ -976,4 +976,10 @@
     <string name="forward_files_in_progress_desc">Ainda a descarregar %1$d ficheiros(s).</string>
     <string name="forward_files_missing_desc">%1$d ficheiros(s) eliminado(s).</string>
     <string name="forward_files_not_accepted_desc">Não foi possível descarregar %1$d ficheiro(s).</string>
+    <!-- Shop management (SimpleX AI employees) -->
+    <string name="shop_admin">Gestão da loja</string>
+    <string name="shop_admin_address">Endereço da aplicação de administração</string>
+    <string name="shop_admin_address_footer">O endereço da aplicação web de administração da sua loja (caixa de entrada, ponto de venda, stock, entregas, relatórios), p. ex. https://admin.shop.com. Aí inicia sessão com a sua conta de funcionário.</string>
+    <string name="shop_admin_open">Abrir gestão da loja</string>
+    <string name="shop_admin_chat_footer">Na conversa com o funcionário de IA da loja, escreva / para ver os seus comandos. Primeiro ligue a conversa à sua conta de funcionário: na aplicação de administração abra a sua conta, obtenha um código de ligação e envie /link com o código.</string>
 </resources>

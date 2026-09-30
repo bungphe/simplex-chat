@@ -2407,4 +2407,10 @@
     <string name="cant_send_message_alert_title">Bạn không thể gửi tin nhắn!</string>
     <string name="report_sent_alert_msg_view_in_support_chat">Bạn có thể xem các báo cáo của mình trong Cuộc trò chuyện với các quản trị viên.</string>
     <string name="cant_send_message_you_left">bạn đã rời đi</string>
+    <!-- Shop management (SimpleX AI employees) -->
+    <string name="shop_admin">Quản lý cửa hàng</string>
+    <string name="shop_admin_address">Địa chỉ trang quản trị</string>
+    <string name="shop_admin_address_footer">Địa chỉ trang quản trị của cửa hàng (hộp thư, bán hàng, kho, giao hàng, báo cáo), vd. https://admin.shop.vn. Bạn đăng nhập bằng tài khoản nhân viên.</string>
+    <string name="shop_admin_open">Mở quản lý cửa hàng</string>
+    <string name="shop_admin_chat_footer">Trong chat với nhân viên AI của cửa hàng, gõ / để xem các lệnh của bạn. Trước hết hãy liên kết chat với tài khoản nhân viên: trong trang quản trị, mở tài khoản của bạn, lấy mã liên kết rồi gửi /link kèm mã.</string>
 </resources>

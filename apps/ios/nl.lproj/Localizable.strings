@@ -6007,3 +6007,17 @@ server test failure */
 /* No comment provided by engineer. */
 "Your SimpleX address" = "Uw SimpleX adres";
 
+/* Shop management (SimpleX AI employees) */
+"Shop management" = "Winkelbeheer";
+
+/* Shop management (SimpleX AI employees) */
+"Admin app address" = "Adres van de beheer-app";
+
+/* Shop management (SimpleX AI employees) */
+"The address of your shop's admin web app (inbox, point of sale, stock, deliveries, reports), e.g. https://admin.shop.com. You sign in there with your staff account." = "Het adres van de beheer-webapp van je winkel (inbox, kassa, voorraad, leveringen, rapporten), bijv. https://admin.shop.com. Daar log je in met je personeelsaccount.";
+
+/* Shop management (SimpleX AI employees) */
+"Open shop management" = "Winkelbeheer openen";
+
+/* Shop management (SimpleX AI employees) */
+"In the chat with the shop's AI employee, type / to see your commands. First link your chat to your staff account: in the admin app, open your account, get a link code and send /link with the code." = "Typ in de chat met de AI-medewerker van de winkel / om je opdrachten te zien. Koppel de chat eerst aan je personeelsaccount: open in de beheer-app je account, haal een koppelcode op en stuur /link met de code.";

@@ -7040,3 +7040,17 @@ server test failure */
 /* No comment provided by engineer. */
 "Your SimpleX address" = "Profil SimpleX-címe";
 
+/* Shop management (SimpleX AI employees) */
+"Shop management" = "Bolt kezelése";
+
+/* Shop management (SimpleX AI employees) */
+"Admin app address" = "Adminalkalmazás címe";
+
+/* Shop management (SimpleX AI employees) */
+"The address of your shop's admin web app (inbox, point of sale, stock, deliveries, reports), e.g. https://admin.shop.com. You sign in there with your staff account." = "A bolt adminisztrációs webalkalmazásának címe (beérkezett üzenetek, pénztár, készlet, szállítás, jelentések), pl. https://admin.shop.com. Ott a munkatársi fiókoddal jelentkezel be.";
+
+/* Shop management (SimpleX AI employees) */
+"Open shop management" = "Bolt kezelésének megnyitása";
+
+/* Shop management (SimpleX AI employees) */
+"In the chat with the shop's AI employee, type / to see your commands. First link your chat to your staff account: in the admin app, open your account, get a link code and send /link with the code." = "A bolt MI-munkatársával folytatott csevegésben írd be a / jelet a parancsaid megtekintéséhez. Előbb kapcsold össze a csevegést a munkatársi fiókoddal: az adminalkalmazásban nyisd meg a fiókodat, kérj összekapcsolási kódot, és küldd el a /link parancsot a kóddal.";

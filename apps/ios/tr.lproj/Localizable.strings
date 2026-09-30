@@ -6309,3 +6309,17 @@ server test failure */
 /* No comment provided by engineer. */
 "Your SimpleX address" = "SimpleX adresin";
 
+/* Shop management (SimpleX AI employees) */
+"Shop management" = "Mağaza yönetimi";
+
+/* Shop management (SimpleX AI employees) */
+"Admin app address" = "Yönetim uygulaması adresi";
+
+/* Shop management (SimpleX AI employees) */
+"The address of your shop's admin web app (inbox, point of sale, stock, deliveries, reports), e.g. https://admin.shop.com. You sign in there with your staff account." = "Mağazanızın yönetim web uygulamasının adresi (gelen kutusu, satış noktası, stok, teslimatlar, raporlar), ör. https://admin.shop.com. Orada personel hesabınızla oturum açarsınız.";
+
+/* Shop management (SimpleX AI employees) */
+"Open shop management" = "Mağaza yönetimini aç";
+
+/* Shop management (SimpleX AI employees) */
+"In the chat with the shop's AI employee, type / to see your commands. First link your chat to your staff account: in the admin app, open your account, get a link code and send /link with the code." = "Mağazanın yapay zekâ çalışanıyla sohbette komutlarınızı görmek için / yazın. Önce sohbeti personel hesabınıza bağlayın: yönetim uygulamasında hesabınızı açın, bir bağlantı kodu alın ve kodla birlikte /link gönderin.";

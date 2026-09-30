@@ -106,6 +106,7 @@ fun SettingsLayout(
       SettingsActionItem(painterResource(MR.images.ic_videocam), stringResource(MR.strings.settings_audio_video_calls), showSettingsModal { CallSettingsView(it, showModal) }, disabled = stopped)
       SettingsActionItem(painterResource(MR.images.ic_lock), stringResource(MR.strings.privacy_and_security), showSettingsModal { PrivacySettingsView(it, showSettingsModal, setPerformLA) }, disabled = stopped)
       SettingsActionItem(painterResource(MR.images.ic_light_mode), stringResource(MR.strings.appearance_settings), showSettingsModal { AppearanceView(it) })
+      SettingsActionItem(painterResource(MR.images.ic_storefront), stringResource(MR.strings.shop_admin), showCustomModal { _, close -> ModalView(close) { ShopAdminView(close) } })
     }
     SectionDividerSpaced()
 

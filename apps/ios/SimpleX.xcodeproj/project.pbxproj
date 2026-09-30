@@ -100,6 +100,7 @@
 		5CB634B129E5EFEA0066AD6B /* PasscodeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5CB634B029E5EFEA0066AD6B /* PasscodeView.swift */; };
 		5CB924D727A8563F00ACCCDD /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5CB924D627A8563F00ACCCDD /* SettingsView.swift */; };
 		5CB924E127A867BA00ACCCDD /* UserProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5CB924E027A867BA00ACCCDD /* UserProfile.swift */; };
+		843186CF31408651F34B1654 /* ShopAdminView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 98B6A80EDAD434CA3673294C /* ShopAdminView.swift */; };
 		5CB9250D27A9432000ACCCDD /* ChatListNavLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5CB9250C27A9432000ACCCDD /* ChatListNavLink.swift */; };
 		5CBD285C29575B8E00EC2CF4 /* WhatsNewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5CBD285B29575B8E00EC2CF4 /* WhatsNewView.swift */; };
 		5CBE6C12294487F7002D9531 /* VerifyCodeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5CBE6C11294487F7002D9531 /* VerifyCodeView.swift */; };
@@ -363,6 +364,7 @@
 		5C13730C2815740A00F43030 /* DebugJSON.playground */ = {isa = PBXFileReference; lastKnownFileType = file.playground; path = DebugJSON.playground; sourceTree = "<group>"; xcLanguageSpecificationIdentifier = xcode.lang.swift; };
 		5C1A4C1D27A715B700EAD5AD /* ChatItemView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatItemView.swift; sourceTree = "<group>"; };
 		5C245F3C2B501E98001CC39F /* tr */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = tr; path = tr.lproj/Localizable.strings; sourceTree = "<group>"; };
+		25E470A7DBD28E801D06BA7E /* vi */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = vi; path = vi.lproj/Localizable.strings; sourceTree = "<group>"; };
 		5C245F3D2B501F13001CC39F /* tr */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = tr; path = "tr.lproj/SimpleX--iOS--InfoPlist.strings"; sourceTree = "<group>"; };
 		5C245F3E2B501F13001CC39F /* tr */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = tr; path = tr.lproj/InfoPlist.strings; sourceTree = "<group>"; };
 		5C2E260627A2941F00F70299 /* SimpleXAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimpleXAPI.swift; sourceTree = "<group>"; };
@@ -474,6 +476,7 @@
 		5CB634B029E5EFEA0066AD6B /* PasscodeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PasscodeView.swift; sourceTree = "<group>"; };
 		5CB924D627A8563F00ACCCDD /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; wrapsLines = 0; };
 		5CB924E027A867BA00ACCCDD /* UserProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserProfile.swift; sourceTree = "<group>"; };
+		98B6A80EDAD434CA3673294C /* ShopAdminView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShopAdminView.swift; sourceTree = "<group>"; };
 		5CB9250C27A9432000ACCCDD /* ChatListNavLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatListNavLink.swift; sourceTree = "<group>"; };
 		5CBD285529565CAE00EC2CF4 /* fr */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = fr; path = fr.lproj/Localizable.strings; sourceTree = "<group>"; };
 		5CBD285729565D2600EC2CF4 /* fr */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = fr; path = "fr.lproj/SimpleX--iOS--InfoPlist.strings"; sourceTree = "<group>"; };
@@ -1005,6 +1008,7 @@
 				5C5DB70D289ABDD200730FFF /* AppearanceSettings.swift */,
 				5C05DF522840AA1D00C683F9 /* CallSettings.swift */,
 				5CB924E027A867BA00ACCCDD /* UserProfile.swift */,
+				98B6A80EDAD434CA3673294C /* ShopAdminView.swift */,
 				5CC036DF29C488D500C0EF20 /* HiddenProfileView.swift */,
 				5C577F7C27C83AA10006112D /* MarkdownHelp.swift */,
 				5C3F1D57284363C400EC8A82 /* PrivacySettings.swift */,
@@ -1414,6 +1418,7 @@
 				bg,
 				tr,
 				hu,
+				vi,
 			);
 			mainGroup = 5CA059BD279559F40002BEB4;
 			packageReferences = (
@@ -1531,6 +1536,7 @@
 				5C65DAF929D0CC20003CEE45 /* DeveloperView.swift in Sources */,
 				5C36027327F47AD5009F19D9 /* AppDelegate.swift in Sources */,
 				5CB924E127A867BA00ACCCDD /* UserProfile.swift in Sources */,
+				843186CF31408651F34B1654 /* ShopAdminView.swift in Sources */,
 				5CB0BA9A2827FD8800B3292C /* HowItWorks.swift in Sources */,
 				5C13730B28156D2700F43030 /* ContactConnectionView.swift in Sources */,
 				644EFFE0292CFD7F00525D5B /* CIVoiceView.swift in Sources */,
@@ -1844,6 +1850,7 @@
 				5C5B67912ABAF4B500DA9412 /* bg */,
 				5C245F3C2B501E98001CC39F /* tr */,
 				5C371E4E2BA9AAA200100AD3 /* hu */,
+				25E470A7DBD28E801D06BA7E /* vi */,
 			);
 			name = Localizable.strings;
 			sourceTree = "<group>";

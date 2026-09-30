@@ -861,4 +861,10 @@
     <string name="group_member_status_introduced">Tilslutning (introduceret)</string>
     <string name="migrate_from_device_choose_migrate_from_another_device"><![CDATA[Vælg <i>Overfør fra en anden enhed</i> på den nye enhed og scan QR-koden.]]></string>
     <string name="migrate_from_another_device">Overfør fra en anden enhed</string>
+    <!-- Shop management (SimpleX AI employees) -->
+    <string name="shop_admin">Butiksstyring</string>
+    <string name="shop_admin_address">Adresse på admin-appen</string>
+    <string name="shop_admin_address_footer">Adressen på din butiks admin-webapp (indbakke, kasse, lager, leveringer, rapporter), f.eks. https://admin.shop.com. Du logger ind der med din medarbejderkonto.</string>
+    <string name="shop_admin_open">Åbn butiksstyring</string>
+    <string name="shop_admin_chat_footer">I chatten med butikkens AI-medarbejder skal du skrive / for at se dine kommandoer. Forbind først chatten med din medarbejderkonto: åbn din konto i admin-appen, hent en forbindelseskode og send /link med koden.</string>
 </resources>

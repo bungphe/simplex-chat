@@ -2440,4 +2440,10 @@
     <string name="server_no_sub">geen abonnement</string>
     <string name="not_connected_to_server_to_receive_messages_no_sub">U bent niet verbonden met de server die u gebruikt om berichten van deze verbinding te ontvangen (geen abonnement).</string>
     <string name="e2ee_info_e2ee"><![CDATA[Berichten worden beschermd door <b>end-to-end-encryptie</b>.]]></string>
+    <!-- Shop management (SimpleX AI employees) -->
+    <string name="shop_admin">Winkelbeheer</string>
+    <string name="shop_admin_address">Adres van de beheer-app</string>
+    <string name="shop_admin_address_footer">Het adres van de beheer-webapp van je winkel (inbox, kassa, voorraad, leveringen, rapporten), bijv. https://admin.shop.com. Daar log je in met je personeelsaccount.</string>
+    <string name="shop_admin_open">Winkelbeheer openen</string>
+    <string name="shop_admin_chat_footer">Typ in de chat met de AI-medewerker van de winkel / om je opdrachten te zien. Koppel de chat eerst aan je personeelsaccount: open in de beheer-app je account, haal een koppelcode op en stuur /link met de code.</string>
 </resources>

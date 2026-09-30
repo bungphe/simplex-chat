@@ -1772,4 +1772,10 @@
     <string name="forward_files_in_progress_desc">%1$d failas (-ai, -ų) vis dar atsisiunčiamas (-i, -a).</string>
     <string name="forward_files_failed_to_receive_desc">Nepavyko atsisiųsti %1$d failo (-ų).</string>
     <string name="selected_chat_items_selected_n">%d pasirinkta</string>
+    <!-- Shop management (SimpleX AI employees) -->
+    <string name="shop_admin">Parduotuvės valdymas</string>
+    <string name="shop_admin_address">Administravimo programos adresas</string>
+    <string name="shop_admin_address_footer">Jūsų parduotuvės administravimo žiniatinklio programos adresas (gautieji, kasa, atsargos, pristatymai, ataskaitos), pvz., https://admin.shop.com. Ten prisijungiate savo darbuotojo paskyra.</string>
+    <string name="shop_admin_open">Atidaryti parduotuvės valdymą</string>
+    <string name="shop_admin_chat_footer">Pokalbyje su parduotuvės DI darbuotoju įveskite /, kad pamatytumėte savo komandas. Pirmiausia susiekite pokalbį su savo darbuotojo paskyra: administravimo programoje atidarykite savo paskyrą, gaukite susiejimo kodą ir išsiųskite /link su kodu.</string>
 </resources>

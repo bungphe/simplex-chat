@@ -2522,4 +2522,10 @@
     <string name="simplex_link_relay">SimpleX реле линк</string>
     <string name="chat_banner_connect_to_use_bot">Натисни Свързване, за използване на бота</string>
     <string name="cant_send_commands_alert_text">За да изпращате команди, трябва да сте свързани.</string>
+    <!-- Shop management (SimpleX AI employees) -->
+    <string name="shop_admin">Управление на магазина</string>
+    <string name="shop_admin_address">Адрес на приложението за управление</string>
+    <string name="shop_admin_address_footer">Адресът на уеб приложението за управление на вашия магазин (входяща поща, каса, склад, доставки, отчети), напр. https://admin.shop.com. Там влизате с вашия служебен акаунт.</string>
+    <string name="shop_admin_open">Отвори управлението на магазина</string>
+    <string name="shop_admin_chat_footer">В чата с AI служителя на магазина въведете /, за да видите командите си. Първо свържете чата със служебния си акаунт: в приложението за управление отворете акаунта си, вземете код за свързване и изпратете /link с кода.</string>
 </resources>

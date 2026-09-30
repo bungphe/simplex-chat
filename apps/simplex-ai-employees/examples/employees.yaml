@@ -1,0 +1,208 @@
+# AI employees: each entry is a separate SimpleX account run by a Claude agent.
+# Paths are relative to this file. Run:  python -m ai_employees run examples/employees.yaml
+
+state_dir: ./data/state          # admin overrides, memory, notes (JSON per employee)
+
+# Optional: pin all accounts to your own SMP servers (default: SimpleX preset servers).
+# servers:
+#   smp: ["smp://<fingerprint>@smp.example.com"]
+
+# AI models: declare once (API endpoint, key, model name), then assign to employees by name.
+# Keys come from environment variables; they are never shown in chat.
+models:
+  claude:
+    provider: anthropic                 # Claude via the official Anthropic SDK
+    model: claude-opus-5
+    api_key_env: ANTHROPIC_API_KEY
+  gpt:
+    provider: openai                    # any OpenAI-compatible Chat Completions API
+    base_url: https://api.openai.com/v1
+    api_key_env: OPENAI_API_KEY
+    model: gpt-4.1                      # example: use a model your account has
+  gemini:
+    provider: openai                    # Gemini through its OpenAI-compatible endpoint
+    base_url: https://generativelanguage.googleapis.com/v1beta/openai
+    api_key_env: GEMINI_API_KEY
+    model: gemini-2.5-flash             # example
+  local:
+    provider: openai                    # a model on your own machine (Ollama), no key needed
+    base_url: http://localhost:11434/v1
+    model: qwen2.5:7b                   # example: must support tool calling
+    extra_body: {temperature: 0.3}      # any extra request fields for this API
+
+# Outbound actions: webhooks into your own systems (API, n8n, Zapier, Make, CRM...).
+# Each becomes a skill. Requests wait for a manager's approval ("/ai approve <n>")
+# unless the employee's managers released the action (releases: or "/ai release").
+actions:
+  create_order:
+    description: Create a sales order in the shop system.
+    url: https://n8n.example.com/webhook/create-order
+    headers: {Authorization: "Bearer ${ORDER_WEBHOOK_TOKEN}"}   # ${ENV} is read at send time
+    fields:
+      customer_name: Customer's full name
+      phone: Customer's phone number
+      address: Delivery address
+      items: Products and quantities
+    confirm_message: Đơn hàng của bạn đã được xác nhận. Cảm ơn bạn!
+  # Or keep orders in this office's own inventory (Kho hàng page): stock is reserved at
+  # today's price for this customer, after approval. Give the employee the "products"
+  # skill too, so it quotes real prices and stock:
+  # reserve_order:
+  #   kind: stock_order
+  #   description: Chốt đơn và giữ hàng trong kho cho khách.
+
+# Admin web UI (optional). Open http://127.0.0.1:8080 and log in with the password.
+# After a restart, customer messages up to this many hours old still get an AI answer.
+catch_up_hours: 12
+
+# The language staff read and write (inbox translations, long-term summaries).
+# Customers are answered in their own language automatically.
+staff_language: vi
+
+# Chat channels besides SimpleX: every conversation appears in the admin "Hộp thư"
+# (unified inbox), and the assigned employee answers automatically until a person
+# takes over. Tokens only through environment variables. Uncomment what you use.
+# channels:
+#   - id: zalo-shop                 # Zalo Official Account (official API, polled)
+#     type: zalo_oa
+#     employee: sales
+#     app_id: "1234567890"
+#     app_secret_env: ZALO_APP_SECRET
+#     access_token_env: ZALO_ACCESS_TOKEN
+#     refresh_token_env: ZALO_REFRESH_TOKEN
+#     webhook_secret_env: ZALO_OA_SECRET  # official webhook: POST /hooks/zalo-shop
+#     poll_seconds: 0                     # with the webhook, no polling needed
+#   - id: zalo-canhan               # a personal Zalo account via zalo-gateway/ (QR login)
+#     type: zalo_personal
+#     employee: sales
+#     gateway_url: http://zalo-gateway:3000
+#     api_key_env: ZALO_GATEWAY_KEY
+#     secret_env: ZALO_GATEWAY_HOOK_SECRET
+#   - id: fanpage                   # Facebook Page / Messenger (polled)
+#     type: facebook
+#     employee: sales
+#     page_id: "100000000000000"
+#     access_token_env: FB_PAGE_TOKEN
+#     app_secret_env: FB_APP_SECRET       # official webhook: /hooks/fanpage
+#     verify_token: choose-a-long-random-string
+#     poll_seconds: 0
+#   - id: telegram                  # Telegram bot; "Đăng ký webhook" on the channels page
+#     type: telegram
+#     employee: sales
+#     bot_token_env: TELEGRAM_BOT_TOKEN
+#     secret_env: TELEGRAM_WEBHOOK_SECRET
+#     public_url: https://shop.example.com
+#   - id: whatsapp                  # WhatsApp through a WAHA server
+#     type: whatsapp
+#     employee: sales
+#     waha_url: http://waha:3000
+#     api_key_env: WAHA_API_KEY
+#     hmac_key_env: WAHA_WEBHOOK_HMAC
+#   - id: email                     # SendGrid Inbound Parse -> /hooks/email?key=..., replies over SMTP
+#     type: email
+#     employee: sales
+#     secret_env: EMAIL_INBOUND_KEY
+#     smtp_host: smtp.example.com
+#     smtp_user: support@example.com
+#     smtp_password_env: SMTP_PASSWORD
+#   - id: website                   # anything else: your bridge POSTs to /hooks/website
+#     type: webhook
+#     employee: sales
+#     secret_env: WEBCHAT_SECRET
+#     reply_url: https://example.com/chat/reply
+
+admin_ui:
+  host: 127.0.0.1
+  port: 8080
+  password_env: AI_ADMIN_PASSWORD
+
+# The public web shop (catalog, cart, customer accounts, invoices), behind an HTTPS proxy.
+storefront:
+  host: 127.0.0.1
+  port: 8081
+  public_url: https://shop.example.vn
+  hold_hours: 72                 # unpaid web orders with no delivery booked are cancelled after this (0: never)
+
+plugins: [shop_skills]           # Python modules that register extra skills
+plugin_paths: [./plugins]
+
+defaults:
+  model: claude                  # a name from models: (or a bare claude-* model id)
+  effort: medium                 # Claude only: low | medium | high | xhigh | max | null
+  history_messages: 40           # remembered turns per contact
+  timezone: Asia/Ho_Chi_Minh
+  admin_token_env: AI_ADMIN_TOKEN  # send "/admin <token>" to an employee to manage it in chat
+
+employees:
+  - id: sales
+    display_name: Lan - Tư vấn bán hàng
+    short_descr: Tư vấn sản phẩm, báo giá, đơn hàng
+    db: ./data/sales
+    welcome: Xin chào! Mình là Lan, trợ lý bán hàng. Mình có thể giúp gì cho bạn?
+    system_prompt: |
+      Bạn là Lan, nhân viên tư vấn bán hàng của công ty Minh An.
+      Nhiệm vụ: tư vấn sản phẩm, báo giá theo bảng giá, kiểm tra đơn hàng, ghi nhận nhu cầu khách.
+      Không tự đặt ra giá hoặc khuyến mãi ngoài tài liệu. Câu hỏi về hoá đơn, công nợ,
+      thanh toán thì hỏi đồng nghiệp kế toán. Khách muốn gặp người thật thì chuyển tiếp.
+    skills: [knowledge_search, memory, order_status, create_order, ask_colleague, handoff_to_human,
+             current_time, recent_conversations]
+    skill_config:
+      knowledge_search: {path: ./knowledge/sales}
+      ask_colleague: {colleagues: [accountant]}
+    routines:
+      - id: morning-brief
+        days: mon-fri
+        at: "08:00"
+        task: |
+          Đọc các hội thoại 24 giờ qua. Tóm tắt cho quản lý: khách nào quan tâm sản phẩm nào,
+          ai cần gọi lại, câu hỏi nào mình chưa trả lời được. Tối đa 10 dòng.
+
+  - id: accountant
+    model: gemini
+    display_name: Minh - Kế toán
+    short_descr: Hoá đơn, thanh toán, công nợ
+    db: ./data/accountant
+    welcome: Chào bạn, mình là Minh bên kế toán.
+    system_prompt: |
+      Bạn là Minh, nhân viên kế toán của công ty Minh An.
+      Trả lời về hoá đơn VAT, phương thức thanh toán, công nợ theo đúng quy định trong tài liệu.
+      Không cung cấp thông tin tài chính nội bộ. Yêu cầu hoàn tiền phải chuyển cho người phụ trách.
+    skills: [knowledge_search, handoff_to_human, current_time, recent_conversations]
+    skill_config:
+      knowledge_search: {path: ./knowledge/accounting}
+    routines:
+      - id: weekly-invoices
+        days: fri
+        at: "16:00"
+        period: week
+        task: Liệt kê các yêu cầu xuất hoá đơn VAT trong tuần và thông tin còn thiếu của từng khách.
+
+  - id: writer
+    model: local
+    display_name: Hà - Viết nội dung
+    short_descr: Viết bài đăng, mô tả sản phẩm, email marketing
+    db: ./data/writer
+    welcome: Chào bạn, mình là Hà. Bạn cần viết nội dung gì?
+    system_prompt: |
+      Bạn là Hà, người viết nội dung marketing của công ty Minh An.
+      Viết bài đăng mạng xã hội, mô tả sản phẩm, email khuyến mãi theo yêu cầu.
+      Chỉ dùng thông tin sản phẩm, giá và khuyến mãi có trong tài liệu; giọng văn thân thiện, ngắn gọn.
+    skills: [knowledge_search, current_time]
+    skill_config:
+      knowledge_search: {path: ./knowledge/sales}
+
+  - id: chief
+    model: claude
+    display_name: Quân - Chánh văn phòng
+    short_descr: Giám sát các nhân viên AI, báo cáo cho chủ
+    db: ./data/chief
+    system_prompt: |
+      Bạn là Quân, chánh văn phòng. Bạn giám sát các nhân viên AI khác và báo cáo cho chủ doanh nghiệp.
+      Mỗi báo cáo nêu: ai đang tạm dừng hoặc lỗi, yêu cầu nào chờ duyệt quá lâu, lịch làm việc nào không chạy,
+      và tối đa ba việc chủ nên làm hôm nay. Ngắn gọn, đi thẳng vào việc.
+    skills: [office_report, current_time]
+    routines:
+      - id: end-of-day
+        days: mon-fri
+        at: "17:30"
+        task: Dùng office_report cho 24 giờ qua và viết báo cáo cuối ngày cho chủ.

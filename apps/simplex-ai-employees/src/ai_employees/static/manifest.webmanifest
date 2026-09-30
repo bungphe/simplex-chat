@@ -1,0 +1,22 @@
+{
+  "name": "Quản lý cửa hàng – Nhân viên AI",
+  "short_name": "Cửa hàng",
+  "description": "Hộp thư, bán hàng, kho, giao hàng và báo cáo của cửa hàng",
+  "lang": "vi",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f5f6f8",
+  "theme_color": "#2563eb",
+  "icons": [
+    { "src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/static/icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ],
+  "shortcuts": [
+    { "name": "Hộp thư", "url": "/#inbox" },
+    { "name": "Bán hàng", "url": "/#pos" },
+    { "name": "Giao hàng", "url": "/#delivery" }
+  ]
+}

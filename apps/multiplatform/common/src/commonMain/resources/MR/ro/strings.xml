@@ -2494,4 +2494,10 @@
     <string name="simplex_link_relay">Link de releu SimpleX</string>
     <string name="chat_banner_group">Grup</string>
     <string name="error_marking_member_support_chat_read">Eroare la marcarea conversației cu membrul ca fiind citită</string>
+    <!-- Shop management (SimpleX AI employees) -->
+    <string name="shop_admin">Administrarea magazinului</string>
+    <string name="shop_admin_address">Adresa aplicației de administrare</string>
+    <string name="shop_admin_address_footer">Adresa aplicației web de administrare a magazinului (mesaje, casă, stoc, livrări, rapoarte), de ex. https://admin.shop.com. Acolo te autentifici cu contul tău de angajat.</string>
+    <string name="shop_admin_open">Deschide administrarea magazinului</string>
+    <string name="shop_admin_chat_footer">În chatul cu angajatul AI al magazinului, scrie / pentru a vedea comenzile tale. Mai întâi leagă chatul de contul tău de angajat: în aplicația de administrare deschide-ți contul, obține un cod de legare și trimite /link cu codul.</string>
 </resources>

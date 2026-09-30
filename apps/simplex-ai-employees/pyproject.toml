@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "simplex-ai-employees"
+version = "0.1.0"
+description = "AI employees on SimpleX Chat: chat accounts run by AI agents (Claude or OpenAI-compatible models) with skills"
+readme = "README.md"
+license = "AGPL-3.0-only"
+requires-python = ">=3.11"
+dependencies = [
+    "simplex-chat>=6.5.6",
+    "anthropic>=1.8",
+    "httpx2",
+    "aiohttp>=3.9",
+    "segno>=1.5",
+    "pyyaml>=6",
+    "tzdata; sys_platform == 'win32'",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8", "pytest-asyncio>=0.23"]
+postgres = ["psycopg[binary]>=3.2"]
+
+[project.scripts]
+ai-employees = "ai_employees.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ai_employees"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint.isort]
+known-local-folder = ["fakes"]

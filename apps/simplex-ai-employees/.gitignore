@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.venv/
+# chat databases and agent state created at runtime
+data/
+examples/data/
+.env
+src/ai_employees/locales/.work/
